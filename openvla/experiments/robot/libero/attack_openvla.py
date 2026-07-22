@@ -45,6 +45,8 @@ from libero_utils import (
     get_libero_dummy_action, get_libero_env, get_libero_image,
     quat2axisangle, save_rollout_video,
 )
+from openvla_attack.action_codec import decode_action_from_generated_ids
+from openvla_attack.objective import get_attack_loss
 
 sys.path.append(str(Path(__file__).parent.parent))
 
@@ -554,51 +556,6 @@ def render_and_composite(renderer, bg_tensor, mvp, resolution=(256, 256), model_
         return bg_tensor
     adv_rgba, mask = renderer.render(mvp, resolution=resolution, model_rot=model_rot)
     return _composite(adv_rgba, mask, bg_tensor)
-
-
-def get_attack_loss(logits, clean_labels):
-    ACTION_START = 31744
-    ACTION_END = 32000
-    NUM_BINS = 256
-
-    if logits.shape[1] > clean_labels.shape[1]:
-        logits = logits[:, -clean_labels.shape[1]:, :]
-
-    shift_logits = logits[:, :-1, :].contiguous()
-    shift_labels = clean_labels[:, 1:].contiguous().to(logits.device)
-
-    action_mask = (
-            (shift_labels >= ACTION_START) &
-            (shift_labels < ACTION_END) &
-            (shift_labels != -100)
-    )
-    if not action_mask.any():
-        return torch.tensor(0.0, device=logits.device, requires_grad=True)
-
-    valid_logits = shift_logits[action_mask]
-    valid_labels = shift_labels[action_mask]
-    action_logits = valid_logits[:, ACTION_START:ACTION_END]
-    correct_bins = valid_labels - ACTION_START
-    opposite_bins = (NUM_BINS - 1 - correct_bins)
-
-    return F.cross_entropy(action_logits, opposite_bins)
-
-
-def decode_action_from_generated_ids(model, generated_ids, unnorm_key=None):
-    action_dim = model.get_action_dim(unnorm_key)
-    predicted_action_token_ids = generated_ids[0, -action_dim:].detach().cpu().numpy()
-    discretized_actions = model.vocab_size - predicted_action_token_ids
-    discretized_actions = np.clip(discretized_actions - 1, a_min=0, a_max=model.bin_centers.shape[0] - 1)
-    normalized_actions = model.bin_centers[discretized_actions]
-
-    action_norm_stats = model.get_action_stats(unnorm_key)
-    mask = action_norm_stats.get("mask", np.ones_like(action_norm_stats["q01"], dtype=bool))
-    action_high, action_low = np.array(action_norm_stats["q99"]), np.array(action_norm_stats["q01"])
-    return np.where(
-        mask,
-        0.5 * (normalized_actions + 1) * (action_high - action_low) + action_low,
-        normalized_actions,
-    )
 
 
 def _build_adv_samples(renderer, fdata, RENDER_RES: int) -> List[torch.Tensor]:
