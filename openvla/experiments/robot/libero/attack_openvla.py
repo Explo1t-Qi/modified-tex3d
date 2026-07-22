@@ -46,6 +46,10 @@ from libero_utils import (
     quat2axisangle, save_rollout_video,
 )
 from openvla_attack.action_codec import decode_action_from_generated_ids
+from openvla_attack.compositing import (
+    build_single_view_samples,
+    render_and_composite,
+)
 from openvla_attack.objective import get_attack_loss
 
 sys.path.append(str(Path(__file__).parent.parent))
@@ -543,28 +547,6 @@ def _render_bg_without_target(env, body_id: int, resolution: int):
     return img
 
 
-def _composite(adv_rgba, mask, bg_tensor):
-    mask_t = mask.permute(0, 3, 1, 2)
-    return torch.clamp(
-        adv_rgba.permute(0, 3, 1, 2) * mask_t + bg_tensor * (1 - mask_t),
-        0.0, 1.0,
-    )
-
-
-def render_and_composite(renderer, bg_tensor, mvp, resolution=(256, 256), model_rot=None):
-    if mvp is None:
-        return bg_tensor
-    adv_rgba, mask = renderer.render(mvp, resolution=resolution, model_rot=model_rot)
-    return _composite(adv_rgba, mask, bg_tensor)
-
-
-def _build_adv_samples(renderer, fdata, RENDER_RES: int) -> List[torch.Tensor]:
-    adv_rgba, mask = renderer.render(fdata["mvp"], resolution=(RENDER_RES, RENDER_RES),
-                                     model_rot=fdata.get("model_rot"))
-    bg = fdata.get("bg_tensor_no_obj") if fdata.get("bg_tensor_no_obj") is not None else fdata["bg_tensor"]
-    return [_composite(adv_rgba, mask, bg)]
-
-
 def train_adversarial_texture(
         cfg, model, processor, renderer,
         initial_obs_state, task, task_description,
@@ -807,14 +789,16 @@ def train_adversarial_texture(
             )
 
             with torch.no_grad():
-                if mvp is not None:
-                    adv_rgba, mask = renderer.render(
-                        mvp, resolution=(cfg.live_test_resolution, cfg.live_test_resolution),
-                        model_rot=model_matrix[:3, :3]
-                    )
-                    composited = _composite(adv_rgba, mask, composite_bg)
-                else:
-                    composited = bg_tensor
+                composited = render_and_composite(
+                    renderer,
+                    composite_bg,
+                    mvp,
+                    resolution=(
+                        cfg.live_test_resolution,
+                        cfg.live_test_resolution,
+                    ),
+                    model_rotation=model_matrix[:3, :3],
+                )
 
             perceived_np = (
                     composited[0].permute(1, 2, 0).detach().clamp(0, 1).cpu().numpy() * 255
@@ -869,7 +853,9 @@ def train_adversarial_texture(
 
             w_t = torch.tensor(1.0 / batch_size, device=device)
 
-            adv_samples = _build_adv_samples(renderer, fdata, RENDER_RES)
+            adv_samples = build_single_view_samples(
+                renderer, fdata, render_resolution=RENDER_RES
+            )
 
             sample_action_losses = []
             sample_feat_losses = []
@@ -1238,13 +1224,13 @@ def eval_libero(cfg: GenerateConfig) -> None:
                                 if _bg_np is not None else bg
                             )
                             with torch.no_grad():
-                                if mvp is not None:
-                                    adv_rgba, mask = renderer.render(
-                                        mvp, resolution=(VIDEO_RES, VIDEO_RES),
-                                        model_rot=mm[:3, :3])
-                                    comp = _composite(adv_rgba, mask, composite_bg)
-                                else:
-                                    comp = bg
+                                comp = render_and_composite(
+                                    renderer,
+                                    composite_bg,
+                                    mvp,
+                                    resolution=(VIDEO_RES, VIDEO_RES),
+                                    model_rotation=mm[:3, :3],
+                                )
                             frame_np = (comp[0].permute(1, 2, 0).cpu().numpy() * 255).astype(np.uint8)
                             img_model = np.array(Image.fromarray(frame_np).resize(
                                 (model_input_size, model_input_size)))

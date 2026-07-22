@@ -25,8 +25,9 @@
 4. OpenVLA rollout 的 gripper action 先二值化、再反号。
 5. 生成 token 的 action 解码及按统计量 mask 选择性反归一化。
 6. action statistics 未提供 mask 时，所有动作维度都执行反归一化。
-7. 每帧当前只生成一个对抗样本，优先使用移除目标物体后的背景。
-8. MuJoCo XML mesh scale 的三轴、单值扩展和缺省规则。
+7. 目标 MVP 缺失时不调用 renderer，原样返回相机背景。
+8. 每帧当前只生成一个对抗样本，优先使用移除目标物体后的背景。
+9. MuJoCo XML mesh scale 的三轴、单值扩展和缺省规则。
 
 运行命令：
 

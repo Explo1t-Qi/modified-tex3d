@@ -9,7 +9,6 @@ from functools import cache
 from pathlib import Path
 
 import numpy as np
-import torch
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -32,18 +31,6 @@ def _load_attack_module():
     return module
 
 
-def test_composite_uses_foreground_mask_and_clamps_rgb() -> None:
-    attack = _load_attack_module()
-    foreground = torch.tensor([[[[-0.2, 0.5, 1.2], [1.0, 1.0, 1.0]]]])
-    mask = torch.tensor([[[[1.0], [0.0]]]])
-    background = torch.tensor([[[[0.9, 0.25]], [[0.9, 0.25]], [[0.9, 0.25]]]])
-
-    composited = attack._composite(foreground, mask, background)
-
-    expected = torch.tensor([[[[0.0, 0.25]], [[0.5, 0.25]], [[1.0, 0.25]]]])
-    torch.testing.assert_close(composited, expected)
-
-
 def test_openvla_rollout_binarizes_then_inverts_the_gripper_action() -> None:
     attack = _load_attack_module()
     action = np.array([0.1, 0.2, 0.3, 0.0, 0.0, 0.0, 0.75], dtype=np.float32)
@@ -53,41 +40,6 @@ def test_openvla_rollout_binarizes_then_inverts_the_gripper_action() -> None:
 
     np.testing.assert_allclose(openvla_action[:-1], action[:-1])
     assert openvla_action[-1] == -1.0
-
-
-def test_adv_sample_builder_uses_one_view_and_the_background_without_target() -> None:
-    attack = _load_attack_module()
-
-    class FakeRenderer:
-        def __init__(self) -> None:
-            self.calls = []
-
-        def render(self, mvp, resolution, model_rot=None):
-            self.calls.append((mvp, resolution, model_rot))
-            foreground = torch.full((1, 1, 1, 3), 0.8)
-            mask = torch.ones((1, 1, 1, 1))
-            return foreground, mask
-
-    renderer = FakeRenderer()
-    mvp = object()
-    model_rot = object()
-    regular_background = torch.full((1, 3, 1, 1), 0.1)
-    background_without_target = torch.full((1, 3, 1, 1), 0.2)
-
-    samples = attack._build_adv_samples(
-        renderer,
-        {
-            "mvp": mvp,
-            "model_rot": model_rot,
-            "bg_tensor": regular_background,
-            "bg_tensor_no_obj": background_without_target,
-        },
-        RENDER_RES=64,
-    )
-
-    assert renderer.calls == [(mvp, (64, 64), model_rot)]
-    assert len(samples) == 1
-    torch.testing.assert_close(samples[0], torch.full((1, 3, 1, 1), 0.8))
 
 
 def test_mesh_scale_parsing_preserves_current_scalar_vector_and_default_rules(

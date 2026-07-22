@@ -5,6 +5,17 @@
 """
 
 from .action_codec import decode_action_from_generated_ids
+from .compositing import (
+    build_single_view_samples,
+    composite_foreground,
+    render_and_composite,
+)
 from .objective import get_attack_loss
 
-__all__: list[str] = ["decode_action_from_generated_ids", "get_attack_loss"]
+__all__: list[str] = [
+    "build_single_view_samples",
+    "composite_foreground",
+    "decode_action_from_generated_ids",
+    "get_attack_loss",
+    "render_and_composite",
+]
