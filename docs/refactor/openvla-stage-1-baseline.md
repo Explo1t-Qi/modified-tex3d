@@ -27,7 +27,8 @@
 6. action statistics 未提供 mask 时，所有动作维度都执行反归一化。
 7. 目标 MVP 缺失时不调用 renderer，原样返回相机背景。
 8. 每帧当前只生成一个对抗样本，优先使用移除目标物体后的背景。
-9. MuJoCo XML mesh scale 的三轴、单值扩展和缺省规则。
+9. Spatial bowl 与十个 Object 物体的 suite、task ID 和特殊 mesh 文件映射。
+10. MuJoCo XML mesh scale 的三轴、单值扩展和缺省规则。
 
 运行命令：
 

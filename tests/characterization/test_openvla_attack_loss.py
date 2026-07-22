@@ -40,19 +40,3 @@ def test_openvla_rollout_binarizes_then_inverts_the_gripper_action() -> None:
 
     np.testing.assert_allclose(openvla_action[:-1], action[:-1])
     assert openvla_action[-1] == -1.0
-
-
-def test_mesh_scale_parsing_preserves_current_scalar_vector_and_default_rules(
-    tmp_path: Path,
-) -> None:
-    attack = _load_attack_module()
-    cases = {
-        "vector.xml": ('<mujoco><asset><mesh scale="1 2 3"/></asset></mujoco>', [1.0, 2.0, 3.0]),
-        "scalar.xml": ('<mujoco><asset><mesh scale="0.5"/></asset></mujoco>', [0.5, 0.5, 0.5]),
-        "default.xml": ("<mujoco><asset><mesh/></asset></mujoco>", [1.0, 1.0, 1.0]),
-    }
-
-    for filename, (xml, expected) in cases.items():
-        xml_path = tmp_path / filename
-        xml_path.write_text(xml)
-        assert attack.parse_mesh_scale(str(xml_path)) == expected

@@ -5,6 +5,7 @@
 """
 
 from .action_codec import decode_action_from_generated_ids
+from .assets import OBJECT_ASSETS, parse_mesh_scale
 from .compositing import (
     build_single_view_samples,
     composite_foreground,
@@ -17,5 +18,7 @@ __all__: list[str] = [
     "composite_foreground",
     "decode_action_from_generated_ids",
     "get_attack_loss",
+    "OBJECT_ASSETS",
+    "parse_mesh_scale",
     "render_and_composite",
 ]

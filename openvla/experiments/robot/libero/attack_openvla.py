@@ -30,17 +30,20 @@ os.environ['PYOPENGL_PLATFORM'] = 'egl'
 # except Exception as e:
 #     print(f"[WARNING] Failed to load libOSMesa.so: {e}")
 
-PATH_TO_LIBERO_ROOT = "/home/xiaomengqi/src/github/paper_code/LIBERO"
-ASSET_ROOT_SCANNED = f"{PATH_TO_LIBERO_ROOT}/libero/libero/assets/stable_scanned_objects"
-ASSET_ROOT_HOPE = f"{PATH_TO_LIBERO_ROOT}/libero/libero/assets/stable_hope_objects"
+# 直接执行该文件和通过 importlib 加载该文件时，sys.path 的初始值不同。
+# 先显式加入当前目录，确保两种入口都能导入 OpenVLA 专用 module。
+LIBERO_EXPERIMENT_DIR = str(Path(__file__).parent)
+if LIBERO_EXPERIMENT_DIR not in sys.path:
+    sys.path.append(LIBERO_EXPERIMENT_DIR)
 
-if PATH_TO_LIBERO_ROOT not in sys.path:
-    sys.path.append(PATH_TO_LIBERO_ROOT)
+from openvla_attack.assets import LIBERO_ROOT, OBJECT_ASSETS, parse_mesh_scale
+
+if LIBERO_ROOT not in sys.path:
+    sys.path.append(LIBERO_ROOT)
 
 from libero.libero import benchmark
 import imageio
 
-sys.path.append(str(Path(__file__).parent))
 from libero_utils import (
     get_libero_dummy_action, get_libero_env, get_libero_image,
     quat2axisangle, save_rollout_video,
@@ -63,105 +66,6 @@ from robot_utils import (
     DATE_TIME, get_action, get_image_resize_size, get_model,
     invert_gripper_action, normalize_gripper_action, set_seed_everywhere,
 )
-
-
-def _scanned(name, mesh_file=None, tex_file="texture.png"):
-    base = f"{ASSET_ROOT_SCANNED}/{name}"
-    return {
-        "xml": f"{base}/{name}.xml",
-        "mesh": f"{base}/{mesh_file or name + '.obj'}",
-        "texture": f"{base}/{tex_file}",
-    }
-
-
-def _hope(name, mesh_file=None, tex_file="texture_map.png"):
-    base = f"{ASSET_ROOT_HOPE}/{name}"
-    return {
-        "xml": f"{base}/{name}.xml",
-        "mesh": f"{base}/{mesh_file or 'textured.obj'}",
-        "texture": f"{base}/{tex_file}",
-    }
-
-
-OBJECTS = {
-    "akita_black_bowl": {
-        **_scanned("akita_black_bowl"),
-        "search": [["akita_black_bowl"], ["bowl"]],
-        "task_suite": "libero_spatial",
-        "task_id": 0,
-    },
-    "alphabet_soup": {
-        **_hope("alphabet_soup", mesh_file="textured.obj"),
-        "search": [["alphabet_soup"], ["soup"]],
-        "task_suite": "libero_object",
-        "task_id": 0,
-    },
-    "cream_cheese": {
-        **_hope("cream_cheese", mesh_file="cream_cheese.obj"),
-        "search": [["cream_cheese"], ["cheese"]],
-        "task_suite": "libero_object",
-        "task_id": 1,
-    },
-    "salad_dressing": {
-        **_hope("salad_dressing", mesh_file="textured.obj"),
-        "search": [["salad_dressing"], ["dressing"]],
-        "task_suite": "libero_object",
-        "task_id": 2,
-    },
-    "bbq_sauce": {
-        **_hope("bbq_sauce", mesh_file="bbq_sauce.obj"),
-        "search": [["bbq_sauce"], ["bbq"], ["sauce"]],
-        "task_suite": "libero_object",
-        "task_id": 3,
-    },
-    "ketchup": {
-        **_hope("ketchup", mesh_file="textured.obj"),
-        "search": [["ketchup"]],
-        "task_suite": "libero_object",
-        "task_id": 4,
-    },
-    "tomato_sauce": {
-        **_hope("tomato_sauce"),
-        "search": [["tomato_sauce"], ["tomato"]],
-        "task_suite": "libero_object",
-        "task_id": 5,
-    },
-    "butter": {
-        **_hope("butter", mesh_file="butter.obj"),
-        "search": [["butter"]],
-        "task_suite": "libero_object",
-        "task_id": 6,
-    },
-    "milk": {
-        **_hope("milk", mesh_file="textured.obj"),
-        "search": [["milk"]],
-        "task_suite": "libero_object",
-        "task_id": 7,
-    },
-    "chocolate_pudding": {
-        **_hope("chocolate_pudding", mesh_file="textured.obj"),
-        "search": [["chocolate_pudding"], ["chocolate"], ["pudding"]],
-        "task_suite": "libero_object",
-        "task_id": 8,
-    },
-    "orange_juice": {
-        **_hope("orange_juice", mesh_file="textured.obj"),
-        "search": [["orange_juice"], ["orange"], ["juice"]],
-        "task_suite": "libero_object",
-        "task_id": 9,
-    },
-}
-
-
-def parse_mesh_scale(xml_path: str) -> List[float]:
-    tree = ET.parse(xml_path)
-    root = tree.getroot()
-    for mesh_elem in root.findall(".//mesh"):
-        scale_str = mesh_elem.get("scale")
-        if scale_str:
-            vals = [float(v) for v in scale_str.strip().split()]
-            return vals if len(vals) == 3 else [vals[0]] * 3
-    return [1.0, 1.0, 1.0]
 
 
 class DifferentiableRenderer(nn.Module):
@@ -995,9 +899,11 @@ class GenerateConfig:
 def eval_libero(cfg: GenerateConfig) -> None:
     set_seed_everywhere(cfg.seed)
 
-    if cfg.object_name not in OBJECTS:
-        raise ValueError(f"未知物体 '{cfg.object_name}'，可选: {list(OBJECTS.keys())}")
-    obj_cfg = OBJECTS[cfg.object_name]
+    if cfg.object_name not in OBJECT_ASSETS:
+        raise ValueError(
+            f"未知物体 '{cfg.object_name}'，可选: {list(OBJECT_ASSETS.keys())}"
+        )
+    obj_cfg = OBJECT_ASSETS[cfg.object_name]
     mesh_path = cfg.override_mesh_path or obj_cfg["mesh"]
     texture_path = cfg.override_texture_path or obj_cfg["texture"]
     xml_path = cfg.override_xml_path or obj_cfg["xml"]
