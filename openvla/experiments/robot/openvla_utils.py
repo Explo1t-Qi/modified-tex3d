@@ -1,8 +1,11 @@
 """Utils for evaluating the OpenVLA policy."""
 
+from __future__ import annotations
+
 import json
 import os
 import time
+from typing import Final, MutableMapping, TypeVar
 
 import numpy as np
 import tensorflow as tf
@@ -19,13 +22,73 @@ ACTION_DIM = 7
 DATE = time.strftime("%Y_%m_%d")
 DATE_TIME = time.strftime("%Y_%m_%d-%H_%M_%S")
 DEVICE = torch.device("cuda:0") if torch.cuda.is_available() else torch.device("cpu")
+LLAMA_EMPTY_TOKEN_ID: Final[int] = 29_871
 np.set_printoptions(formatter={"float": lambda x: "{0:0.3f}".format(x)})
+
+# Hugging Face 的 BatchFeature/BatchEncoding 都实现了 MutableMapping 接口。
+# 使用 TypeVar 可以让函数保留传入容器的具体类型，而不是把返回值退化成普通 dict。
+ModelInputsT = TypeVar(
+    "ModelInputsT",
+    bound=MutableMapping[str, torch.Tensor],
+)
 
 # Initialize system prompt for OpenVLA v0.1.
 OPENVLA_V01_SYSTEM_PROMPT = (
     "A chat between a curious user and an artificial intelligence assistant. "
     "The assistant gives helpful, detailed, and polite answers to the user's questions."
 )
+
+
+def ensure_trailing_empty_token(inputs: ModelInputsT) -> ModelInputsT:
+    """确保 OpenVLA prompt 尾部 token 与 attention mask 同步补齐。
+
+    OpenVLA checkpoint 内的 ``predict_action`` 会在 prompt 末尾缺少 LLaMA
+    empty token（ID 29871）时自行追加 ``input_ids``。原实现不会同时扩展已经
+    存在的 ``attention_mask``，因此生成第一个 action token 时会出现长度相差
+    1 的 causal mask，并最终在 LLaMA attention 中报 shape mismatch。
+
+    本函数在进入 ``predict_action`` 前完成同一项补齐，同时维护下面的不变量：
+
+    - ``input_ids`` shape: ``[batch_size, sequence_length]``
+    - ``attention_mask`` shape: ``[batch_size, sequence_length]``
+    - 补齐后两个张量的 ``sequence_length`` 始终相同
+
+    函数原地更新 Hugging Face 输入容器并返回同一对象，其他输入（例如
+    ``pixel_values``）不会被复制或修改。
+    """
+    if "input_ids" not in inputs or "attention_mask" not in inputs:
+        return inputs
+
+    input_ids: torch.Tensor = inputs["input_ids"]
+    attention_mask: torch.Tensor = inputs["attention_mask"]
+
+    # processor 的常规输出 batch_size=1；这里仍按 batch 维统一处理，使类型和
+    # shape 约束清晰。若所有样本已有尾 token，则直接返回，避免重复追加。
+    has_trailing_empty_token: bool = bool(
+        torch.all(input_ids[:, -1] == LLAMA_EMPTY_TOKEN_ID).item()
+    )
+    if has_trailing_empty_token:
+        return inputs
+
+    batch_size: int = input_ids.shape[0]
+    trailing_token: torch.Tensor = torch.full(
+        (batch_size, 1),
+        fill_value=LLAMA_EMPTY_TOKEN_ID,
+        dtype=input_ids.dtype,
+        device=input_ids.device,
+    )
+    trailing_attention: torch.Tensor = torch.ones(
+        (batch_size, 1),
+        dtype=attention_mask.dtype,
+        device=attention_mask.device,
+    )
+
+    inputs["input_ids"] = torch.cat((input_ids, trailing_token), dim=1)
+    inputs["attention_mask"] = torch.cat(
+        (attention_mask, trailing_attention),
+        dim=1,
+    )
+    return inputs
 
 
 def get_vla(cfg):
@@ -166,6 +229,7 @@ def get_vla_action(vla, processor, base_vla_name, obs, task_label, unnorm_key, c
 
     # Process inputs.
     inputs = processor(prompt, image).to(DEVICE, dtype=torch.bfloat16)
+    inputs = ensure_trailing_empty_token(inputs)
 
     # Get action.
     action = vla.predict_action(**inputs, unnorm_key=unnorm_key, do_sample=False)
