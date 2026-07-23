@@ -4,7 +4,7 @@ import sys
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional, Union, List
+from typing import List, Optional, TextIO, Union
 
 import draccus
 import numpy as np
@@ -34,11 +34,14 @@ if LIBERO_ROOT not in sys.path:
     sys.path.append(LIBERO_ROOT)
 
 from libero.libero import benchmark
-import imageio
 
 from libero_utils import (
     get_libero_dummy_action, get_libero_env, get_libero_image,
     quat2axisangle, save_rollout_video,
+)
+from openvla_attack.artifacts import (
+    AttackArtifactStore,
+    LiveSnapshotPaths,
 )
 from openvla_attack.compositing import render_and_composite
 from openvla_attack.evaluation import LiberoEpisodeRunner
@@ -66,14 +69,16 @@ from robot_utils import (
 def train_adversarial_texture(
         cfg, model, processor, renderer,
         initial_obs_state, task, task_description,
-        save_dir, episode_idx,
+        artifact_store: AttackArtifactStore, episode_idx: int,
         search_keywords_list: List[List[str]],
         xml_path,
         num_iters=20,
         init_states=None,
 ) -> list[float]:
     print(f"[ATTACK] Training Ep {episode_idx} | {cfg.num_frames_to_attack}-Frame Optimization...")
-    os.makedirs(save_dir, exist_ok=True)
+    # 保持旧函数的目录创建时机：即使不保存最终攻击产物，optimizer 的梯度
+    # 日志仍然需要写入当前 run 的 attack directory。
+    artifact_store.ensure_attack_directory()
 
     RENDER_RES = 256
     model_input_size = get_image_resize_size(cfg)
@@ -94,16 +99,12 @@ def train_adversarial_texture(
         initial_states=init_states,
     )
 
-    grad_log_path = os.path.join(save_dir, f"Ep{episode_idx}_gradient_log.txt")
+    grad_log_path: Path = artifact_store.gradient_log_path(
+        episode_index=episode_idx
+    )
 
-    def _bake_and_inject_eval_texture(tag):
-        with torch.no_grad():
-            baked_tex = renderer.get_baked_adv_texture()
-        tex_path = os.path.join(save_dir, f"Ep{episode_idx}_LiveTexture_{tag}.png")
-        Image.fromarray(
-            (baked_tex.squeeze(0).cpu().numpy() * 255).astype(np.uint8)
-        ).save(tex_path)
-
+    def _inject_eval_texture(texture_path: Path) -> None:
+        """把已落盘的 live texture 写入当前 LIBERO XML。"""
         tree = ET.parse(xml_path)
         root = tree.getroot()
         tex_name = f"tex-{cfg.object_name}"
@@ -111,20 +112,21 @@ def train_adversarial_texture(
         for asset_elem in root.findall("asset"):
             for tex_elem in asset_elem.findall("texture"):
                 if tex_elem.get("name") == tex_name:
-                    tex_elem.set("file", str(Path(tex_path).resolve()))
+                    tex_elem.set("file", str(texture_path.resolve()))
                     tex_elem.set("type", "2d")
                     break
         for mat_elem in root.findall(".//material"):
             if mat_elem.get("name") == mat_name:
                 mat_elem.set("texuniform", "false")
         tree.write(xml_path)
-        return tex_path
 
-    def _run_live_test(i):
-        tex_path = _bake_and_inject_eval_texture(f"iter{i:04d}")
-
-        noise_pt_path = os.path.join(save_dir, f"Ep{episode_idx}_noise_iter{i:04d}.pt")
-        torch.save(renderer.adv_noise.data.cpu(), noise_pt_path)
+    def _run_live_test(i: int) -> bool:
+        snapshot_paths: LiveSnapshotPaths = artifact_store.save_live_snapshot(
+            episode_index=episode_idx,
+            iteration=i,
+            renderer=renderer,
+        )
+        _inject_eval_texture(snapshot_paths.texture_path)
 
         if init_states is not None and len(init_states) > 1:
             chosen_state = init_states[np.random.randint(len(init_states))]
@@ -139,7 +141,7 @@ def train_adversarial_texture(
         test_env.env.sim.forward()
 
         t2, max_steps, done2 = 0, cfg.live_test_max_steps, False
-        frames = []
+        frames: list[np.ndarray] = []
         while t2 < max_steps + cfg.num_steps_wait:
             if t2 < cfg.num_steps_wait:
                 test_obs, _, _, _ = test_env.step(get_libero_dummy_action(cfg.model_family))
@@ -224,13 +226,12 @@ def train_adversarial_texture(
             t2 += 1
         test_env.close()
 
-        video_path = os.path.join(
-            save_dir, f"Ep{episode_idx}_LiveTest_iter{i:04d}_success={done2}.mp4"
+        video_path: Path = artifact_store.save_live_test_video(
+            episode_index=episode_idx,
+            iteration=i,
+            success=done2,
+            frames=frames,
         )
-        writer = imageio.get_writer(video_path, fps=30)
-        for fr in frames:
-            writer.append_data(fr)
-        writer.close()
 
         print(f"[LIVE-TEST] iter={i} success={done2} | video={video_path}")
         return done2
@@ -249,16 +250,10 @@ def train_adversarial_texture(
     )
 
     if cfg.save_attack_artifacts:
-        torch.save(
-            renderer.get_texture_param().detach().cpu(),
-            os.path.join(save_dir, f"Ep{episode_idx}_Vertex_Noise.pt"),
-        )
-        Image.fromarray(
-            (renderer.get_baked_adv_texture().squeeze(0).cpu().numpy() * 255).astype(np.uint8)
-        ).save(os.path.join(save_dir, f"Ep{episode_idx}_UV_Map.png"))
-        np.save(
-            os.path.join(save_dir, f"Ep{episode_idx}_loss_history.npy"),
-            np.array(loss_history),
+        artifact_store.save_optimization_result(
+            episode_index=episode_idx,
+            renderer=renderer,
+            loss_history=loss_history,
         )
 
     # 训练环境由 TrainingFrameCollector 创建并关闭，不再属于本函数。
@@ -336,15 +331,18 @@ def eval_libero(cfg: GenerateConfig) -> None:
 
     scale_xyz = parse_mesh_scale(xml_path)
 
-    run_id = f"EVAL-{task_suite_name}-{DATE_TIME}"
+    run_id: str = f"EVAL-{task_suite_name}-{DATE_TIME}"
     if cfg.run_id_note:
         run_id = f"{cfg.run_id_note}-{run_id}"
-    os.makedirs(cfg.local_log_dir, exist_ok=True)
-    artifact_dir = os.path.join(cfg.local_log_dir, "attack_artifacts", run_id)
-    if cfg.enable_attack and cfg.save_attack_artifacts:
-        os.makedirs(artifact_dir, exist_ok=True)
-    log_file = open(os.path.join(cfg.local_log_dir, run_id + ".txt"), "w")
-    original_xml = Path(xml_path)
+    artifact_store: AttackArtifactStore = AttackArtifactStore.prepare(
+        local_log_dir=cfg.local_log_dir,
+        run_id=run_id,
+        create_attack_directory=(
+            cfg.enable_attack and cfg.save_attack_artifacts
+        ),
+    )
+    log_file: TextIO = artifact_store.open_run_log()
+    original_xml: Path = Path(xml_path)
 
     if cfg.use_wandb:
         wandb.init(project=cfg.wandb_project, entity=cfg.wandb_entity, name=run_id)
@@ -454,12 +452,10 @@ def eval_libero(cfg: GenerateConfig) -> None:
                     print(f"[INFO] adv_noise loaded from PNG: "
                           f"max_delta={delta.abs().max():.4f}, "
                           f"nonzero={(delta.abs() > 1e-3).float().mean() * 100:.1f}%")
-                adv_tex_inj_path = os.path.join(artifact_dir, f"task_{task_id}_adv_tex_loaded.png")
-                with torch.no_grad():
-                    baked_vis = renderer.get_baked_adv_texture()
-                Image.fromarray(
-                    (baked_vis.squeeze(0).cpu().numpy() * 255).astype(np.uint8)
-                ).save(adv_tex_inj_path)
+                adv_tex_inj_path: Path = artifact_store.save_loaded_texture(
+                    task_id=task_id,
+                    renderer=renderer,
+                )
                 tree = ET.parse(original_xml)
                 root = tree.getroot()
                 for asset_elem in root.findall("asset"):
@@ -489,21 +485,18 @@ def eval_libero(cfg: GenerateConfig) -> None:
                 train_adversarial_texture(
                     cfg, model, processor, renderer,
                     init_states[0], task, train_task_desc,
-                    artifact_dir, episode_idx=task_id,
+                    artifact_store, episode_idx=task_id,
                     search_keywords_list=search_kw,
                     xml_path=original_xml,
                     num_iters=cfg.attack_iters,
                     init_states=init_states,
                 )
 
-                with torch.no_grad():
-                    baked_tex = renderer.get_baked_adv_texture()
-                    trained_tex_path = os.path.join(
-                        artifact_dir, f"task_{task_id}_adv_texture_{DATE_TIME}.png"
-                    )
-                    Image.fromarray(
-                        (baked_tex.squeeze(0).cpu().numpy() * 255).astype(np.uint8)
-                    ).save(trained_tex_path)
+                trained_tex_path: Path = artifact_store.save_trained_texture(
+                    task_id=task_id,
+                    timestamp=DATE_TIME,
+                    renderer=renderer,
+                )
                 print(f"[INFO] Task {task_id} texture saved → {trained_tex_path}")
 
                 tree = ET.parse(original_xml)

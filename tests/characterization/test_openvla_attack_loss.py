@@ -68,6 +68,11 @@ def test_attack_training_returns_loss_history_after_frame_collector_owns_env(
     )
     model = SimpleNamespace(device=torch.device("cpu"))
 
+    artifact_store = attack.AttackArtifactStore.prepare(
+        local_log_dir=tmp_path,
+        run_id="test",
+        create_attack_directory=False,
+    )
     loss_history = attack.train_adversarial_texture(
         cfg=cfg,
         model=model,
@@ -76,7 +81,7 @@ def test_attack_training_returns_loss_history_after_frame_collector_owns_env(
         initial_obs_state=object(),
         task=object(),
         task_description="pick up the bowl",
-        save_dir=str(tmp_path),
+        artifact_store=artifact_store,
         episode_idx=0,
         search_keywords_list=[["akita", "bowl"]],
         xml_path=tmp_path / "asset.xml",
