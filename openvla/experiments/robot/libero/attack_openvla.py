@@ -77,7 +77,7 @@ def train_adversarial_texture(
         xml_path,
         num_iters=20,
         init_states=None,
-):
+) -> list[float]:
     print(f"[ATTACK] Training Ep {episode_idx} | {cfg.num_frames_to_attack}-Frame Optimization...")
     os.makedirs(save_dir, exist_ok=True)
 
@@ -103,7 +103,7 @@ def train_adversarial_texture(
     batch_size = min(cfg.num_frames_to_attack, pool_size)
 
     pgd_step = cfg.attack_lr
-    loss_history = []
+    loss_history: list[float] = []
 
     grad_log_path = os.path.join(save_dir, f"Ep{episode_idx}_gradient_log.txt")
     with open(grad_log_path, "w") as f:
@@ -356,7 +356,9 @@ def train_adversarial_texture(
             np.array(loss_history),
         )
 
-    return env, loss_history
+    # 训练环境由 TrainingFrameCollector 创建并关闭，不再属于本函数。
+    # 返回值只保留调用方可能需要的优化损失历史。
+    return loss_history
 
 
 @dataclass
@@ -579,7 +581,7 @@ def eval_libero(cfg: GenerateConfig) -> None:
                 )
                 dummy_env.close()
 
-                _, _ = train_adversarial_texture(
+                train_adversarial_texture(
                     cfg, model, processor, renderer,
                     init_states[0], task, train_task_desc,
                     artifact_dir, episode_idx=task_id,
