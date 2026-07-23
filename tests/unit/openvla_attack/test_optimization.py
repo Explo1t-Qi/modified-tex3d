@@ -20,7 +20,11 @@ sys.path.insert(0, str(LIBERO_EXPERIMENT_DIR))
 import openvla_attack.optimization as optimization
 from openvla_attack.compositing import SingleViewFrame
 from openvla_attack.frame_collection import TrainingFrame
-from openvla_attack.optimization import AttackOptimizer
+from openvla_attack.optimization import (
+    AttackOptimizer,
+    WeightedTrainingFrame,
+    sample_uniform_frame_batch,
+)
 
 
 @dataclass
@@ -77,13 +81,60 @@ def _training_frame() -> TrainingFrame:
     }
 
 
+def test_default_frame_sampler_is_random_without_replacement_and_uniform(
+    monkeypatch,
+) -> None:
+    frames: list[TrainingFrame] = [_training_frame(), _training_frame()]
+    choice_arguments: dict[str, object] = {}
+
+    def fake_choice(
+        frame_pool_size: int,
+        batch_size: int,
+        *,
+        replace: bool,
+    ) -> np.ndarray:
+        choice_arguments.update(
+            frame_pool_size=frame_pool_size,
+            batch_size=batch_size,
+            replace=replace,
+        )
+        return np.array([1, 0])
+
+    monkeypatch.setattr(optimization.np.random, "choice", fake_choice)
+    selected: list[WeightedTrainingFrame] = list(
+        sample_uniform_frame_batch(frames, batch_size=2)
+    )
+
+    assert choice_arguments == {
+        "frame_pool_size": 2,
+        "batch_size": 2,
+        "replace": False,
+    }
+    assert selected[0].frame is frames[1]
+    assert selected[1].frame is frames[0]
+    assert [item.weight for item in selected] == [0.5, 0.5]
+
+
 def test_optimizer_uses_view_sampler_updates_texture_logs_and_schedules_callback(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
     renderer = FakeOptimizationRenderer()
     sampler_frames: list[SingleViewFrame] = []
+    sampled_batch_sizes: list[int] = []
     callback_iterations: list[int] = []
+
+    def fake_frame_batch_sampler(
+        frames: list[TrainingFrame],
+        batch_size: int,
+    ) -> list[WeightedTrainingFrame]:
+        sampled_batch_sizes.append(batch_size)
+        return [
+            WeightedTrainingFrame(
+                frame=frames[0],
+                weight=1.0,
+            )
+        ]
 
     def fake_view_sampler(
         current_renderer: FakeOptimizationRenderer,
@@ -115,6 +166,7 @@ def test_optimizer_uses_view_sampler_updates_texture_logs_and_schedules_callback
         model=FakeOptimizationModel(),
         renderer=renderer,
         view_sampler=fake_view_sampler,
+        frame_batch_sampler=fake_frame_batch_sampler,
         render_resolution=2,
     )
     loss_history = optimizer.optimize(
@@ -125,6 +177,7 @@ def test_optimizer_uses_view_sampler_updates_texture_logs_and_schedules_callback
     )
 
     assert len(sampler_frames) == 1
+    assert sampled_batch_sizes == [1]
     torch.testing.assert_close(sampler_frames[0]["mvp"], torch.eye(4))
     # optimizer 会在模型前向前转为 bfloat16，因此允许对应的量化误差。
     np.testing.assert_allclose(loss_history, [0.2], rtol=2e-3)

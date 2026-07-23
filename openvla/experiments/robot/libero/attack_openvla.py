@@ -1,249 +1,73 @@
+"""OpenVLA 在 LIBERO 上进行对抗纹理训练与鲁棒性评估的命令行入口。
+
+本文件只编排 run、task 和 episode 生命周期。OpenVLA 模型专用的数据转换、
+Attack Training、可微渲染、优化、评估状态机、Attack Artifact 与 Clean Asset
+恢复分别位于 ``openvla_attack`` package。
+"""
+
 import os
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Optional, TextIO, Union
+from typing import Any, Iterable, Optional, Sequence, TextIO, Union
 
 import draccus
-import numpy as np
-import torch
 import tqdm
 import wandb
-from PIL import Image
 
-# print("[INFO] Setting up OSMesa for CPU Rendering...")
+# 必须在导入 LIBERO/Robosuite 前指定 headless renderer backend。
 os.environ['MUJOCO_GL'] = 'egl'
 os.environ['PYOPENGL_PLATFORM'] = 'egl'
 
-# try:
-#     ctypes.CDLL("libOSMesa.so")
-# except Exception as e:
-#     print(f"[WARNING] Failed to load libOSMesa.so: {e}")
-
 # 直接执行该文件和通过 importlib 加载该文件时，sys.path 的初始值不同。
 # 先显式加入当前目录，确保两种入口都能导入 OpenVLA 专用 module。
-LIBERO_EXPERIMENT_DIR = str(Path(__file__).parent)
+LIBERO_EXPERIMENT_DIR: str = str(Path(__file__).parent)
 if LIBERO_EXPERIMENT_DIR not in sys.path:
     sys.path.append(LIBERO_EXPERIMENT_DIR)
 
-from openvla_attack.assets import LIBERO_ROOT, OBJECT_ASSETS, parse_mesh_scale
+from openvla_attack.assets import (
+    LIBERO_ROOT,
+    OBJECT_ASSETS,
+    MeshScale,
+    ObjectAssetSpec,
+    parse_mesh_scale,
+)
 
 if LIBERO_ROOT not in sys.path:
     sys.path.append(LIBERO_ROOT)
 
 from libero.libero import benchmark
 
-from libero_utils import (
-    get_libero_dummy_action, get_libero_env, get_libero_image,
-    quat2axisangle, save_rollout_video,
+from libero_utils import get_libero_env, save_rollout_video
+from openvla_attack.artifacts import AttackArtifactStore
+from openvla_attack.evaluation import (
+    LiberoEpisodeRunner,
+    RolloutResult,
 )
-from openvla_attack.artifacts import (
-    AttackArtifactStore,
-    LiveSnapshotPaths,
+from openvla_attack.frame_collection import TrainingProcessor
+from openvla_attack.renderer import (
+    AdversarialTextureLoadResult,
+    DifferentiableRenderer,
 )
-from openvla_attack.compositing import render_and_composite
-from openvla_attack.evaluation import LiberoEpisodeRunner
-from openvla_attack.frame_collection import TrainingFrame, TrainingFrameCollector
-from openvla_attack.optimization import AttackOptimizer
-from openvla_attack.renderer import DifferentiableRenderer
 from openvla_attack.runtime_assets import RuntimeAssetTransaction
-from openvla_attack.scene import (
-    compute_render_mvp,
-    find_target_body_pose,
-    render_background_without_target,
+from openvla_attack.scene import SearchKeywords
+from openvla_attack.training import (
+    AttackTrainer,
+    AttackTrainingModel,
 )
 
 sys.path.append(str(Path(__file__).parent.parent))
 
-OPENVLA_REPO_ROOT = str(Path(__file__).resolve().parents[3])
+OPENVLA_REPO_ROOT: str = str(Path(__file__).resolve().parents[3])
 if OPENVLA_REPO_ROOT not in sys.path:
     sys.path.insert(0, OPENVLA_REPO_ROOT)
 
 from openvla_utils import get_processor
 from robot_utils import (
-    DATE_TIME, get_action, get_image_resize_size, get_model,
-    invert_gripper_action, normalize_gripper_action, set_seed_everywhere,
+    DATE_TIME,
+    get_model,
+    set_seed_everywhere,
 )
-
-def train_adversarial_texture(
-        cfg, model, processor, renderer,
-        initial_obs_state, task, task_description,
-        artifact_store: AttackArtifactStore, episode_idx: int,
-        runtime_assets: RuntimeAssetTransaction,
-        search_keywords_list: List[List[str]],
-        num_iters=20,
-        init_states=None,
-) -> list[float]:
-    print(f"[ATTACK] Training Ep {episode_idx} | {cfg.num_frames_to_attack}-Frame Optimization...")
-    # 保持旧函数的目录创建时机：即使不保存最终攻击产物，optimizer 的梯度
-    # 日志仍然需要写入当前 run 的 attack directory。
-    artifact_store.ensure_attack_directory()
-
-    RENDER_RES = 256
-    model_input_size = get_image_resize_size(cfg)
-    device = model.device
-
-    frame_collector = TrainingFrameCollector(
-        cfg=cfg,
-        model=model,
-        processor=processor,
-        renderer=renderer,
-        search_keywords=search_keywords_list,
-        render_resolution=RENDER_RES,
-    )
-    frame_pool: list[TrainingFrame] = frame_collector.collect(
-        task=task,
-        task_description=task_description,
-        fallback_initial_state=initial_obs_state,
-        initial_states=init_states,
-    )
-
-    grad_log_path: Path = artifact_store.gradient_log_path(
-        episode_index=episode_idx
-    )
-
-    def _run_live_test(i: int) -> bool:
-        snapshot_paths: LiveSnapshotPaths = artifact_store.save_live_snapshot(
-            episode_index=episode_idx,
-            iteration=i,
-            renderer=renderer,
-        )
-        runtime_assets.activate_texture(
-            snapshot_paths.texture_path,
-            mirror_real_texture=False,
-        )
-
-        if init_states is not None and len(init_states) > 1:
-            chosen_state = init_states[np.random.randint(len(init_states))]
-        else:
-            chosen_state = initial_obs_state
-
-        test_env, _ = get_libero_env(
-            task, cfg.model_family, resolution=cfg.live_test_resolution
-        )
-        test_env.reset()
-        test_obs = test_env.set_init_state(chosen_state)
-        test_env.env.sim.forward()
-
-        t2, max_steps, done2 = 0, cfg.live_test_max_steps, False
-        frames: list[np.ndarray] = []
-        while t2 < max_steps + cfg.num_steps_wait:
-            if t2 < cfg.num_steps_wait:
-                test_obs, _, _, _ = test_env.step(get_libero_dummy_action(cfg.model_family))
-                t2 += 1
-                continue
-
-            img_np = get_libero_image(test_obs, cfg.live_test_resolution)
-            bg_tensor = (torch.from_numpy(img_np).float().to(device) / 255.0
-                         ).permute(2, 0, 1).unsqueeze(0)
-
-            target_pose = find_target_body_pose(
-                test_env,
-                search_keywords_list,
-                device,
-            )
-            model_matrix = target_pose.model_matrix
-            body_id = target_pose.body_id
-            mvp = (
-                compute_render_mvp(
-                    test_env,
-                    model_matrix,
-                    resolution=(
-                        cfg.live_test_resolution,
-                        cfg.live_test_resolution,
-                    ),
-                )
-                if body_id != -1
-                else None
-            )
-
-            _bg_no_obj = (
-                render_background_without_target(
-                    test_env,
-                    body_id,
-                    cfg.live_test_resolution,
-                )
-                if body_id != -1
-                else None
-            )
-            composite_bg = (
-                (torch.from_numpy(_bg_no_obj.copy()).float().to(device) / 255.0
-                 ).permute(2, 0, 1).unsqueeze(0)
-                if _bg_no_obj is not None else bg_tensor
-            )
-
-            with torch.no_grad():
-                composited = render_and_composite(
-                    renderer,
-                    composite_bg,
-                    mvp,
-                    resolution=(
-                        cfg.live_test_resolution,
-                        cfg.live_test_resolution,
-                    ),
-                    model_rotation=model_matrix[:3, :3],
-                )
-
-            perceived_np = (
-                    composited[0].permute(1, 2, 0).detach().clamp(0, 1).cpu().numpy() * 255
-            ).astype(np.uint8)
-            frames.append(img_np)
-
-            img_model = np.array(
-                Image.fromarray(perceived_np).resize((model_input_size, model_input_size))
-            )
-            observation = {
-                "full_image": img_model,
-                "state": np.concatenate((
-                    test_obs["robot0_eef_pos"],
-                    quat2axisangle(test_obs["robot0_eef_quat"]),
-                    test_obs["robot0_gripper_qpos"],
-                )),
-            }
-            act = get_action(cfg, model, observation, task_description, processor=processor)
-            act = normalize_gripper_action(act, binarize=True)
-            if cfg.model_family == "openvla":
-                act = invert_gripper_action(act)
-
-            test_obs, _, done2, _ = test_env.step(act.tolist())
-            if done2:
-                break
-            t2 += 1
-        test_env.close()
-
-        video_path: Path = artifact_store.save_live_test_video(
-            episode_index=episode_idx,
-            iteration=i,
-            success=done2,
-            frames=frames,
-        )
-
-        print(f"[LIVE-TEST] iter={i} success={done2} | video={video_path}")
-        return done2
-
-    optimizer = AttackOptimizer(
-        cfg=cfg,
-        model=model,
-        renderer=renderer,
-        render_resolution=RENDER_RES,
-    )
-    loss_history: list[float] = optimizer.optimize(
-        frames=frame_pool,
-        num_iters=num_iters,
-        gradient_log_path=grad_log_path,
-        iteration_callback=_run_live_test,
-    )
-
-    if cfg.save_attack_artifacts:
-        artifact_store.save_optimization_result(
-            episode_index=episode_idx,
-            renderer=renderer,
-            loss_history=loss_history,
-        )
-
-    # 训练环境由 TrainingFrameCollector 创建并关闭，不再属于本函数。
-    # 返回值只保留调用方可能需要的优化损失历史。
-    return loss_history
 
 
 @dataclass
@@ -307,14 +131,18 @@ def eval_libero(cfg: GenerateConfig) -> None:
         raise ValueError(
             f"未知物体 '{cfg.object_name}'，可选: {list(OBJECT_ASSETS.keys())}"
         )
-    obj_cfg = OBJECT_ASSETS[cfg.object_name]
-    mesh_path = cfg.override_mesh_path or obj_cfg["mesh"]
-    texture_path = cfg.override_texture_path or obj_cfg["texture"]
-    xml_path = cfg.override_xml_path or obj_cfg["xml"]
-    search_kw = obj_cfg["search"]
-    task_suite_name = cfg.task_suite_name or obj_cfg["task_suite"]
+    obj_cfg: ObjectAssetSpec = OBJECT_ASSETS[cfg.object_name]
+    mesh_path: str = cfg.override_mesh_path or obj_cfg["mesh"]
+    texture_path: str = (
+        cfg.override_texture_path or obj_cfg["texture"]
+    )
+    xml_path: str = cfg.override_xml_path or obj_cfg["xml"]
+    search_kw: SearchKeywords = obj_cfg["search"]
+    task_suite_name: str = (
+        cfg.task_suite_name or obj_cfg["task_suite"]
+    )
 
-    scale_xyz = parse_mesh_scale(xml_path)
+    scale_xyz: MeshScale = parse_mesh_scale(xml_path)
 
     run_id: str = f"EVAL-{task_suite_name}-{DATE_TIME}"
     if cfg.run_id_note:
@@ -340,15 +168,22 @@ def eval_libero(cfg: GenerateConfig) -> None:
         )
     )
 
-    benchmark_dict = benchmark.get_benchmark_dict()
-    task_suite_obj = benchmark_dict[task_suite_name]()
-    target_tasks = ([cfg.task_id] if cfg.task_id is not None
-                    else range(task_suite_obj.n_tasks))
+    benchmark_dict: dict[str, Any] = benchmark.get_benchmark_dict()
+    task_suite_obj: Any = benchmark_dict[task_suite_name]()
+    target_tasks: Iterable[int] = (
+        [cfg.task_id]
+        if cfg.task_id is not None
+        else range(task_suite_obj.n_tasks)
+    )
 
-    model = get_model(cfg)
-    processor = get_processor(cfg) if cfg.model_family == "openvla" else None
+    model: AttackTrainingModel = get_model(cfg)
+    processor: Optional[TrainingProcessor] = (
+        get_processor(cfg)
+        if cfg.model_family == "openvla"
+        else None
+    )
 
-    renderer = None
+    renderer: Optional[DifferentiableRenderer] = None
     if cfg.enable_attack:
         print("[INFO] Initializing DifferentiableRenderer...")
         renderer = DifferentiableRenderer(
@@ -357,10 +192,10 @@ def eval_libero(cfg: GenerateConfig) -> None:
             device=str(model.device),
             scale_xyz=scale_xyz,
         ).to(model.device)
-    total_episodes = 0
-    total_successes = 0
-    video_resolution = 512
-    episode_runner = LiberoEpisodeRunner(
+    total_episodes: int = 0
+    total_successes: int = 0
+    video_resolution: int = 512
+    episode_runner: LiberoEpisodeRunner = LiberoEpisodeRunner(
         cfg=cfg,
         model=model,
         processor=processor,
@@ -369,43 +204,59 @@ def eval_libero(cfg: GenerateConfig) -> None:
         video_resolution=video_resolution,
         max_steps=300,
     )
+    attack_trainer: Optional[AttackTrainer] = None
+    if renderer is not None:
+        if processor is None:
+            raise RuntimeError(
+                "OpenVLA 攻击训练需要 Hugging Face processor"
+            )
+        attack_trainer = AttackTrainer(
+            cfg=cfg,
+            model=model,
+            processor=processor,
+            renderer=renderer,
+            artifact_store=artifact_store,
+            runtime_assets=runtime_assets,
+            search_keywords=search_kw,
+        )
 
     try:
+        task_id: int
         for task_id in tqdm.tqdm(target_tasks, desc="Tasks"):
             runtime_assets.restore(
                 context=f"Before Task {task_id}",
                 remove_backups=False,
             )
 
-            task = task_suite_obj.get_task(task_id)
-            init_states = task_suite_obj.get_task_init_states(task_id)
+            task: Any = task_suite_obj.get_task(task_id)
+            init_states: Sequence[Any] = (
+                task_suite_obj.get_task_init_states(task_id)
+            )
 
             if cfg.enable_attack and cfg.load_texture_path is not None:
-                print(f"[INFO] Loading pre-trained adversarial noise from {cfg.load_texture_path}")
-                if cfg.load_texture_path.endswith(".pt"):
-                    noise_t = torch.load(cfg.load_texture_path,
-                                         map_location=renderer.adv_noise.device)
-                    renderer.adv_noise.data.copy_(noise_t)
-                    with torch.no_grad():
-                        delta = torch.tanh(noise_t) * renderer.epsilon
-                    print(f"[INFO] adv_noise loaded from .pt: "
-                          f"max_delta={delta.abs().max():.4f}, "
-                          f"nonzero={(delta.abs() > 1e-3).float().mean() * 100:.1f}%")
-                else:
-                    baked_np = np.array(Image.open(cfg.load_texture_path)).astype(np.float32) / 255.0
-                    baked_t = torch.from_numpy(baked_np).unsqueeze(0).to(renderer.adv_noise.device)
-                    baked_stored = torch.flip(baked_t, dims=[1])
-                    saved_orig = renderer.orig_texture
-                    renderer.orig_texture = baked_stored.contiguous()
-                    adv_vc_loaded = renderer._sample_uv_texture_at_vertices()
-                    renderer.orig_texture = saved_orig
-                    delta = (adv_vc_loaded - renderer.orig_vertex_colors).clamp(
-                        -renderer.epsilon + 1e-6, renderer.epsilon - 1e-6)
-                    noise_t = torch.atanh(delta / renderer.epsilon)
-                    renderer.adv_noise.data.copy_(noise_t)
-                    print(f"[INFO] adv_noise loaded from PNG: "
-                          f"max_delta={delta.abs().max():.4f}, "
-                          f"nonzero={(delta.abs() > 1e-3).float().mean() * 100:.1f}%")
+                if renderer is None:
+                    raise RuntimeError(
+                        "攻击纹理加载需要已初始化的 renderer"
+                    )
+                print(
+                    "[INFO] Loading pre-trained adversarial noise from "
+                    f"{cfg.load_texture_path}"
+                )
+                load_result: AdversarialTextureLoadResult = (
+                    renderer.load_adversarial_texture(
+                        cfg.load_texture_path
+                    )
+                )
+                source_label: str = (
+                    ".pt"
+                    if load_result.source_kind == "parameter"
+                    else "PNG"
+                )
+                print(
+                    f"[INFO] adv_noise loaded from {source_label}: "
+                    f"max_delta={load_result.max_absolute_delta:.4f}, "
+                    f"nonzero={load_result.nonzero_percentage:.1f}%"
+                )
                 adv_tex_inj_path: Path = artifact_store.save_loaded_texture(
                     task_id=task_id,
                     renderer=renderer,
@@ -416,7 +267,10 @@ def eval_libero(cfg: GenerateConfig) -> None:
                         mirror_real_texture=True,
                     )
                 )
-                print(f"[INFO] MuJoCo XML updated with adversarial texture → {adv_tex_inj_path}")
+                print(
+                    "[INFO] MuJoCo XML updated with adversarial texture → "
+                    f"{adv_tex_inj_path}"
+                )
                 if mirrored_real_texture:
                     print(
                         "[INFO] Real MuJoCo texture overwritten → "
@@ -425,21 +279,26 @@ def eval_libero(cfg: GenerateConfig) -> None:
 
             if cfg.enable_attack and cfg.load_texture_path is None:
                 print(f"[INFO] Attack training for Task {task_id}...")
+                if attack_trainer is None or renderer is None:
+                    raise RuntimeError(
+                        "攻击已启用，但 renderer/trainer 尚未初始化"
+                    )
                 renderer.reset_texture()
 
+                dummy_env: Any
+                train_task_desc: str
                 dummy_env, train_task_desc = get_libero_env(
                     task, cfg.model_family, resolution=256
                 )
                 dummy_env.close()
 
-                train_adversarial_texture(
-                    cfg, model, processor, renderer,
-                    init_states[0], task, train_task_desc,
-                    artifact_store, episode_idx=task_id,
-                    runtime_assets=runtime_assets,
-                    search_keywords_list=search_kw,
+                attack_trainer.train(
+                    task=task,
+                    task_description=train_task_desc,
+                    fallback_initial_state=init_states[0],
+                    task_id=task_id,
                     num_iters=cfg.attack_iters,
-                    init_states=init_states,
+                    initial_states=init_states,
                 )
 
                 trained_tex_path: Path = artifact_store.save_trained_texture(
@@ -447,7 +306,10 @@ def eval_libero(cfg: GenerateConfig) -> None:
                     timestamp=DATE_TIME,
                     renderer=renderer,
                 )
-                print(f"[INFO] Task {task_id} texture saved → {trained_tex_path}")
+                print(
+                    f"[INFO] Task {task_id} texture saved → "
+                    f"{trained_tex_path}"
+                )
 
                 mirrored_real_texture = runtime_assets.activate_texture(
                     trained_tex_path,
@@ -460,21 +322,27 @@ def eval_libero(cfg: GenerateConfig) -> None:
                         f"{runtime_assets.real_texture_path}"
                     )
 
-            n_eval = min(cfg.num_trials_per_task, len(init_states))
-            for ep in tqdm.tqdm(range(n_eval),
-                                desc=f"Task {task_id} Episodes"):
-                rollout_result = episode_runner.run(
+            n_eval: int = min(
+                cfg.num_trials_per_task,
+                len(init_states),
+            )
+            episode_index: int
+            for episode_index in tqdm.tqdm(
+                range(n_eval),
+                desc=f"Task {task_id} Episodes",
+            ):
+                rollout_result: RolloutResult = episode_runner.run(
                     task=task,
-                    initial_state=init_states[ep],
+                    initial_state=init_states[episode_index],
                     task_id=task_id,
-                    episode_index=ep,
+                    episode_index=episode_index,
                 )
                 if rollout_result.success:
                     total_successes += 1
 
                 total_episodes += 1
-                log_str = (
-                    f"Task: {task_id} | Ep: {ep} | "
+                log_str: str = (
+                    f"Task: {task_id} | Ep: {episode_index} | "
                     f"Success: {rollout_result.success}"
                 )
                 print(log_str)
@@ -489,9 +357,19 @@ def eval_libero(cfg: GenerateConfig) -> None:
                     log_file=log_file,
                 )
 
-        avg_sr = total_successes / total_episodes if total_episodes > 0 else 0.0
-        print(f"\n[DONE] Episodes: {total_episodes} | Attack success rate: {avg_sr:.2%}")
-        log_file.write(f"\nFINAL AVG SUCCESS RATE: {avg_sr:.2%}\n")
+        average_success_rate: float = (
+            total_successes / total_episodes
+            if total_episodes > 0
+            else 0.0
+        )
+        print(
+            f"\n[DONE] Episodes: {total_episodes} | "
+            f"Attack success rate: {average_success_rate:.2%}"
+        )
+        log_file.write(
+            "\nFINAL AVG SUCCESS RATE: "
+            f"{average_success_rate:.2%}\n"
+        )
 
     finally:
         runtime_assets.close(context="Final cleanup")

@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import os
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, Optional, Sequence, TypeAlias, overload
 
@@ -29,6 +30,15 @@ ImageResolution: TypeAlias = tuple[int, int]
 Device: TypeAlias = str | torch.device
 PathLike: TypeAlias = str | Path
 FloatingArray: TypeAlias = NDArray[np.floating[Any]]
+
+
+@dataclass(frozen=True)
+class AdversarialTextureLoadResult:
+    """加载外部对抗纹理后的参数化方式与扰动统计。"""
+
+    source_kind: Literal["parameter", "baked_texture"]
+    max_absolute_delta: float
+    nonzero_percentage: float
 
 
 class DifferentiableRenderer(nn.Module):
@@ -254,6 +264,81 @@ class DifferentiableRenderer(nn.Module):
         """把可学习顶点颜色噪声原地清零。"""
         with torch.no_grad():
             self.adv_noise.data.fill_(0.0)
+
+    def load_adversarial_texture(
+        self,
+        texture_path: PathLike,
+    ) -> AdversarialTextureLoadResult:
+        """从参数 ``.pt`` 或 bake 后的 RGB 图像恢复 ``adv_noise``。
+
+        ``.pt`` 文件应直接包含 float tensor，shape ``[num_vertices, 3]``。
+        其他后缀沿用现有行为，按 RGB 图像处理：先恢复 renderer 内部使用的
+        竖直翻转 UV 方向，再通过当前 mesh UV 把 texture 采样到顶点。最终
+        delta 截断到 ``(-epsilon, epsilon)``，通过 ``atanh`` 转回无界参数。
+
+        该方法集中维护 ``orig_texture``、``orig_vertex_colors`` 和私有 UV
+        sampler 的不变量；调用方不需要临时修改 renderer buffer。
+        """
+        resolved_path: Path = Path(texture_path)
+        source_kind: Literal["parameter", "baked_texture"]
+        delta: Tensor
+
+        if str(resolved_path).endswith(".pt"):
+            source_kind = "parameter"
+            loaded_noise: Tensor = torch.load(
+                resolved_path,
+                map_location=self.adv_noise.device,
+            )
+            with torch.no_grad():
+                self.adv_noise.copy_(loaded_noise)
+                delta = torch.tanh(loaded_noise) * self.epsilon
+        else:
+            source_kind = "baked_texture"
+            with Image.open(resolved_path) as baked_image:
+                # baked_pixels: float32 HWC [texture_height, texture_width, 3]。
+                baked_pixels: FloatingArray = (
+                    np.array(baked_image).astype(np.float32) / 255.0
+                )
+            # baked_texture: float32 NHWC
+            # [1, texture_height, texture_width, 3]。
+            baked_texture: Tensor = (
+                torch.from_numpy(baked_pixels)
+                .unsqueeze(0)
+                .to(self.adv_noise.device)
+            )
+            stored_texture: Tensor = torch.flip(
+                baked_texture,
+                dims=[1],
+            ).contiguous()
+
+            original_texture: Tensor = self.orig_texture
+            try:
+                self.orig_texture = stored_texture
+                loaded_vertex_colors: Tensor = (
+                    self._sample_uv_texture_at_vertices()
+                )
+            finally:
+                self.orig_texture = original_texture
+
+            delta = (
+                loaded_vertex_colors - self.orig_vertex_colors
+            ).clamp(
+                -self.epsilon + 1e-6,
+                self.epsilon - 1e-6,
+            )
+            loaded_noise = torch.atanh(delta / self.epsilon)
+            with torch.no_grad():
+                self.adv_noise.copy_(loaded_noise)
+
+        max_absolute_delta: float = float(delta.abs().max().item())
+        nonzero_percentage: float = float(
+            (delta.abs() > 1e-3).float().mean().item() * 100.0
+        )
+        return AdversarialTextureLoadResult(
+            source_kind=source_kind,
+            max_absolute_delta=max_absolute_delta,
+            nonzero_percentage=nonzero_percentage,
+        )
 
     def calibrate_lighting(
         self,

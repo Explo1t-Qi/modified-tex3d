@@ -5,13 +5,15 @@ SignSGD 参数更新、梯度日志和 live-test 调度。调用方只需提供�
 ``TrainingFrame`` 列表和迭代次数，不需要了解每个 loss 如何按 frame/view
 聚合。
 
-``ViewSampler`` 是为后续 TAAO/EoT 明确保留的 seam。当前唯一 adapter 仍是
-``build_single_view_samples``，因此本轮只改变 module 划分，不实现论文中缺失
-的多视图或 trajectory-aware 算法。
+``ViewSampler`` 是为后续 EoT/多视角生成明确保留的 seam。当前唯一 adapter 是
+``build_single_view_samples``，负责未来 EoT/多视角生成。``FrameBatchSampler``
+是独立的 trajectory-aware seam，默认仍执行随机等权采样。这里只预留替换点，
+不实现论文中缺失的 latent dynamics、criticality scoring 或多视图算法。
 """
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Optional, Protocol, Sequence
 
@@ -61,7 +63,7 @@ class OptimizationRenderer(ForegroundRenderer, Protocol):
 class ViewSampler(Protocol):
     """从一个有效训练帧构造对抗视图的可替换 interface。
 
-    当前 single-view adapter 返回一个 NCHW RGB tensor；未来 TAAO/EoT adapter
+    当前 single-view adapter 返回一个 NCHW RGB tensor；未来 EoT adapter
     可以返回同一帧的多个视图，但必须保持每个 tensor 为浮点 NCHW，
     shape ``[1, 3, render_height, render_width]``，并保留到 renderer 参数的
     梯度。
@@ -74,6 +76,50 @@ class ViewSampler(Protocol):
         render_resolution: int,
     ) -> Sequence[torch.Tensor]:
         ...
+
+
+@dataclass(frozen=True)
+class WeightedTrainingFrame:
+    """optimizer 本轮选中的训练帧及其 loss 权重。"""
+
+    frame: TrainingFrame
+    weight: float
+
+
+class FrameBatchSampler(Protocol):
+    """从完整训练帧池选择并赋权一个 optimizer batch。
+
+    未来 TAAO adapter 可以根据 trajectory latent dynamics 返回非均匀权重。
+    当前训练帧尚未显式保存 trajectory 边界；真正实现 TAAO 时应同步扩展
+    ``TrainingFrame`` schema，而不是在该默认 adapter 中猜测边界。
+    """
+
+    def __call__(
+        self,
+        frames: Sequence[TrainingFrame],
+        batch_size: int,
+    ) -> Sequence[WeightedTrainingFrame]:
+        ...
+
+
+def sample_uniform_frame_batch(
+    frames: Sequence[TrainingFrame],
+    batch_size: int,
+) -> Sequence[WeightedTrainingFrame]:
+    """保持现有随机无放回、按抽取 batch 大小等权的 frame 采样。"""
+    selected_indices: np.ndarray = np.random.choice(
+        len(frames),
+        batch_size,
+        replace=False,
+    )
+    uniform_weight: float = 1.0 / batch_size
+    return [
+        WeightedTrainingFrame(
+            frame=frames[int(frame_index)],
+            weight=uniform_weight,
+        )
+        for frame_index in selected_indices
+    ]
 
 
 IterationCallback = Callable[[int], Any]
@@ -93,12 +139,18 @@ class AttackOptimizer:
         model: OptimizationModel,
         renderer: OptimizationRenderer,
         view_sampler: ViewSampler = build_single_view_samples,
+        frame_batch_sampler: FrameBatchSampler = (
+            sample_uniform_frame_batch
+        ),
         render_resolution: int = 256,
     ) -> None:
         self._cfg: OptimizationConfig = cfg
         self._model: OptimizationModel = model
         self._renderer: OptimizationRenderer = renderer
         self._view_sampler: ViewSampler = view_sampler
+        self._frame_batch_sampler: FrameBatchSampler = (
+            frame_batch_sampler
+        )
         self._render_resolution: int = render_resolution
 
     @staticmethod
@@ -221,22 +273,23 @@ class AttackOptimizer:
             average_feature_loss: float = 0.0
             valid_frame_count: int = 0
 
-            batch_indices: np.ndarray = np.random.choice(
-                frame_pool_size,
-                frame_batch_size,
-                replace=False,
+            selected_frames: Sequence[WeightedTrainingFrame] = (
+                self._frame_batch_sampler(
+                    frames,
+                    frame_batch_size,
+                )
             )
-            frame_index: int
-            for frame_index in batch_indices:
-                frame: TrainingFrame = frames[int(frame_index)]
+            selected_frame: WeightedTrainingFrame
+            for selected_frame in selected_frames:
+                frame: TrainingFrame = selected_frame.frame
                 frame_mvp: Optional[torch.Tensor] = frame["mvp"]
                 if frame_mvp is None:
                     continue
 
-                # 与重构前实现一致：每帧先按抽取 batch 大小加权，随后统计日志时
-                # 再除以有效帧数。
+                # 默认 adapter 与重构前一致：每帧按抽取 batch 大小加权，随后
+                # 统计日志时再除以有效帧数。未来 TAAO adapter 可以替换 weight。
                 frame_weight: torch.Tensor = torch.tensor(
-                    1.0 / frame_batch_size,
+                    selected_frame.weight,
                     device=self._model.device,
                 )
                 view_frame: SingleViewFrame = self._as_single_view_frame(

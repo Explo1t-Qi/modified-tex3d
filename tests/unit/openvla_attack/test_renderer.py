@@ -5,7 +5,10 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import numpy as np
+import torch
 import torch.nn as nn
+from PIL import Image
 
 
 LIBERO_EXPERIMENT_DIR = (
@@ -13,9 +16,98 @@ LIBERO_EXPERIMENT_DIR = (
 )
 sys.path.insert(0, str(LIBERO_EXPERIMENT_DIR))
 
-from openvla_attack.renderer import DifferentiableRenderer
+from openvla_attack.renderer import (
+    AdversarialTextureLoadResult,
+    DifferentiableRenderer,
+)
 
 
 def test_renderer_module_can_be_imported_without_creating_cuda_context() -> None:
     """导入类定义不应提前构造 nvdiffrast CUDA context。"""
     assert issubclass(DifferentiableRenderer, nn.Module)
+
+
+def _minimal_cpu_renderer() -> DifferentiableRenderer:
+    """绕过 CUDA 构造，建立只覆盖纹理加载 interface 的 renderer。"""
+    renderer = DifferentiableRenderer.__new__(DifferentiableRenderer)
+    nn.Module.__init__(renderer)
+    renderer.device = torch.device("cpu")
+    renderer.epsilon = 0.5
+    renderer.adv_noise = nn.Parameter(
+        torch.zeros((2, 3), dtype=torch.float32)
+    )
+    # orig_texture: float32 NHWC [1, texture_height, texture_width, 3]。
+    renderer.orig_texture = torch.zeros(
+        (1, 1, 2, 3),
+        dtype=torch.float32,
+    )
+    renderer.orig_vertex_colors = torch.zeros(
+        (2, 3),
+        dtype=torch.float32,
+    )
+    return renderer
+
+
+def test_renderer_loads_adversarial_parameter_tensor(
+    tmp_path: Path,
+) -> None:
+    renderer: DifferentiableRenderer = _minimal_cpu_renderer()
+    saved_noise = torch.tensor(
+        [[0.2, -0.4, 0.0], [0.1, 0.3, -0.2]],
+        dtype=torch.float32,
+    )
+    noise_path: Path = tmp_path / "noise.pt"
+    torch.save(saved_noise, noise_path)
+
+    result: AdversarialTextureLoadResult = (
+        renderer.load_adversarial_texture(noise_path)
+    )
+
+    torch.testing.assert_close(renderer.adv_noise.detach(), saved_noise)
+    expected_delta = torch.tanh(saved_noise) * renderer.epsilon
+    assert result.source_kind == "parameter"
+    assert result.max_absolute_delta == expected_delta.abs().max().item()
+    assert result.nonzero_percentage == (
+        (expected_delta.abs() > 1e-3).float().mean().item() * 100.0
+    )
+
+
+def test_renderer_converts_baked_png_to_vertex_noise(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    renderer: DifferentiableRenderer = _minimal_cpu_renderer()
+    original_texture: torch.Tensor = renderer.orig_texture
+    image_pixels = np.array(
+        [[[255, 0, 128], [64, 192, 0]]],
+        dtype=np.uint8,
+    )
+    texture_path: Path = tmp_path / "texture.png"
+    Image.fromarray(image_pixels).save(texture_path)
+
+    def sample_current_texture() -> torch.Tensor:
+        # 模拟真实 UV sampler：每个测试顶点分别读取一个 texture pixel。
+        return renderer.orig_texture.reshape(-1, 3)
+
+    monkeypatch.setattr(
+        renderer,
+        "_sample_uv_texture_at_vertices",
+        sample_current_texture,
+    )
+    result: AdversarialTextureLoadResult = (
+        renderer.load_adversarial_texture(texture_path)
+    )
+
+    # loader 临时替换 orig_texture 完成采样后，必须恢复原 buffer。
+    assert renderer.orig_texture is original_texture
+    loaded_delta = torch.tanh(renderer.adv_noise.detach()) * renderer.epsilon
+    expected_vertices = torch.from_numpy(
+        image_pixels.astype(np.float32) / 255.0
+    ).reshape(-1, 3)
+    expected_delta = expected_vertices.clamp(
+        -renderer.epsilon + 1e-6,
+        renderer.epsilon - 1e-6,
+    )
+    torch.testing.assert_close(loaded_delta, expected_delta)
+    assert result.source_kind == "baked_texture"
+    assert result.max_absolute_delta == expected_delta.abs().max().item()
