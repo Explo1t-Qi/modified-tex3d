@@ -2,6 +2,8 @@
 
 记录日期：2026-07-23
 
+最终验收：2026-07-24，已完成
+
 ## 1. 范围与决策
 
 本轮只重构 OpenVLA 的 LIBERO 鲁棒性评估入口：
@@ -201,9 +203,16 @@ GPU smoke 命令与通用验收条件见
 - 正式 rollout
 - XML/真实纹理最终恢复
 
-上述结果覆盖优化器、Attack Artifact 和 Runtime Asset Transaction 的里程碑
-提交。收尾提交 `f6cf29d` 进一步统一了 live/正式 rollout 并移动 Attack Training；
-第一版最终验收需要在该提交上重新执行同一条一轮 GPU smoke。
+上述结果先后覆盖优化器、Attack Artifact 和 Runtime Asset Transaction 的
+里程碑提交。2026-07-24 又在收尾提交 `f6cf29d` 上完成最终 GPU smoke：
+
+- 一轮 Attack Training 正常结束
+- `live_test_every_n_iters=1` 成功触发共享的 live episode 状态机
+- 一个正式评估 episode 正常结束
+- Attack Artifact 正常写入
+- 最终 XML/真实纹理恢复正常
+
+因此 OpenVLA 第一版重构的无 GPU 回归、入口导入和真实 GPU 流程均已验收通过。
 
 Spatial checkpoint：
 `/data/huangsimin/openvla-7b-finetuned-libero-spatial`
