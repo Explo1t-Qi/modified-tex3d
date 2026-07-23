@@ -1,7 +1,6 @@
 import os
 import shutil
 import sys
-import traceback
 import xml.etree.ElementTree as ET
 from collections import deque
 from dataclasses import dataclass
@@ -15,7 +14,6 @@ import torch.nn.functional as F
 import tqdm
 import wandb
 from PIL import Image
-from scipy.spatial.transform import Rotation as R
 from torch.cuda.amp import autocast
 
 # print("[INFO] Setting up OSMesa for CPU Rendering...")
@@ -50,8 +48,14 @@ from openvla_attack.compositing import (
     build_single_view_samples,
     render_and_composite,
 )
+from openvla_attack.evaluation import LiberoEpisodeRunner
 from openvla_attack.objective import get_attack_loss
 from openvla_attack.renderer import DifferentiableRenderer
+from openvla_attack.scene import (
+    compute_render_mvp,
+    find_target_body_pose,
+    render_background_without_target,
+)
 
 sys.path.append(str(Path(__file__).parent.parent))
 
@@ -64,122 +68,6 @@ from robot_utils import (
     DATE_TIME, get_action, get_image_resize_size, get_model,
     invert_gripper_action, normalize_gripper_action, set_seed_everywhere,
 )
-
-
-def get_obj_name(mod, idx, obj_type):
-    short_type_map = {
-        "texture": "tex", "material": "mat",
-        "geom": "geom", "body": "body", "camera": "cam",
-    }
-    short_type = short_type_map.get(obj_type, obj_type)
-    func_name = f"{short_type}_id2name"
-    if hasattr(mod, func_name):
-        try:
-            return getattr(mod, func_name)(idx)
-        except Exception:
-            pass
-    if hasattr(mod, "id2name"):
-        try:
-            return mod.id2name(idx, obj_type)
-        except Exception:
-            pass
-    return None
-
-
-def get_target_model_matrix(env, search_keywords_list: List[List[str]]):
-    sim = env.unwrapped.sim if hasattr(env, "unwrapped") else env.sim
-    target_body_id = -1
-    found_name = None
-
-    for keywords in search_keywords_list:
-        if hasattr(sim.model, "nbody"):
-            for i in range(sim.model.nbody):
-                name = get_obj_name(sim.model, i, "body")
-                if not name or "vis" in name or "site" in name:
-                    continue
-                if all(k in name for k in keywords):
-                    target_body_id = i
-                    found_name = name
-                    break
-        if target_body_id != -1:
-            break
-
-    if target_body_id == -1:
-        print(f"[WARNING] Could not find target body for {search_keywords_list}. Using fallback matrix.")
-        fallback = torch.eye(4).cuda()
-        fallback[2, 3] = 0.85
-        return fallback, -1, None
-
-    pos = sim.data.body_xpos[target_body_id]
-    quat = sim.data.body_xquat[target_body_id]
-    rot = R.from_quat([quat[1], quat[2], quat[3], quat[0]])
-    mat = np.eye(4, dtype=np.float32)
-    mat[:3, :3] = rot.as_matrix()
-    mat[:3, 3] = pos
-    return torch.from_numpy(mat).cuda(), target_body_id, found_name
-
-
-def get_render_mvp_from_matrix(
-        env,
-        model_matrix,
-        resolution=(256, 256),
-        proj_flip_x: float = -1.0,
-        proj_flip_y: float = -1.0,
-):
-    sim = env.sim if not hasattr(env, "unwrapped") else env.unwrapped.sim
-    W, H = resolution
-
-    cam_id = 0
-    try:
-        cam_id = sim.model.camera_name2id("agentview")
-    except Exception:
-        print("[WARNING] Camera 'agentview' not found, using camera 0.")
-
-    cam_pos = sim.data.cam_xpos[cam_id]
-    cam_xmat = sim.data.cam_xmat[cam_id].reshape(3, 3)
-
-    view_rot = cam_xmat.T
-    view_mtx = np.eye(4, dtype=np.float32)
-    view_mtx[:3, :3] = view_rot
-    view_mtx[:3, 3] = -(view_rot @ cam_pos)
-
-    fovy_deg = float(sim.model.cam_fovy[cam_id])
-    aspect = float(W) / float(H)
-    near, far = 0.01, 10.0
-    f = 1.0 / np.tan(np.deg2rad(fovy_deg) / 2.0)
-
-    proj_mtx = np.zeros((4, 4), dtype=np.float32)
-    proj_mtx[0, 0] = proj_flip_x * f / aspect
-    proj_mtx[1, 1] = proj_flip_y * f
-    proj_mtx[2, 2] = (far + near) / (near - far)
-    proj_mtx[2, 3] = (2 * far * near) / (near - far)
-    proj_mtx[3, 2] = -1.0
-
-    return (
-            torch.from_numpy(proj_mtx).cuda()
-            @ torch.from_numpy(view_mtx).cuda()
-            @ model_matrix
-    )
-
-
-def _render_bg_without_target(env, body_id: int, resolution: int):
-    """临时把目标 body 所有 geom 的 alpha 设为 0，渲一帧无目标物体的背景，渲完立刻还原。
-    不影响物理状态/obs，MuJoCo 原生视频/物理推进完全不受影响。"""
-    sim = env.unwrapped.sim if hasattr(env, "unwrapped") else env.sim
-    geom_ids = [g for g in range(sim.model.ngeom) if sim.model.geom_bodyid[g] == body_id]
-    if not geom_ids:
-        return None
-    orig_alpha = [float(sim.model.geom_rgba[g, 3]) for g in geom_ids]
-    try:
-        for g in geom_ids:
-            sim.model.geom_rgba[g, 3] = 0.0
-        img = sim.render(width=resolution, height=resolution, camera_name="agentview", mode="offscreen")
-        img = img[::-1, ::-1]
-    finally:
-        for g, a in zip(geom_ids, orig_alpha):
-            sim.model.geom_rgba[g, 3] = a
-    return img
-
 
 def train_adversarial_texture(
         cfg, model, processor, renderer,
@@ -236,15 +124,33 @@ def train_adversarial_texture(
             bg_tensor = (torch.from_numpy(img_np).float().to(device) / 255.0
                          ).permute(2, 0, 1).unsqueeze(0)
 
-            model_matrix, body_id, found_name = get_target_model_matrix(env, search_keywords_list)
-            mvp = (get_render_mvp_from_matrix(env, model_matrix, resolution=(RENDER_RES, RENDER_RES))
-                   if body_id != -1 else None)
+            target_pose = find_target_body_pose(
+                env,
+                search_keywords_list,
+                device,
+            )
+            model_matrix = target_pose.model_matrix
+            body_id = target_pose.body_id
+            found_name = target_pose.body_name
+            mvp = (
+                compute_render_mvp(
+                    env,
+                    model_matrix,
+                    resolution=(RENDER_RES, RENDER_RES),
+                )
+                if body_id != -1
+                else None
+            )
             if body_id != -1:
                 print(f"  [状态{_si} 步{t}] 目标 body: '{found_name}'")
             else:
                 print(f"  [状态{_si} 步{t}] 未找到目标 body")
 
-            _bg_no_obj_np = _render_bg_without_target(env, body_id, RENDER_RES) if body_id != -1 else None
+            _bg_no_obj_np = (
+                render_background_without_target(env, body_id, RENDER_RES)
+                if body_id != -1
+                else None
+            )
             bg_tensor_no_obj = (
                 (torch.from_numpy(_bg_no_obj_np.copy()).float().to(device) / 255.0
                  ).permute(2, 0, 1).unsqueeze(0)
@@ -408,14 +314,35 @@ def train_adversarial_texture(
             bg_tensor = (torch.from_numpy(img_np).float().to(device) / 255.0
                          ).permute(2, 0, 1).unsqueeze(0)
 
-            model_matrix, body_id, _ = get_target_model_matrix(test_env, search_keywords_list)
-            mvp = (get_render_mvp_from_matrix(
-                test_env, model_matrix,
-                resolution=(cfg.live_test_resolution, cfg.live_test_resolution),
-            ) if body_id != -1 else None)
+            target_pose = find_target_body_pose(
+                test_env,
+                search_keywords_list,
+                device,
+            )
+            model_matrix = target_pose.model_matrix
+            body_id = target_pose.body_id
+            mvp = (
+                compute_render_mvp(
+                    test_env,
+                    model_matrix,
+                    resolution=(
+                        cfg.live_test_resolution,
+                        cfg.live_test_resolution,
+                    ),
+                )
+                if body_id != -1
+                else None
+            )
 
-            _bg_no_obj = _render_bg_without_target(test_env, body_id,
-                                                   cfg.live_test_resolution) if body_id != -1 else None
+            _bg_no_obj = (
+                render_background_without_target(
+                    test_env,
+                    body_id,
+                    cfg.live_test_resolution,
+                )
+                if body_id != -1
+                else None
+            )
             composite_bg = (
                 (torch.from_numpy(_bg_no_obj.copy()).float().to(device) / 255.0
                  ).permute(2, 0, 1).unsqueeze(0)
@@ -716,10 +643,18 @@ def eval_libero(cfg: GenerateConfig) -> None:
         ).to(model.device)
     total_episodes = 0
     total_successes = 0
+    video_resolution = 512
+    episode_runner = LiberoEpisodeRunner(
+        cfg=cfg,
+        model=model,
+        processor=processor,
+        renderer=renderer,
+        search_keywords=search_kw,
+        video_resolution=video_resolution,
+        max_steps=300,
+    )
 
     try:
-        VIDEO_RES = 512
-
         for task_id in tqdm.tqdm(target_tasks, desc="Tasks"):
             _restore_clean_assets(f"Before Task {task_id}", remove_backups=False)
 
@@ -826,94 +761,31 @@ def eval_libero(cfg: GenerateConfig) -> None:
             n_eval = min(cfg.num_trials_per_task, len(init_states))
             for ep in tqdm.tqdm(range(n_eval),
                                 desc=f"Task {task_id} Episodes"):
-                env, task_description = get_libero_env(
-                    task, cfg.model_family, resolution=VIDEO_RES
+                rollout_result = episode_runner.run(
+                    task=task,
+                    initial_state=init_states[ep],
+                    task_id=task_id,
+                    episode_index=ep,
                 )
-                env.reset()
-                obs = env.set_init_state(init_states[ep])
-                env.env.sim.forward()
-
-                t, max_steps, done, replay_images = 0, 300, False, []
-
-                while t < max_steps + cfg.num_steps_wait:
-                    try:
-                        if t < cfg.num_steps_wait:
-                            obs, _, _, _ = env.step(
-                                get_libero_dummy_action(cfg.model_family)
-                            )
-                            t += 1
-                            continue
-
-                        img_high = get_libero_image(obs, VIDEO_RES)
-                        model_input_size = get_image_resize_size(cfg)
-
-                        if renderer is not None:
-                            bg = (torch.from_numpy(img_high).float().to(model.device) / 255.0
-                                  ).permute(2, 0, 1).unsqueeze(0)
-                            mm, bid, _ = get_target_model_matrix(env, search_kw)
-                            mvp = (get_render_mvp_from_matrix(env, mm, resolution=(VIDEO_RES, VIDEO_RES))
-                                   if bid != -1 else None)
-                            _bg_np = _render_bg_without_target(env, bid, VIDEO_RES) if bid != -1 else None
-                            composite_bg = (
-                                (torch.from_numpy(_bg_np.copy()).float().to(model.device) / 255.0
-                                 ).permute(2, 0, 1).unsqueeze(0)
-                                if _bg_np is not None else bg
-                            )
-                            with torch.no_grad():
-                                comp = render_and_composite(
-                                    renderer,
-                                    composite_bg,
-                                    mvp,
-                                    resolution=(VIDEO_RES, VIDEO_RES),
-                                    model_rotation=mm[:3, :3],
-                                )
-                            frame_np = (comp[0].permute(1, 2, 0).cpu().numpy() * 255).astype(np.uint8)
-                            img_model = np.array(Image.fromarray(frame_np).resize(
-                                (model_input_size, model_input_size)))
-                        else:
-                            frame_np = img_high
-                            img_model = np.array(
-                                Image.fromarray(img_high).resize((model_input_size, model_input_size)))
-
-                        replay_images.append(img_high)
-
-                        observation = {
-                            "full_image": img_model,
-                            "state": np.concatenate((
-                                obs["robot0_eef_pos"],
-                                quat2axisangle(obs["robot0_eef_quat"]),
-                                obs["robot0_gripper_qpos"],
-                            )),
-                        }
-                        action = get_action(
-                            cfg, model, observation, task_description, processor=processor
-                        )
-                        action = normalize_gripper_action(action, binarize=True)
-                        if cfg.model_family == "openvla":
-                            action = invert_gripper_action(action)
-
-                        obs, _, done, _ = env.step(action.tolist())
-                        if done:
-                            total_successes += 1
-                            break
-                        t += 1
-                    except Exception as e:
-                        print(f"[ERROR] Task {task_id} Ep {ep} step {t}: {e}")
-                        traceback.print_exc()
-                        break
+                if rollout_result.success:
+                    total_successes += 1
 
                 total_episodes += 1
-                log_str = f"Task: {task_id} | Ep: {ep} | Success: {done}"
+                log_str = (
+                    f"Task: {task_id} | Ep: {ep} | "
+                    f"Success: {rollout_result.success}"
+                )
                 print(log_str)
                 log_file.write(log_str + "\n")
                 log_file.flush()
 
                 save_rollout_video(
-                    replay_images, total_episodes,
-                    success=done, task_description=task_description,
+                    rollout_result.replay_images,
+                    total_episodes,
+                    success=rollout_result.success,
+                    task_description=rollout_result.task_description,
                     log_file=log_file,
                 )
-                env.close()
 
         avg_sr = total_successes / total_episodes if total_episodes > 0 else 0.0
         print(f"\n[DONE] Episodes: {total_episodes} | Attack success rate: {avg_sr:.2%}")

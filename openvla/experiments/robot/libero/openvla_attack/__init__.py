@@ -1,7 +1,8 @@
-"""OpenVLA 对抗纹理实验的模型专用逻辑。
+"""OpenVLA 对抗纹理实验的模型专用实现。
 
-该包只承载 OpenVLA 特有的攻击语义，不负责 LIBERO 环境创建、模型加载或
-实验流程编排。这样纯计算逻辑可以脱离 GPU 和仿真环境单独验证。
+``attack_openvla.py`` 只保留跨 task 的实验编排；本包集中攻击目标、场景坐标、
+图像合成、renderer 与单 episode 评估逻辑。这里不在包初始化时导入
+``evaluation``，避免只使用纯计算 module 的调用方被迫加载 LIBERO/Robosuite。
 """
 
 from .action_codec import decode_action_from_generated_ids
