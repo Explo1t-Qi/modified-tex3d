@@ -17,6 +17,14 @@ _Avoid_: current image, injected file
 攻击运行写入日志目录的可复查输出，包括噪声参数、UV texture、loss、日志和视频。
 _Avoid_: runtime asset, model asset
 
+**Training Frame**:
+从一条 LIBERO trajectory 采集的场景姿态、背景、clean action token、hidden state 和视觉归一化参数。
+_Avoid_: image, observation
+
+**Attack Training**:
+在一个 task 上采集 **Training Frame**、优化对抗纹理并生成 **Attack Artifact** 的完整过程。
+_Avoid_: optimizer loop, attack step
+
 **Runtime Asset Transaction**:
 一次评估运行内对 **Clean Asset** 进行临时修改并保证最终恢复的生命周期。
 _Avoid_: file helper, XML utility
@@ -26,6 +34,7 @@ _Avoid_: file helper, XML utility
 - 一个 **Runtime Asset Transaction** 保存一组 **Clean Asset**
 - 一个 **Runtime Asset Transaction** 在任一时刻激活至多一个 **Active Texture**
 - 一个 **Attack Artifact** 可以被选为 **Active Texture**，但不会因此成为 **Clean Asset**
+- 一次 **Attack Training** 消费多个 **Training Frame** 并生成一组 **Attack Artifact**
 - 每个 task 开始前和评估退出时，**Active Texture** 都恢复为 **Clean Asset**
 
 ## Example dialogue

@@ -2,6 +2,12 @@
 
 记录日期：2026-07-22
 
+> 本文是提交 `b4c2e7c` 上的重构前快照。第一版重构现已完成；当前 module
+> 划分、数据流、扩展 seam 和验收结果见
+> [openvla-stage-1-architecture.md](openvla-stage-1-architecture.md)。
+> 基线阶段使用的单体脚本 characterization test 已在行为迁移到直接 module
+> 测试后删除。
+
 ## 基线范围
 
 阶段一只刻画 `openvla/experiments/robot/libero/attack_openvla.py` 的现有行为，不调整生产代码。后续重构以当前代码行为为准；论文中尚未实现的 TAAO 等模块只预留扩展边界，不在此阶段补实现。
@@ -92,4 +98,4 @@ openvla/experiments/robot/libero/attack_openvla.py \
 
 ## 下一阶段的使用方式
 
-后续拆分 attack objective、action codec、compositor/view sampler 和 asset registry 时，每次只移动一个行为边界并运行上述无 GPU 测试。GPU smoke 在里程碑边界运行，而不是每个小提交都运行。TAAO/EoT 后续应通过 view sampler 接口增加多视图采样；当前的单视图测试届时应由新策略测试明确替换。
+后续拆分 attack objective、action codec、compositor/view sampler 和 asset registry 时，每次只移动一个行为边界并运行上述无 GPU 测试。GPU smoke 在里程碑边界运行，而不是每个小提交都运行。重构完成后明确：EoT/多视图通过 `ViewSampler` seam 接入；TAAO 的 trajectory-aware frame selection/weighting 通过独立的 `FrameBatchSampler` seam 接入。
