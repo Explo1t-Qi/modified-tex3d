@@ -83,8 +83,8 @@ def test_attack_training_returns_loss_history_after_frame_collector_owns_env(
         task_description="pick up the bowl",
         artifact_store=artifact_store,
         episode_idx=0,
+        runtime_assets=object(),
         search_keywords_list=[["akita", "bowl"]],
-        xml_path=tmp_path / "asset.xml",
         num_iters=0,
         init_states=[],
     )

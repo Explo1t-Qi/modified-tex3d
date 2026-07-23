@@ -1,7 +1,5 @@
 import os
-import shutil
 import sys
-import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional, TextIO, Union
@@ -48,6 +46,7 @@ from openvla_attack.evaluation import LiberoEpisodeRunner
 from openvla_attack.frame_collection import TrainingFrame, TrainingFrameCollector
 from openvla_attack.optimization import AttackOptimizer
 from openvla_attack.renderer import DifferentiableRenderer
+from openvla_attack.runtime_assets import RuntimeAssetTransaction
 from openvla_attack.scene import (
     compute_render_mvp,
     find_target_body_pose,
@@ -70,8 +69,8 @@ def train_adversarial_texture(
         cfg, model, processor, renderer,
         initial_obs_state, task, task_description,
         artifact_store: AttackArtifactStore, episode_idx: int,
+        runtime_assets: RuntimeAssetTransaction,
         search_keywords_list: List[List[str]],
-        xml_path,
         num_iters=20,
         init_states=None,
 ) -> list[float]:
@@ -103,30 +102,16 @@ def train_adversarial_texture(
         episode_index=episode_idx
     )
 
-    def _inject_eval_texture(texture_path: Path) -> None:
-        """把已落盘的 live texture 写入当前 LIBERO XML。"""
-        tree = ET.parse(xml_path)
-        root = tree.getroot()
-        tex_name = f"tex-{cfg.object_name}"
-        mat_name = f"mat-{cfg.object_name}"
-        for asset_elem in root.findall("asset"):
-            for tex_elem in asset_elem.findall("texture"):
-                if tex_elem.get("name") == tex_name:
-                    tex_elem.set("file", str(texture_path.resolve()))
-                    tex_elem.set("type", "2d")
-                    break
-        for mat_elem in root.findall(".//material"):
-            if mat_elem.get("name") == mat_name:
-                mat_elem.set("texuniform", "false")
-        tree.write(xml_path)
-
     def _run_live_test(i: int) -> bool:
         snapshot_paths: LiveSnapshotPaths = artifact_store.save_live_snapshot(
             episode_index=episode_idx,
             iteration=i,
             renderer=renderer,
         )
-        _inject_eval_texture(snapshot_paths.texture_path)
+        runtime_assets.activate_texture(
+            snapshot_paths.texture_path,
+            mirror_real_texture=False,
+        )
 
         if init_states is not None and len(init_states) > 1:
             chosen_state = init_states[np.random.randint(len(init_states))]
@@ -342,52 +327,18 @@ def eval_libero(cfg: GenerateConfig) -> None:
         ),
     )
     log_file: TextIO = artifact_store.open_run_log()
-    original_xml: Path = Path(xml_path)
 
     if cfg.use_wandb:
         wandb.init(project=cfg.wandb_project, entity=cfg.wandb_entity, name=run_id)
 
-    if not original_xml.exists():
-        raise FileNotFoundError(f"XML asset not found at {original_xml}")
-    global_clean_backup = original_xml.with_name(
-        f"{original_xml.stem}_clean_backup_{DATE_TIME}{original_xml.suffix}"
+    runtime_assets: RuntimeAssetTransaction = (
+        RuntimeAssetTransaction.begin(
+            xml_path=xml_path,
+            real_texture_path=texture_path,
+            object_name=cfg.object_name,
+            backup_tag=DATE_TIME,
+        )
     )
-    shutil.copy(original_xml, global_clean_backup)
-
-    _real_tex_path = Path(texture_path)
-    if not _real_tex_path.is_absolute():
-        _real_tex_path = (Path.cwd() / _real_tex_path).resolve()
-    _real_tex_backup = None
-    if _real_tex_path.exists():
-        _real_tex_backup = _real_tex_path.with_name(f"texture_clean_backup_{DATE_TIME}.png")
-        shutil.copy(_real_tex_path, _real_tex_backup)
-    else:
-        print(f"[WARNING] Real MuJoCo texture not found at {_real_tex_path}, MuJoCo video may look clean")
-
-    import signal, atexit
-
-    def _restore_clean_assets(context: str, remove_backups: bool = False):
-        if global_clean_backup.exists():
-            shutil.copy(global_clean_backup, original_xml)
-            if remove_backups:
-                global_clean_backup.unlink(missing_ok=True)
-            print(f"[INFO] {context} Original XML restored.")
-        if _real_tex_backup is not None and _real_tex_backup.exists():
-            shutil.copy(_real_tex_backup, _real_tex_path)
-            if remove_backups:
-                _real_tex_backup.unlink(missing_ok=True)
-            print(f"[INFO] {context} Real MuJoCo texture restored.")
-
-    def _restore_xml_on_exit():
-        _restore_clean_assets("(exit handler)", remove_backups=True)
-
-    def _sig_handler(signum, frame):
-        _restore_xml_on_exit()
-        raise SystemExit(f"Caught signal {signum}, exiting cleanly.")
-
-    atexit.register(_restore_xml_on_exit)
-    signal.signal(signal.SIGTERM, _sig_handler)
-    signal.signal(signal.SIGINT, _sig_handler)
 
     benchmark_dict = benchmark.get_benchmark_dict()
     task_suite_obj = benchmark_dict[task_suite_name]()
@@ -421,7 +372,10 @@ def eval_libero(cfg: GenerateConfig) -> None:
 
     try:
         for task_id in tqdm.tqdm(target_tasks, desc="Tasks"):
-            _restore_clean_assets(f"Before Task {task_id}", remove_backups=False)
+            runtime_assets.restore(
+                context=f"Before Task {task_id}",
+                remove_backups=False,
+            )
 
             task = task_suite_obj.get_task(task_id)
             init_states = task_suite_obj.get_task_init_states(task_id)
@@ -456,22 +410,18 @@ def eval_libero(cfg: GenerateConfig) -> None:
                     task_id=task_id,
                     renderer=renderer,
                 )
-                tree = ET.parse(original_xml)
-                root = tree.getroot()
-                for asset_elem in root.findall("asset"):
-                    for tex_elem in asset_elem.findall("texture"):
-                        if tex_elem.get("name") == f"tex-{cfg.object_name}":
-                            tex_elem.set("file", str(Path(adv_tex_inj_path).resolve()))
-                            tex_elem.set("type", "2d")
-                            break
-                for mat_elem in root.findall(".//material"):
-                    if mat_elem.get("name") == f"mat-{cfg.object_name}":
-                        mat_elem.set("texuniform", "false")
-                tree.write(original_xml)
+                mirrored_real_texture: bool = (
+                    runtime_assets.activate_texture(
+                        adv_tex_inj_path,
+                        mirror_real_texture=True,
+                    )
+                )
                 print(f"[INFO] MuJoCo XML updated with adversarial texture → {adv_tex_inj_path}")
-                if _real_tex_path.exists() or _real_tex_backup is not None:
-                    shutil.copy(adv_tex_inj_path, _real_tex_path)
-                    print(f"[INFO] Real MuJoCo texture overwritten → {_real_tex_path}")
+                if mirrored_real_texture:
+                    print(
+                        "[INFO] Real MuJoCo texture overwritten → "
+                        f"{runtime_assets.real_texture_path}"
+                    )
 
             if cfg.enable_attack and cfg.load_texture_path is None:
                 print(f"[INFO] Attack training for Task {task_id}...")
@@ -486,8 +436,8 @@ def eval_libero(cfg: GenerateConfig) -> None:
                     cfg, model, processor, renderer,
                     init_states[0], task, train_task_desc,
                     artifact_store, episode_idx=task_id,
+                    runtime_assets=runtime_assets,
                     search_keywords_list=search_kw,
-                    xml_path=original_xml,
                     num_iters=cfg.attack_iters,
                     init_states=init_states,
                 )
@@ -499,24 +449,16 @@ def eval_libero(cfg: GenerateConfig) -> None:
                 )
                 print(f"[INFO] Task {task_id} texture saved → {trained_tex_path}")
 
-                tree = ET.parse(original_xml)
-                root = tree.getroot()
-                tex_name = f"tex-{cfg.object_name}"
-                mat_name = f"mat-{cfg.object_name}"
-                for asset_elem in root.findall("asset"):
-                    for tex_elem in asset_elem.findall("texture"):
-                        if tex_elem.get("name") == tex_name:
-                            tex_elem.set("file", str(Path(trained_tex_path).resolve()))
-                            tex_elem.set("type", "2d")
-                            break
-                for mat_elem in root.findall(".//material"):
-                    if mat_elem.get("name") == mat_name:
-                        mat_elem.set("texuniform", "false")
-                tree.write(original_xml)
+                mirrored_real_texture = runtime_assets.activate_texture(
+                    trained_tex_path,
+                    mirror_real_texture=True,
+                )
                 print(f"[INFO] XML updated for Task {task_id}.")
-                if _real_tex_path.exists() or _real_tex_backup is not None:
-                    shutil.copy(trained_tex_path, _real_tex_path)
-                    print(f"[INFO] Real MuJoCo texture overwritten → {_real_tex_path}")
+                if mirrored_real_texture:
+                    print(
+                        "[INFO] Real MuJoCo texture overwritten → "
+                        f"{runtime_assets.real_texture_path}"
+                    )
 
             n_eval = min(cfg.num_trials_per_task, len(init_states))
             for ep in tqdm.tqdm(range(n_eval),
@@ -552,7 +494,7 @@ def eval_libero(cfg: GenerateConfig) -> None:
         log_file.write(f"\nFINAL AVG SUCCESS RATE: {avg_sr:.2%}\n")
 
     finally:
-        _restore_clean_assets("Final cleanup", remove_backups=True)
+        runtime_assets.close(context="Final cleanup")
         log_file.close()
         if cfg.use_wandb:
             wandb.finish()
