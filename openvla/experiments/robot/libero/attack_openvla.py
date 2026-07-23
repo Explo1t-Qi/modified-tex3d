@@ -9,11 +9,9 @@ from typing import Optional, Union, List
 import draccus
 import numpy as np
 import torch
-import torch.nn.functional as F
 import tqdm
 import wandb
 from PIL import Image
-from torch.cuda.amp import autocast
 
 # print("[INFO] Setting up OSMesa for CPU Rendering...")
 os.environ['MUJOCO_GL'] = 'egl'
@@ -42,14 +40,10 @@ from libero_utils import (
     get_libero_dummy_action, get_libero_env, get_libero_image,
     quat2axisangle, save_rollout_video,
 )
-from openvla_attack.compositing import (
-    SingleViewFrame,
-    build_single_view_samples,
-    render_and_composite,
-)
+from openvla_attack.compositing import render_and_composite
 from openvla_attack.evaluation import LiberoEpisodeRunner
 from openvla_attack.frame_collection import TrainingFrame, TrainingFrameCollector
-from openvla_attack.objective import get_attack_loss
+from openvla_attack.optimization import AttackOptimizer
 from openvla_attack.renderer import DifferentiableRenderer
 from openvla_attack.scene import (
     compute_render_mvp,
@@ -99,15 +93,8 @@ def train_adversarial_texture(
         fallback_initial_state=initial_obs_state,
         initial_states=init_states,
     )
-    pool_size = len(frame_pool)
-    batch_size = min(cfg.num_frames_to_attack, pool_size)
-
-    pgd_step = cfg.attack_lr
-    loss_history: list[float] = []
 
     grad_log_path = os.path.join(save_dir, f"Ep{episode_idx}_gradient_log.txt")
-    with open(grad_log_path, "w") as f:
-        f.write("Iter | Total Loss | Action Loss | Feature Loss | Grad Norm | LR\n")
 
     def _bake_and_inject_eval_texture(tag):
         with torch.no_grad():
@@ -248,100 +235,18 @@ def train_adversarial_texture(
         print(f"[LIVE-TEST] iter={i} success={done2} | video={video_path}")
         return done2
 
-    iterator = tqdm.tqdm(range(num_iters), desc="Optimizing", leave=False)
-    for i in iterator:
-        renderer.adv_noise.grad = None
-        avg_total = avg_action = avg_feat = 0.0
-        valid = 0
-
-        batch_idx = np.random.choice(pool_size, batch_size, replace=False)
-        batch_frames = [frame_pool[j] for j in batch_idx]
-
-        for t, fdata in enumerate(batch_frames):
-            frame_mvp = fdata["mvp"]
-            if frame_mvp is None:
-                continue
-
-            w_t = torch.tensor(1.0 / batch_size, device=device)
-
-            # collector 允许 mvp=None 表示目标定位失败；经过上面的收窄后，
-            # 这里构造 compositing module 所需的必选 MVP interface。
-            single_view_frame: SingleViewFrame = {
-                "mvp": frame_mvp,
-                "bg_tensor": fdata["bg_tensor"],
-                "bg_tensor_no_obj": fdata["bg_tensor_no_obj"],
-                "model_rot": fdata["model_rot"],
-            }
-            adv_samples = build_single_view_samples(
-                renderer,
-                single_view_frame,
-                render_resolution=RENDER_RES,
-            )
-
-            sample_action_losses = []
-            sample_feat_losses = []
-
-            for sample_idx, adv_img in enumerate(adv_samples):
-                adv_224 = F.interpolate(
-                    adv_img,
-                    size=(fdata["model_input_size"], fdata["model_input_size"]),
-                    mode="bilinear", align_corners=False,
-                )
-
-                pv = torch.cat(
-                    [(adv_224 - fdata["siglip_mean"]) / fdata["siglip_std"],
-                     (adv_224 - fdata["dino_mean"]) / fdata["dino_std"]], dim=1
-                )
-
-                with autocast(dtype=torch.bfloat16):
-                    outputs = model(
-                        input_ids=fdata["clean_output_ids"],
-                        attention_mask=torch.ones_like(fdata["clean_output_ids"]),
-                        pixel_values=pv.to(torch.bfloat16),
-                        output_hidden_states=True,
-                    )
-
-                sample_action_losses.append(get_attack_loss(outputs.logits, fdata["clean_output_ids"]))
-                sample_feat_losses.append(-F.mse_loss(outputs.hidden_states[-1], fdata["clean_hidden"]))
-
-            loss_action = torch.stack(sample_action_losses).mean()
-            loss_feature = torch.stack(sample_feat_losses).mean()
-
-            frame_loss = w_t * (
-                    cfg.alpha_action * loss_action +
-                    cfg.alpha_feature * loss_feature
-            )
-            frame_loss.backward()
-
-            avg_total += frame_loss.item()
-            avg_action += loss_action.item()
-            avg_feat += loss_feature.item()
-            valid += 1
-
-        if valid > 0:
-            avg_total /= valid
-            avg_action /= valid
-            avg_feat /= valid
-        loss_history.append(avg_total)
-
-        grad = renderer.adv_noise.grad
-        g_norm = grad.norm().item() if grad is not None else 0.0
-
-        with open(grad_log_path, "a") as f:
-            f.write(f"{i:02d} | {avg_total:.6f} | {avg_action:.6f} | "
-                    f"{avg_feat:.6f} | {g_norm:.6e} | {pgd_step:.6e}\n")
-
-        with torch.no_grad():
-            renderer.adv_noise.data -= pgd_step * grad.sign()
-        iterator.set_postfix(
-            act=f"{avg_action:.4f}",
-            feat=f"{avg_feat:.4f}",
-            gnorm=f"{g_norm:.4f}",
-        )
-
-        if (cfg.live_test_enabled and cfg.live_test_every_n_iters > 0
-                and (i + 1) % cfg.live_test_every_n_iters == 0):
-            _run_live_test(i + 1)
+    optimizer = AttackOptimizer(
+        cfg=cfg,
+        model=model,
+        renderer=renderer,
+        render_resolution=RENDER_RES,
+    )
+    loss_history: list[float] = optimizer.optimize(
+        frames=frame_pool,
+        num_iters=num_iters,
+        gradient_log_path=grad_log_path,
+        iteration_callback=_run_live_test,
+    )
 
     if cfg.save_attack_artifacts:
         torch.save(
