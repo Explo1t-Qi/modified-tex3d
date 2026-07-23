@@ -2,7 +2,6 @@ import os
 import shutil
 import sys
 import xml.etree.ElementTree as ET
-from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, Union, List
@@ -43,12 +42,13 @@ from libero_utils import (
     get_libero_dummy_action, get_libero_env, get_libero_image,
     quat2axisangle, save_rollout_video,
 )
-from openvla_attack.action_codec import decode_action_from_generated_ids
 from openvla_attack.compositing import (
+    SingleViewFrame,
     build_single_view_samples,
     render_and_composite,
 )
 from openvla_attack.evaluation import LiberoEpisodeRunner
+from openvla_attack.frame_collection import TrainingFrame, TrainingFrameCollector
 from openvla_attack.objective import get_attack_loss
 from openvla_attack.renderer import DifferentiableRenderer
 from openvla_attack.scene import (
@@ -85,171 +85,20 @@ def train_adversarial_texture(
     model_input_size = get_image_resize_size(cfg)
     device = model.device
 
-    siglip_mean = torch.tensor([0.5, 0.5, 0.5], device=device).view(1, 3, 1, 1)
-    siglip_std = torch.tensor([0.5, 0.5, 0.5], device=device).view(1, 3, 1, 1)
-    dino_mean = torch.tensor([0.485, 0.456, 0.406], device=device).view(1, 3, 1, 1)
-    dino_std = torch.tensor([0.229, 0.224, 0.225], device=device).view(1, 3, 1, 1)
-
-    _avail = init_states if (init_states is not None and len(init_states) > 0) else [initial_obs_state]
-    n_train_states = min(cfg.num_train_init_states, len(_avail))
-    train_states = [_avail[i] for i in range(n_train_states)]
-    frames_per_state = max(1, cfg.train_frames_per_state)
-
-    frame_data = []
-    calib_done = False
-    calib_count = 0
-
-    for _si, _train_state in enumerate(train_states):
-        env, _ = get_libero_env(task, cfg.model_family, resolution=RENDER_RES)
-        env.reset()
-        obs = env.set_init_state(_train_state)
-        env.env.sim.forward()
-
-        if cfg.frame_collect_with_policy:
-            for _ in range(cfg.num_steps_wait):
-                obs, _, _, _ = env.step(get_libero_dummy_action(cfg.model_family))
-
-        if cfg.collect_grasp_frames:
-            state_frames = deque(maxlen=cfg.grasp_pre_frames)
-            loop_max = cfg.grasp_max_steps
-        else:
-            state_frames = []
-            loop_max = frames_per_state
-
-        grasp_detected = False
-        post_count = 0
-
-        for t in range(loop_max):
-            img_np = get_libero_image(obs, RENDER_RES)
-            bg_tensor = (torch.from_numpy(img_np).float().to(device) / 255.0
-                         ).permute(2, 0, 1).unsqueeze(0)
-
-            target_pose = find_target_body_pose(
-                env,
-                search_keywords_list,
-                device,
-            )
-            model_matrix = target_pose.model_matrix
-            body_id = target_pose.body_id
-            found_name = target_pose.body_name
-            mvp = (
-                compute_render_mvp(
-                    env,
-                    model_matrix,
-                    resolution=(RENDER_RES, RENDER_RES),
-                )
-                if body_id != -1
-                else None
-            )
-            if body_id != -1:
-                print(f"  [状态{_si} 步{t}] 目标 body: '{found_name}'")
-            else:
-                print(f"  [状态{_si} 步{t}] 未找到目标 body")
-
-            _bg_no_obj_np = (
-                render_background_without_target(env, body_id, RENDER_RES)
-                if body_id != -1
-                else None
-            )
-            bg_tensor_no_obj = (
-                (torch.from_numpy(_bg_no_obj_np.copy()).float().to(device) / 255.0
-                 ).permute(2, 0, 1).unsqueeze(0)
-                if _bg_no_obj_np is not None else None
-            )
-
-            if mvp is not None and not calib_done and calib_count < cfg.photometric_calib_frames:
-                renderer.calibrate_lighting(mvp, bg_tensor, ema=(0.8 if calib_count > 0 else 0.0),
-                                            model_rot=model_matrix[:3, :3])
-                calib_count += 1
-                if calib_count >= cfg.photometric_calib_frames:
-                    calib_done = True
-
-            image_pil = Image.fromarray(img_np).resize((model_input_size, model_input_size))
-            prompt = f"In: What action should the robot take to {task_description.lower()}?\nOut:"
-            clean_inputs = processor(prompt, images=image_pil).to(device)
-            if "pixel_values" in clean_inputs:
-                clean_inputs["pixel_values"] = clean_inputs["pixel_values"].to(torch.bfloat16)
-
-            with torch.no_grad():
-                with autocast(dtype=torch.bfloat16):
-                    clean_output_ids = model.generate(
-                        **clean_inputs, max_new_tokens=7,
-                        do_sample=False,
-                        pad_token_id=processor.tokenizer.pad_token_id,
-                    )
-                    clean_224 = F.interpolate(bg_tensor, size=(model_input_size, model_input_size),
-                                              mode="bilinear", align_corners=False)
-                    clean_pv = torch.cat(
-                        [(clean_224 - siglip_mean) / siglip_std,
-                         (clean_224 - dino_mean) / dino_std], dim=1
-                    ).to(torch.bfloat16)
-                    clean_fwd = model(
-                        input_ids=clean_output_ids,
-                        attention_mask=torch.ones_like(clean_output_ids),
-                        pixel_values=clean_pv,
-                        output_hidden_states=True,
-                    )
-                    clean_hidden = clean_fwd.hidden_states[-1].detach()
-                    clean_action = decode_action_from_generated_ids(model, clean_output_ids, cfg.unnorm_key)
-            executed_action = None
-            if cfg.frame_collect_with_policy:
-                executed_action = normalize_gripper_action(clean_action.copy(), binarize=True)
-                if cfg.model_family == "openvla":
-                    executed_action = invert_gripper_action(executed_action)
-
-            frame_entry = {
-                "bg_tensor": bg_tensor,
-                "bg_tensor_no_obj": bg_tensor_no_obj,
-                "mvp": mvp,
-                "model_rot": model_matrix[:3, :3] if model_matrix is not None else None,
-                "clean_output_ids": clean_output_ids,
-                "prompt_ids": clean_inputs["input_ids"],
-                "clean_action": clean_action,
-                "executed_action": executed_action,
-                "clean_hidden": clean_hidden,
-                "siglip_mean": siglip_mean,
-                "siglip_std": siglip_std,
-                "dino_mean": dino_mean,
-                "dino_std": dino_std,
-                "model_input_size": model_input_size,
-            }
-
-            if cfg.collect_grasp_frames:
-                _gqpos = obs.get("robot0_gripper_qpos", None)
-                gripper_close = (cfg.frame_collect_with_policy
-                                 and _gqpos is not None
-                                 and float(np.max(_gqpos)) < cfg.grasp_qpos_threshold)
-                if not grasp_detected:
-                    state_frames.append(frame_entry)
-                    if gripper_close and len(state_frames) >= cfg.grasp_pre_frames:
-                        grasp_detected = True
-                else:
-                    if post_count < cfg.grasp_post_frames:
-                        state_frames.append(frame_entry)
-                        post_count += 1
-                    if post_count >= cfg.grasp_post_frames:
-                        break
-            else:
-                state_frames.append(frame_entry)
-                if cfg.frame_collect_with_policy and float(executed_action[-1]) > 0:
-                    print(f"  [状态{_si} 步{t}] 夹爪闭合，停止采帧（{t + 1} 帧）")
-                    break
-
-            if cfg.frame_collect_with_policy:
-                obs, _, _, _ = env.step(executed_action.tolist())
-            else:
-                obs, _, _, _ = env.step(get_libero_dummy_action(cfg.model_family))
-
-        if cfg.collect_grasp_frames:
-            state_frames = list(state_frames)
-            if not grasp_detected:
-                print(f"[ATTACK] 状态{_si}: 未检测到夹爪闭合，使用末尾 {len(state_frames)} 帧")
-            print(f"[ATTACK] 状态{_si} grasp-window 帧数 = {len(state_frames)}")
-
-        frame_data.extend(state_frames)
-        env.close()
-
-    frame_pool = frame_data
+    frame_collector = TrainingFrameCollector(
+        cfg=cfg,
+        model=model,
+        processor=processor,
+        renderer=renderer,
+        search_keywords=search_keywords_list,
+        render_resolution=RENDER_RES,
+    )
+    frame_pool: list[TrainingFrame] = frame_collector.collect(
+        task=task,
+        task_description=task_description,
+        fallback_initial_state=initial_obs_state,
+        initial_states=init_states,
+    )
     pool_size = len(frame_pool)
     batch_size = min(cfg.num_frames_to_attack, pool_size)
 
@@ -409,13 +258,24 @@ def train_adversarial_texture(
         batch_frames = [frame_pool[j] for j in batch_idx]
 
         for t, fdata in enumerate(batch_frames):
-            if fdata["mvp"] is None:
+            frame_mvp = fdata["mvp"]
+            if frame_mvp is None:
                 continue
 
             w_t = torch.tensor(1.0 / batch_size, device=device)
 
+            # collector 允许 mvp=None 表示目标定位失败；经过上面的收窄后，
+            # 这里构造 compositing module 所需的必选 MVP interface。
+            single_view_frame: SingleViewFrame = {
+                "mvp": frame_mvp,
+                "bg_tensor": fdata["bg_tensor"],
+                "bg_tensor_no_obj": fdata["bg_tensor_no_obj"],
+                "model_rot": fdata["model_rot"],
+            }
             adv_samples = build_single_view_samples(
-                renderer, fdata, render_resolution=RENDER_RES
+                renderer,
+                single_view_frame,
+                render_resolution=RENDER_RES,
             )
 
             sample_action_losses = []

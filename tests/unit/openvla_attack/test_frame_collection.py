@@ -1,0 +1,260 @@
+"""OpenVLA 攻击训练帧采集 module 的行为测试。"""
+
+from __future__ import annotations
+
+import os
+import sys
+from contextlib import nullcontext
+from dataclasses import dataclass
+from pathlib import Path
+from types import SimpleNamespace
+from typing import Any, Optional
+
+import numpy as np
+import torch
+from PIL import Image
+
+
+LIBERO_EXPERIMENT_DIR = (
+    Path(__file__).resolve().parents[3] / "openvla/experiments/robot/libero"
+)
+sys.path.insert(0, str(LIBERO_EXPERIMENT_DIR))
+
+# Robosuite 的 Numba decorator 默认尝试写 site-packages cache；本测试不需要 JIT。
+os.environ.setdefault("NUMBA_DISABLE_JIT", "1")
+
+import openvla_attack.frame_collection as frame_collection
+from openvla_attack.frame_collection import TrainingFrameCollector
+from openvla_attack.scene import TargetBodyPose
+
+
+@dataclass
+class FakeFrameCollectionConfig:
+    """覆盖训练帧采集所读取的配置字段。"""
+
+    model_family: str = "openvla"
+    num_steps_wait: int = 0
+    num_train_init_states: int = 1
+    train_frames_per_state: int = 1
+    frame_collect_with_policy: bool = False
+    collect_grasp_frames: bool = False
+    grasp_pre_frames: int = 2
+    grasp_post_frames: int = 0
+    grasp_max_steps: int = 5
+    grasp_qpos_threshold: float = 0.02
+    photometric_calib_frames: int = 1
+    unnorm_key: Optional[str] = "fake"
+
+
+class FakeProcessorInputs(dict[str, torch.Tensor]):
+    """模拟 Hugging Face BatchFeature 的 mapping 与 ``to`` interface。"""
+
+    def to(self, device: torch.device) -> "FakeProcessorInputs":
+        for key, value in self.items():
+            self[key] = value.to(device)
+        return self
+
+
+class FakeProcessor:
+    """记录 prompt 和 PIL 图像，并返回固定 token 输入。"""
+
+    def __init__(self) -> None:
+        self.tokenizer = SimpleNamespace(pad_token_id=0)
+        self.calls: list[tuple[str, Image.Image]] = []
+
+    def __call__(
+        self,
+        prompt: str,
+        *,
+        images: Image.Image,
+    ) -> FakeProcessorInputs:
+        self.calls.append((prompt, images))
+        return FakeProcessorInputs(
+            {
+                "input_ids": torch.tensor([[10, 11]], dtype=torch.long),
+                "pixel_values": torch.zeros((1, 6, 2, 2)),
+            }
+        )
+
+
+class FakeModel:
+    """实现 collector 使用的生成与 hidden-state 前向 interface。"""
+
+    device: torch.device = torch.device("cpu")
+
+    def __init__(self) -> None:
+        self.generate_calls: list[dict[str, Any]] = []
+        self.forward_calls: list[dict[str, Any]] = []
+
+    def generate(self, **kwargs: Any) -> torch.Tensor:
+        self.generate_calls.append(kwargs)
+        return torch.tensor([[10, 11, 12, 13]], dtype=torch.long)
+
+    def __call__(self, **kwargs: Any) -> SimpleNamespace:
+        self.forward_calls.append(kwargs)
+        hidden = torch.full((1, 4, 3), 0.25)
+        return SimpleNamespace(hidden_states=[hidden])
+
+
+class FakeLightingRenderer:
+    """记录光照校准输入的 renderer fake。"""
+
+    def __init__(self) -> None:
+        self.calibration_calls: list[
+            tuple[torch.Tensor, torch.Tensor, float, torch.Tensor]
+        ] = []
+
+    def calibrate_lighting(
+        self,
+        mvp: torch.Tensor,
+        camera_rgb: torch.Tensor,
+        *,
+        ema: float,
+        model_rot: torch.Tensor,
+    ) -> None:
+        self.calibration_calls.append((mvp, camera_rgb, ema, model_rot))
+
+
+class FakeEnvironment:
+    """记录采集流程中的环境推进与关闭。"""
+
+    def __init__(self, observation: dict[str, np.ndarray]) -> None:
+        self.observation = observation
+        self.actions: list[list[float]] = []
+        self.closed: bool = False
+        self.forward_calls: int = 0
+        self.env = SimpleNamespace(
+            sim=SimpleNamespace(forward=self._record_forward)
+        )
+
+    def _record_forward(self) -> None:
+        self.forward_calls += 1
+
+    def reset(self) -> None:
+        return None
+
+    def set_init_state(self, initial_state: object) -> dict[str, np.ndarray]:
+        del initial_state
+        return self.observation
+
+    def step(
+        self,
+        action: list[float],
+    ) -> tuple[dict[str, np.ndarray], float, bool, dict[str, object]]:
+        self.actions.append(action)
+        return self.observation, 0.0, False, {}
+
+    def close(self) -> None:
+        self.closed = True
+
+
+def test_collector_builds_typed_frame_calibrates_and_closes_environment(
+    monkeypatch,
+) -> None:
+    observation = {
+        "robot0_gripper_qpos": np.array([0.04, 0.04], dtype=np.float32),
+    }
+    env = FakeEnvironment(observation)
+    camera_image = np.full((2, 2, 3), 128, dtype=np.uint8)
+    background_without_target = np.full((2, 2, 3), 64, dtype=np.uint8)
+    target_pose = TargetBodyPose(
+        model_matrix=torch.eye(4),
+        body_id=2,
+        body_name="akita_black_bowl",
+    )
+
+    monkeypatch.setattr(
+        frame_collection,
+        "get_libero_env",
+        lambda task, model_family, resolution: (env, "unused"),
+    )
+    monkeypatch.setattr(
+        frame_collection,
+        "get_libero_dummy_action",
+        lambda model_family: [0.0] * 7,
+    )
+    monkeypatch.setattr(
+        frame_collection,
+        "get_libero_image",
+        lambda current_observation, resolution: camera_image,
+    )
+    monkeypatch.setattr(
+        frame_collection,
+        "get_image_resize_size",
+        lambda cfg: 2,
+    )
+    monkeypatch.setattr(
+        frame_collection,
+        "find_target_body_pose",
+        lambda current_env, keywords, device: target_pose,
+    )
+    monkeypatch.setattr(
+        frame_collection,
+        "compute_render_mvp",
+        lambda current_env, model_matrix, resolution: torch.eye(4),
+    )
+    monkeypatch.setattr(
+        frame_collection,
+        "render_background_without_target",
+        lambda current_env, body_id, resolution: background_without_target,
+    )
+    monkeypatch.setattr(
+        frame_collection,
+        "decode_action_from_generated_ids",
+        lambda model, generated_ids, unnorm_key: np.array(
+            [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.75],
+            dtype=np.float32,
+        ),
+    )
+    monkeypatch.setattr(
+        frame_collection,
+        "autocast",
+        lambda **kwargs: nullcontext(),
+    )
+
+    model = FakeModel()
+    processor = FakeProcessor()
+    renderer = FakeLightingRenderer()
+    collector = TrainingFrameCollector(
+        cfg=FakeFrameCollectionConfig(),
+        model=model,
+        processor=processor,
+        renderer=renderer,
+        search_keywords=(("akita", "bowl"),),
+        render_resolution=2,
+    )
+
+    frames = collector.collect(
+        task=object(),
+        task_description="Pick up the bowl",
+        fallback_initial_state=object(),
+        initial_states=[object()],
+    )
+
+    assert len(frames) == 1
+    frame = frames[0]
+    assert frame["bg_tensor"].shape == (1, 3, 2, 2)
+    assert frame["bg_tensor_no_obj"] is not None
+    assert frame["bg_tensor_no_obj"].shape == (1, 3, 2, 2)
+    torch.testing.assert_close(frame["mvp"], torch.eye(4))
+    torch.testing.assert_close(frame["model_rot"], torch.eye(3))
+    assert frame["clean_output_ids"].tolist() == [[10, 11, 12, 13]]
+    assert frame["prompt_ids"].tolist() == [[10, 11]]
+    np.testing.assert_allclose(
+        frame["clean_action"],
+        [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.75],
+    )
+    assert frame["executed_action"] is None
+    assert frame["clean_hidden"].shape == (1, 4, 3)
+    assert frame["siglip_mean"].shape == (1, 3, 1, 1)
+    assert frame["dino_std"].shape == (1, 3, 1, 1)
+    assert frame["model_input_size"] == 2
+
+    assert processor.calls[0][0] == (
+        "In: What action should the robot take to pick up the bowl?\nOut:"
+    )
+    assert len(renderer.calibration_calls) == 1
+    assert renderer.calibration_calls[0][2] == 0.0
+    assert env.actions == [[0.0] * 7]
+    assert env.forward_calls == 1
+    assert env.closed is True
