@@ -7,7 +7,8 @@
 
 :class:`AttackTrainer` 把这条数据流隐藏在 :meth:`train` interface 后。正式评估
 和训练期间的 live-test 共同复用 :class:`LiberoEpisodeRunner`，避免两份环境
-推进、图像合成、动作后处理状态机逐渐产生行为差异。
+推进、MuJoCo 相机预处理、动作后处理状态机逐渐产生行为差异。可微图像合成只
+用于 Attack Training，不进入 live-test/final evaluation。
 
 本 module 不遍历 benchmark task，也不统计最终成功率；这些仍属于
 ``attack_openvla.py`` 的实验编排职责。
@@ -122,8 +123,6 @@ class AttackTrainer:
                 cfg=cfg,
                 model=model,
                 processor=processor,
-                renderer=renderer,
-                search_keywords=search_keywords,
                 video_resolution=cfg.live_test_resolution,
                 max_steps=cfg.live_test_max_steps,
             )

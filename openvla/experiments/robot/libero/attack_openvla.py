@@ -199,8 +199,6 @@ def eval_libero(cfg: GenerateConfig) -> None:
         cfg=cfg,
         model=model,
         processor=processor,
-        renderer=renderer,
-        search_keywords=search_kw,
         video_resolution=video_resolution,
         max_steps=300,
     )

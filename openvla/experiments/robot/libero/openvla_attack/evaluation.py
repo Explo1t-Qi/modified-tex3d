@@ -1,9 +1,10 @@
 """OpenVLA 在单个 LIBERO episode 上的 rollout 状态机。
 
 主实验入口只需要遍历 task、记录统计和保存视频；本模块隐藏一个 episode 内部
-的环境生命周期、等待步、相机图像转换、可选对抗纹理合成、策略调用与动作后
-处理。这样评估数据流可以使用 fake 环境在无 GPU 条件下通过同一个 interface
-验证，而不必导入整个 ``attack_openvla.py``。
+的环境生命周期、等待步、MuJoCo 相机图像转换、策略调用与动作后处理。最终
+对抗纹理在 rollout 前已经安装到 MuJoCo 资产，因此评估阶段直接使用环境真实
+渲染，不再用训练用 nvdiffrast renderer 重画物体。这样策略、录像与物理场景
+共享同一个像素来源，也避免把几何错位或缺失深度遮挡混入纹理鲁棒性结果。
 """
 
 from __future__ import annotations
@@ -15,7 +16,6 @@ from pathlib import Path
 from typing import Any, Optional, Protocol, TypedDict
 
 import numpy as np
-import torch
 from PIL import Image
 
 
@@ -41,14 +41,6 @@ from robot_utils import (  # noqa: E402
     normalize_gripper_action,
 )
 
-from .compositing import ForegroundRenderer, render_and_composite
-from .scene import (
-    SearchKeywords,
-    compute_render_mvp,
-    find_target_body_pose,
-    render_background_without_target,
-)
-
 
 class RolloutConfig(Protocol):
     """episode runner 从 OpenVLA 实验配置读取的字段。"""
@@ -61,9 +53,7 @@ class RolloutConfig(Protocol):
 
 
 class PolicyModel(Protocol):
-    """rollout 图像合成所需的最小策略模型 interface。"""
-
-    device: torch.device
+    """传给 ``robot_utils.get_action`` 的策略模型占位 interface。"""
 
 
 class LiberoObservation(TypedDict):
@@ -89,30 +79,16 @@ class RolloutResult:
 
     success: bool
     task_description: str
-    # 原始 LIBERO 相机帧，而不是策略实际看到的对抗合成帧；保持现有视频语义。
+    # uint8 HWC，高分辨率 MuJoCo 相机帧。策略输入由同一帧确定性 resize 得到。
     replay_images: list[np.ndarray]
-
-
-def _rgb_numpy_to_nchw_tensor(
-    image: np.ndarray,
-    device: torch.device,
-) -> torch.Tensor:
-    """把 uint8 HWC RGB 转成 device 上 ``[1, 3, H, W]`` 的 float tensor。"""
-    return (
-        torch.from_numpy(image)
-        .float()
-        .to(device)
-        .div(255.0)
-        .permute(2, 0, 1)
-        .unsqueeze(0)
-    )
 
 
 class LiberoEpisodeRunner:
     """运行一个 OpenVLA LIBERO episode 的深 module。
 
-    构造函数接收同一批 task 共享的模型、processor、renderer 和目标关键词；
-    :meth:`run` 只接收每个 episode 真正变化的 task、初始状态和日志上下文。
+    构造函数接收同一批 task 共享的模型和 processor；:meth:`run` 只接收每个
+    episode 真正变化的 task、初始状态和日志上下文。可微 renderer 严格属于
+    Attack Training，不进入该评估边界。
     """
 
     def __init__(
@@ -121,28 +97,28 @@ class LiberoEpisodeRunner:
         cfg: RolloutConfig,
         model: PolicyModel,
         processor: Optional[Any],
-        renderer: Optional[ForegroundRenderer],
-        search_keywords: SearchKeywords,
         video_resolution: int = 512,
         max_steps: int = 300,
     ) -> None:
         self._cfg: RolloutConfig = cfg
         self._model: PolicyModel = model
         self._processor: Optional[Any] = processor
-        self._renderer: Optional[ForegroundRenderer] = renderer
-        self._search_keywords: SearchKeywords = search_keywords
         self._video_resolution: int = video_resolution
         self._max_steps: int = max_steps
 
     def _build_policy_image(
         self,
-        env: Any,
         observation: LiberoObservation,
     ) -> tuple[np.ndarray, np.ndarray]:
-        """返回原始录像帧与模型实际接收的 RGB 图像。
+        """从同一 MuJoCo 相机帧构造录像图像与模型 RGB 输入。
 
-        两个返回值均为 uint8 HWC。没有 renderer 时仅执行 resize；启用攻击时，
-        先在录像分辨率合成对抗物体，再 resize 到 OpenVLA 输入分辨率。
+        Returns:
+            ``(camera_image, policy_image)``，两者均为 uint8 HWC。
+            ``camera_image`` shape 为
+            ``[video_resolution, video_resolution, 3]``，直接用于录像；
+            ``policy_image`` shape 为
+            ``[model_input_size, model_input_size, 3]``，是前者的确定性 resize，
+            直接写入 OpenVLA observation。
         """
         # camera_image: uint8 HWC, [video_resolution, video_resolution, 3]。
         camera_image: np.ndarray = get_libero_image(
@@ -150,74 +126,8 @@ class LiberoEpisodeRunner:
             self._video_resolution,
         )
         model_input_size: int = get_image_resize_size(self._cfg)
-
-        if self._renderer is None:
-            policy_image: np.ndarray = np.asarray(
-                Image.fromarray(camera_image).resize(
-                    (model_input_size, model_input_size)
-                )
-            )
-            return camera_image, policy_image
-
-        # regular_background: float32 NCHW,
-        # [1, 3, video_resolution, video_resolution]。
-        regular_background: torch.Tensor = _rgb_numpy_to_nchw_tensor(
-            camera_image,
-            self._model.device,
-        )
-        target_pose = find_target_body_pose(
-            env,
-            self._search_keywords,
-            self._model.device,
-        )
-        mvp: Optional[torch.Tensor] = (
-            compute_render_mvp(
-                env,
-                target_pose.model_matrix,
-                resolution=(
-                    self._video_resolution,
-                    self._video_resolution,
-                ),
-            )
-            if target_pose.body_id != -1
-            else None
-        )
-        background_without_target_numpy: Optional[np.ndarray] = (
-            render_background_without_target(
-                env,
-                target_pose.body_id,
-                self._video_resolution,
-            )
-            if target_pose.body_id != -1
-            else None
-        )
-        composition_background: torch.Tensor = (
-            _rgb_numpy_to_nchw_tensor(
-                background_without_target_numpy.copy(),
-                self._model.device,
-            )
-            if background_without_target_numpy is not None
-            else regular_background
-        )
-
-        # composited: float NCHW, [1, 3, video_resolution, video_resolution]。
-        with torch.no_grad():
-            composited: torch.Tensor = render_and_composite(
-                self._renderer,
-                composition_background,
-                mvp,
-                resolution=(
-                    self._video_resolution,
-                    self._video_resolution,
-                ),
-                model_rotation=target_pose.model_matrix[:3, :3],
-            )
-        perceived_image: np.ndarray = (
-            composited[0].permute(1, 2, 0).detach().cpu().numpy() * 255
-        )
-        perceived_image = perceived_image.astype(np.uint8)
-        policy_image = np.asarray(
-            Image.fromarray(perceived_image).resize(
+        policy_image: np.ndarray = np.asarray(
+            Image.fromarray(camera_image).resize(
                 (model_input_size, model_input_size)
             )
         )
@@ -269,7 +179,6 @@ class LiberoEpisodeRunner:
                     camera_image: np.ndarray
                     policy_image: np.ndarray
                     camera_image, policy_image = self._build_policy_image(
-                        env,
                         observation,
                     )
                     replay_images.append(camera_image)

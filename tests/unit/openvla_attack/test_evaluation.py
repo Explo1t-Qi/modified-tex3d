@@ -10,7 +10,7 @@ from types import SimpleNamespace
 from typing import Optional
 
 import numpy as np
-import torch
+from PIL import Image
 
 
 LIBERO_EXPERIMENT_DIR = (
@@ -24,7 +24,6 @@ os.environ.setdefault("NUMBA_DISABLE_JIT", "1")
 
 import openvla_attack.evaluation as evaluation
 from openvla_attack.evaluation import LiberoEpisodeRunner
-from openvla_attack.scene import TargetBodyPose
 
 
 @dataclass
@@ -132,10 +131,8 @@ def test_episode_runner_preserves_wait_observation_action_and_cleanup_flow(
 
     runner = LiberoEpisodeRunner(
         cfg=FakeRolloutConfig(),
-        model=SimpleNamespace(device=torch.device("cpu")),
+        model=SimpleNamespace(),
         processor=object(),
-        renderer=None,
-        search_keywords=(("akita", "bowl"),),
         video_resolution=2,
         max_steps=3,
     )
@@ -165,105 +162,34 @@ def test_episode_runner_preserves_wait_observation_action_and_cleanup_flow(
     assert policy_observations[0]["full_image"].shape == (2, 2, 3)
 
 
-def test_episode_runner_sends_composite_to_policy_but_records_camera_image(
+def test_policy_input_and_replay_derive_from_same_mujoco_camera_frame(
     monkeypatch,
 ) -> None:
-    """攻击视图只进入策略，rollout 视频仍保存原始 MuJoCo 相机帧。"""
+    """录像保留高分辨率源帧，策略只对该帧执行确定性 resize。"""
     observation = {
         "robot0_eef_pos": np.zeros(3, dtype=np.float32),
         "robot0_eef_quat": np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32),
         "robot0_gripper_qpos": np.zeros(2, dtype=np.float32),
     }
-    env = FakeEnvironment(observation, successful_action_number=1)
-    camera_image = np.zeros((2, 2, 3), dtype=np.uint8)
-    policy_images: list[np.ndarray] = []
-
-    class OpaqueForegroundRenderer:
-        def render(
-            self,
-            mvp: torch.Tensor,
-            resolution: tuple[int, int],
-            *,
-            model_rot: Optional[torch.Tensor] = None,
-        ) -> tuple[torch.Tensor, torch.Tensor]:
-            del mvp, model_rot
-            height, width = resolution
-            foreground = torch.ones((1, height, width, 3))
-            mask = torch.ones((1, height, width, 1))
-            return foreground, mask
-
-    monkeypatch.setattr(
-        evaluation,
-        "get_libero_env",
-        lambda task, model_family, resolution: (env, "pick up the bowl"),
-    )
+    camera_image = np.arange(4 * 4 * 3, dtype=np.uint8).reshape(4, 4, 3)
     monkeypatch.setattr(
         evaluation,
         "get_libero_image",
         lambda current_observation, resolution: camera_image,
     )
     monkeypatch.setattr(evaluation, "get_image_resize_size", lambda cfg: 2)
-    monkeypatch.setattr(
-        evaluation,
-        "quat2axisangle",
-        lambda quaternion: np.zeros(3, dtype=np.float32),
-    )
-    monkeypatch.setattr(
-        evaluation,
-        "find_target_body_pose",
-        lambda current_env, keywords, device: TargetBodyPose(
-            model_matrix=torch.eye(4),
-            body_id=2,
-            body_name="akita_black_bowl",
-        ),
-    )
-    monkeypatch.setattr(
-        evaluation,
-        "compute_render_mvp",
-        lambda current_env, model_matrix, resolution: torch.eye(4),
-    )
-    monkeypatch.setattr(
-        evaluation,
-        "render_background_without_target",
-        lambda current_env, body_id, resolution: np.zeros(
-            (resolution, resolution, 3),
-            dtype=np.uint8,
-        ),
-    )
 
-    def fake_get_action(
-        cfg: FakeRolloutConfig,
-        model: object,
-        policy_observation: dict[str, np.ndarray],
-        task_description: str,
-        *,
-        processor: object,
-    ) -> np.ndarray:
-        del cfg, model, task_description, processor
-        policy_images.append(policy_observation["full_image"])
-        return np.zeros(7, dtype=np.float32)
-
-    monkeypatch.setattr(evaluation, "get_action", fake_get_action)
-
-    cfg = FakeRolloutConfig(num_steps_wait=0)
-    result = LiberoEpisodeRunner(
-        cfg=cfg,
-        model=SimpleNamespace(device=torch.device("cpu")),
+    runner = LiberoEpisodeRunner(
+        cfg=FakeRolloutConfig(num_steps_wait=0),
+        model=SimpleNamespace(),
         processor=object(),
-        renderer=OpaqueForegroundRenderer(),
-        search_keywords=(("akita", "bowl"),),
-        video_resolution=2,
+        video_resolution=4,
         max_steps=1,
-    ).run(
-        task=object(),
-        initial_state=object(),
-        task_id=0,
-        episode_index=0,
     )
+    replay_image, policy_image = runner._build_policy_image(observation)
 
-    assert result.success is True
-    assert result.replay_images[0] is camera_image
+    assert replay_image is camera_image
     np.testing.assert_array_equal(
-        policy_images[0],
-        np.full((2, 2, 3), 255, dtype=np.uint8),
+        policy_image,
+        np.asarray(Image.fromarray(camera_image).resize((2, 2))),
     )

@@ -48,7 +48,7 @@
 | `objective.py` | `get_attack_loss` | action token 选择与当前 untargeted token 目标 |
 | `optimization.py` | `AttackOptimizer.optimize` | frame batch、view loss、反向传播、SignSGD、日志和 callback 调度 |
 | `training.py` | `AttackTrainer.train` | 采帧、优化、live rollout 与终态产物的 task 级数据流 |
-| `evaluation.py` | `LiberoEpisodeRunner.run` | 单 episode 状态机、策略图像、动作后处理和环境关闭 |
+| `evaluation.py` | `LiberoEpisodeRunner.run` | 单 episode 状态机、MuJoCo 策略图像、动作后处理和环境关闭 |
 | `artifacts.py` | `AttackArtifactStore` | run 目录、历史文件名及 PT/NPY/PNG/MP4 序列化 |
 | `runtime_assets.py` | `RuntimeAssetTransaction` | Clean Asset 备份、Active Texture 注入、恢复和 signal/atexit |
 
@@ -101,8 +101,9 @@ task initial state
        ▼
 LiberoEpisodeRunner
   ├─ wait dummy actions
-  ├─ MuJoCo camera frame
-  ├─ optional adversarial foreground composition
+  ├─ MuJoCo camera frame（已加载 Active Texture）
+  ├─ 同源 resize → OpenVLA policy image
+  ├─ 高分辨率源帧 → rollout video
   ├─ OpenVLA action
   ├─ gripper binarize + invert
   └─ env.step / close
@@ -111,8 +112,10 @@ LiberoEpisodeRunner
 RolloutResult → success statistics + rollout video
 ```
 
-训练期间 live-test 与正式评估现在共享同一个 episode 状态机，仅分辨率、最大步数
-和产物命名不同。
+训练期间 live-test 与正式评估共享同一个 episode 状态机，仅分辨率、最大步数
+和产物命名不同。可微 renderer 只服务 Attack Training；live-test 和正式评估
+均通过新建 LIBERO 环境读取 XML 中已经激活的纹理，不再删除 MuJoCo 物体并用
+nvdiffrast 重画。这保证策略、录像和物理场景共享同一个渲染来源。
 
 ### 4.3 Active Texture 生命周期
 
@@ -126,8 +129,9 @@ begin run
   → delete backup
 ```
 
-live-test 只修改 XML 引用；正式 loaded/trained texture 在真实纹理原本存在时还会
-同步镜像，以保持 MuJoCo 录像行为。
+live-test 只修改 XML 引用；新建 MuJoCo 环境会从该引用加载当前纹理。正式
+loaded/trained texture 在真实纹理原本存在时仍同步镜像，兼容资产内部可能保留
+的直接文件引用。
 
 ## 5. 当前数值与行为约束
 
@@ -140,6 +144,10 @@ live-test 只修改 XML 引用；正式 loaded/trained texture 在真实纹理�
 - 默认每个有效 frame 只构造一个 adversarial view。
 - 优化更新保持 `adv_noise -= attack_lr * sign(gradient)`。
 - OpenVLA rollout 的 gripper action 先二值化，再反转符号。
+- renderer 未显式提供 position offset 时使用精确零偏移；特殊资产只能在完成
+  MuJoCo/nvdiffrast 轮廓测量后显式传入非零 offset。
+- live-test 和正式评估的策略输入均来自 MuJoCo 相机帧，不使用可微 renderer
+  合成图；录像保存同一帧的高分辨率版本。
 - `mvp=None` 时 compositor 不调用 renderer，直接使用背景。
 - `.pt` 加载的是 `[num_vertices, 3]` 无界参数；PNG 会经 UV 采样和 `atanh`
   转为同一参数化。
@@ -235,6 +243,68 @@ GPU smoke 命令与通用验收条件见
 该成功率与基线文档记录的一次历史 Spatial task 0 完整运行相同。由于同配置的
 历史结果存在随机波动，本次验收的核心结论是：重构后的完整训练、产物落盘、正式
 评估和资源恢复数据流均正常，且攻击优化的数值趋势合理。
+
+需要注意：该运行发生在 renderer 对齐审计之前，Attack Training 和正式评估都
+使用了历史默认 offset `[0.02, 0.01, 0.025]`，正式策略图像还经过
+nvdiffrast 重合成。因此 `50.00%` 只作为重构流程验收结果保留，不作为修正后
+“纯纹理影响”的最终科学结果。
+
+### 完整 Object task 0 流程验收
+
+2026-07-24 又完成
+`object_task0_alphabet_soup_5000_refactor_v1-EVAL-libero_object-2026_07_24-10_40_51`
+完整流程：
+
+- 5000 次优化正常结束，loss 和 gradient 全部有限；
+- total loss 从 `2.124564` 降至 `1.093403`；
+- 保存参数 shape 为 `[36359, 3]`，有效扰动严格位于
+  `[-128/255, 128/255]`；
+- 50 个 rollout 中 11 次成功，任务成功率 `22.00%`；
+- 正式纹理、梯度日志和视频均正常生成，XML/真实纹理最终恢复。
+
+该运行同样使用了修正前的历史 offset 和 nvdiffrast 正式评估路径，因此只证明
+Object suite 的重构流程与 HOPE XML 纹理解析已经连通；`22.00%` 不作为修正后
+攻击效果基线。
+
+### Renderer 对齐审计与评估语义修正
+
+2026-07-24 使用
+`scripts/diagnose_openvla_renderer_alignment.py` 对固定 LIBERO 状态进行
+MuJoCo segmentation 与 nvdiffrast mask 对照：
+
+| 场景 | offset | IoU | MuJoCo 轮廓覆盖率 | 中心偏差（像素） |
+|---|---|---:|---:|---:|
+| Object task 0 / alphabet soup state 0 | 历史默认 | 0.3368 | 0.5337 | (-14.29, -6.58) |
+| Object task 0 / alphabet soup state 0 | zero | 0.8742 | 1.0000 | (-0.11, +3.22) |
+| Spatial task 0 / black bowl state 0 | 历史默认 | 0.3852 | 0.5573 | (-13.79, -15.74) |
+| Spatial task 0 / black bowl state 0 | zero | 0.9990 | 0.9997 | (-0.01, +0.02) |
+
+alphabet soup 的 zero mask 完整覆盖 MuJoCo 可见轮廓，额外像素集中于物体底部：
+nvdiffrast 前景合成没有 MuJoCo depth buffer，因而会画出被桌面遮挡的部分。这
+进一步说明可微 renderer 适合训练梯度近似，但不应替代正式环境渲染。
+
+本次修正据此完成：
+
+1. renderer 缺省 position offset 改为精确零，并增加 CPU 回归测试；
+2. 非零 offset 保留为显式、经过测量的资产校准接口；
+3. live-test 与正式评估直接使用安装 Active Texture 后的 MuJoCo 相机帧；
+4. 录像保存模型输入所对应的同源高分辨率帧；
+5. 对齐脚本长期保留 IoU、轮廓覆盖率、precision、中心和 bbox 检查。
+
+修正后无 GPU 测试为 `30 passed, 1 skipped`；上述 Object 与 Spatial GPU
+对齐回归均通过。
+
+随后使用 run ID
+`alignment_fix_smoke-EVAL-libero_spatial-2026_07_24-18_50_39`
+完成修正后的端到端 GPU smoke：
+
+- 一次优化 loss 为有限值 `20.071451`，gradient norm 为 `0.304311`；
+- 顶点参数 shape 为 `[21932, 3]`，更新后范围为 `[-0.05, 0.05]`；
+- UV Map、loss history、参数、gradient log 和最终纹理均正常生成；
+- 正式 rollout 使用 512×512 MuJoCo 同源视频，单个 episode 正常成功；
+- XML、真实纹理和临时 backup 均在退出时恢复/清理。
+
+该单 episode 的 `100%` 只用于证明修正后完整流程连通，不用于评价攻击效果。
 
 Spatial checkpoint：
 `/data/huangsimin/openvla-7b-finetuned-libero-spatial`

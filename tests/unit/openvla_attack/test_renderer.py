@@ -6,6 +6,7 @@ import sys
 from pathlib import Path
 
 import numpy as np
+import pytest
 import torch
 import torch.nn as nn
 from PIL import Image
@@ -19,12 +20,69 @@ sys.path.insert(0, str(LIBERO_EXPERIMENT_DIR))
 from openvla_attack.renderer import (
     AdversarialTextureLoadResult,
     DifferentiableRenderer,
+    resolve_position_offset,
 )
 
 
 def test_renderer_module_can_be_imported_without_creating_cuda_context() -> None:
     """导入类定义不应提前构造 nvdiffrast CUDA context。"""
     assert issubclass(DifferentiableRenderer, nn.Module)
+
+
+def test_renderer_unspecified_position_offset_is_exact_zero(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    """未显式校准时不得给所有物体注入历史经验平移。
+
+    该测试通过替换唯一的 CUDA-only 构造步骤，在 CPU 上覆盖真实
+    ``DifferentiableRenderer.__init__`` 数据流。不存在的 mesh 会触发 renderer
+    自带的薄盒 fallback；本测试只关心最终注册的 model-space offset。
+    """
+    monkeypatch.setattr(
+        "openvla_attack.renderer.dr.RasterizeCudaContext",
+        lambda: object(),
+    )
+    monkeypatch.setattr(
+        DifferentiableRenderer,
+        "_sample_uv_texture_at_vertices",
+        lambda renderer: torch.zeros(
+            (renderer.num_vertices, 3),
+            dtype=torch.float32,
+            device=renderer.device,
+        ),
+    )
+
+    renderer = DifferentiableRenderer(
+        mesh_path=tmp_path / "missing.obj",
+        device=torch.device("cpu"),
+        pos_offset=None,
+    )
+
+    torch.testing.assert_close(
+        renderer.pos_offset,
+        torch.zeros(3, dtype=torch.float32),
+        rtol=0.0,
+        atol=0.0,
+    )
+
+
+def test_renderer_preserves_explicit_position_offset() -> None:
+    np.testing.assert_allclose(
+        resolve_position_offset([0.02, 0.01, 0.025]),
+        [0.02, 0.01, 0.025],
+    )
+
+
+@pytest.mark.parametrize(
+    "invalid_offset",
+    ([0.0, 0.0], [0.0, float("nan"), 0.0]),
+)
+def test_renderer_rejects_invalid_position_offset(
+    invalid_offset: list[float],
+) -> None:
+    with pytest.raises(ValueError, match="三个有限"):
+        resolve_position_offset(invalid_offset)
 
 
 def _minimal_cpu_renderer() -> DifferentiableRenderer:

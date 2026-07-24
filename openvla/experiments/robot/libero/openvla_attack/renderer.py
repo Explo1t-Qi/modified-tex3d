@@ -41,6 +41,32 @@ class AdversarialTextureLoadResult:
     nonzero_percentage: float
 
 
+def resolve_position_offset(
+    pos_offset: Optional[Sequence[float]],
+) -> tuple[float, float, float]:
+    """校验并返回 renderer 的 model-space XYZ 平移。
+
+    未提供校准值时返回精确零偏移。历史实现把
+    ``[0.02, 0.01, 0.025]`` 无条件用于所有物体，真实轮廓诊断表明它会给
+    Spatial bowl 和 Object 物体引入十余像素的系统性错位。特殊资产如果确实
+    需要平移，仍可通过 ``pos_offset`` 显式传入。
+    """
+    if pos_offset is None:
+        return (0.0, 0.0, 0.0)
+
+    offset_array: FloatingArray = np.asarray(
+        pos_offset,
+        dtype=np.float32,
+    )
+    if offset_array.shape != (3,) or not np.isfinite(offset_array).all():
+        raise ValueError("pos_offset 必须包含三个有限的 XYZ 浮点数")
+    return (
+        float(offset_array[0]),
+        float(offset_array[1]),
+        float(offset_array[2]),
+    )
+
+
 class DifferentiableRenderer(nn.Module):
     """对 mesh 顶点颜色施加可学习扰动并渲染到相机画面。
 
@@ -66,8 +92,8 @@ class DifferentiableRenderer(nn.Module):
             orig_texture_path: 原始 RGB texture 路径；不存在时使用常量灰色纹理。
             device: renderer tensor 所在 device。当前 nvdiffrast 实现要求 CUDA。
             scale_xyz: mesh 三轴缩放，长度应为 3；缺省为 ``[1, 1, 1]``。
-            pos_offset: model-space 顶点平移，长度应为 3；保持现有缺省值
-                ``[0.02, 0.01, 0.025]``。
+            pos_offset: 可选的 model-space 顶点平移，长度必须为 3。缺省为
+                精确零偏移；只有经过轮廓对齐测量的特殊资产才应显式传值。
             epsilon: ``tanh(adv_noise)`` 的最大逐通道颜色扰动幅度。
         """
         super().__init__()
@@ -76,10 +102,17 @@ class DifferentiableRenderer(nn.Module):
         self.tex_h: int = 256
         self.tex_w: int = 256
 
-        # 使用 ``or`` 而不是只判断 None，以保持空 sequence 也回退缺省值的旧行为。
-        resolved_offset: Sequence[float] = pos_offset or [0.02, 0.01, 0.025]
-        self.pos_offset: Tensor = torch.tensor(
-            resolved_offset, dtype=torch.float32, device=device
+        resolved_offset: tuple[float, float, float] = resolve_position_offset(
+            pos_offset
+        )
+        self.pos_offset: Tensor
+        self.register_buffer(
+            "pos_offset",
+            torch.tensor(
+                resolved_offset,
+                dtype=torch.float32,
+                device=device,
+            ),
         )  # [3]
 
         resolved_scale: Sequence[float] = (

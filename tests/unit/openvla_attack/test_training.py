@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -17,6 +18,11 @@ LIBERO_EXPERIMENT_DIR = (
     Path(__file__).resolve().parents[3] / "openvla/experiments/robot/libero"
 )
 sys.path.insert(0, str(LIBERO_EXPERIMENT_DIR))
+
+# Robosuite 默认尝试向只读 site-packages 写 Numba cache。该测试只覆盖 trainer
+# 编排，不需要 JIT；在导入 training/evaluation 之前固定关闭，避免依赖 pytest
+# 恰好先收集其他测试文件。
+os.environ.setdefault("NUMBA_DISABLE_JIT", "1")
 
 import openvla_attack.training as training
 from openvla_attack.artifacts import LiveSnapshotPaths
@@ -200,6 +206,15 @@ def test_trainer_collects_optimizes_and_reuses_episode_runner_for_live_test(
             False,
         )
     ]
+    runner_init_event: dict[str, object] = next(
+        value
+        for name, value in events
+        if name == "runner_init"
+    )
+    # live-test 必须从已激活纹理的 MuJoCo 环境读取图像，不得把训练 renderer
+    # 重新注入 episode runner 后重画目标物体。
+    assert "renderer" not in runner_init_event
+    assert "search_keywords" not in runner_init_event
     live_event: dict[str, object] = next(
         value
         for name, value in events
