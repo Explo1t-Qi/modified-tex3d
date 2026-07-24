@@ -214,6 +214,28 @@ GPU smoke 命令与通用验收条件见
 
 因此 OpenVLA 第一版重构的无 GPU 回归、入口导入和真实 GPU 流程均已验收通过。
 
+### 完整 Spatial task 0 回归
+
+2026-07-24 在最终重构代码上又完成了一次非 smoke 的完整流程：
+
+- run ID：
+  `spatial_task0_attack_5000_refactor_v1-EVAL-libero_spatial-2026_07_24-00_07_12`
+- 优化执行 5000 次，loss history 和 gradient log 均有 5000 条有效记录；
+- 所有 loss、gradient norm 和保存的对抗参数均为有限值，没有 NaN/Inf；
+- total loss 从 `1.510287` 降至 `-1.394392`；
+- action loss 从 `20.459118` 降至 `8.568576`；
+- feature loss 从 `-0.535352` 降至 `-2.251562`；
+- gradient norm 范围为 `[0.193309, 0.330754]`，没有梯度消失；
+- 保存的无界参数 shape 为 `[21932, 3]`，经 `tanh * (128 / 255)`
+  后逐通道扰动严格位于 `[-128/255, 128/255]`；
+- UV Map 和最终 Attack Texture 均为 `4096 x 4096` RGB 图像，内容一致；
+- 正式评估完成 50 个非空 rollout，25 次成功，最终成功率为 `50.00%`；
+- XML 与真实纹理均已恢复，且没有遗留本次运行的 clean backup。
+
+该成功率与基线文档记录的一次历史 Spatial task 0 完整运行相同。由于同配置的
+历史结果存在随机波动，本次验收的核心结论是：重构后的完整训练、产物落盘、正式
+评估和资源恢复数据流均正常，且攻击优化的数值趋势合理。
+
 Spatial checkpoint：
 `/data/huangsimin/openvla-7b-finetuned-libero-spatial`
 
