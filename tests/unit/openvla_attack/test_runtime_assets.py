@@ -110,6 +110,47 @@ def test_transaction_activates_and_restores_xml_and_real_texture(
     transaction.close(context="Repeated cleanup")
 
 
+def test_transaction_activates_hope_texture_by_xml_reference(
+    tmp_path: Path,
+) -> None:
+    """HOPE object 的 XML 节点名不一定包含 object_name。"""
+    xml_path: Path = tmp_path / "alphabet_soup.xml"
+    real_texture_path: Path = tmp_path / "texture_map.png"
+    clean_xml: str = (
+        "<mujoco><asset>"
+        '<texture name="tex-textured" file="texture_map.png" type="2d" />'
+        '<material name="textured" texture="tex-textured" '
+        'texuniform="true" />'
+        "</asset></mujoco>"
+    )
+    xml_path.write_text(clean_xml)
+    real_texture_path.write_bytes(b"clean-texture")
+
+    transaction: RuntimeAssetTransaction = RuntimeAssetTransaction.begin(
+        xml_path=xml_path,
+        real_texture_path=real_texture_path,
+        object_name="alphabet_soup",
+        backup_tag="test",
+        install_process_handlers=False,
+    )
+    adversarial_texture_path: Path = tmp_path / "adversarial.png"
+    adversarial_texture_path.write_bytes(b"adversarial")
+
+    transaction.activate_texture(
+        adversarial_texture_path,
+        mirror_real_texture=False,
+    )
+
+    texture_element, material_element = _read_target_xml(xml_path)
+    assert texture_element.get("file") == str(
+        adversarial_texture_path.resolve()
+    )
+    assert material_element.get("texuniform") == "false"
+
+    transaction.close(context="Final cleanup")
+    assert xml_path.read_text() == clean_xml
+
+
 def test_transaction_keeps_missing_real_texture_missing(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],

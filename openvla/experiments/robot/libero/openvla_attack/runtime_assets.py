@@ -175,7 +175,10 @@ class RuntimeAssetTransaction:
         """激活一张对抗纹理，并返回是否同步覆盖了真实纹理。
 
         XML 中目标 ``texture.file`` 被替换为对抗纹理的绝对路径，类型强制为
-        ``2d``；目标 material 的 ``texuniform`` 被设为 ``false``。
+        ``2d``；引用该 texture 的 material 之 ``texuniform`` 被设为
+        ``false``。节点优先通过 XML 中的真实文件引用和 texture/material
+        关联定位，而不是假定节点名称一定包含 ``object_name``；HOPE object
+        常使用 ``tex-textured`` / ``textured``。
 
         仅当 ``mirror_real_texture`` 为真，且事务开始时存在真实纹理（或运行中
         该路径后来出现）时才执行文件覆盖。这保留了缺失真实纹理时只修改 XML
@@ -185,22 +188,71 @@ class RuntimeAssetTransaction:
         tree: ET.ElementTree = ET.parse(self.xml_path)
         root: ET.Element = tree.getroot()
 
-        asset_element: ET.Element
+        # texture_elements: XML 中候选纹理节点，长度通常为 1。
+        texture_elements: list[ET.Element] = root.findall("asset/texture")
+        target_texture: Optional[ET.Element] = None
+        real_texture_path: Path = self.real_texture_path.resolve()
         texture_element: ET.Element
-        for asset_element in root.findall("asset"):
-            for texture_element in asset_element.findall("texture"):
-                if texture_element.get("name") == self._texture_name:
-                    texture_element.set(
-                        "file",
-                        str(resolved_texture_path),
-                    )
-                    texture_element.set("type", "2d")
-                    break
+        for texture_element in texture_elements:
+            texture_file: Optional[str] = texture_element.get("file")
+            if texture_file is None:
+                continue
+            referenced_path: Path = Path(texture_file)
+            if not referenced_path.is_absolute():
+                referenced_path = self.xml_path.parent / referenced_path
+            if referenced_path.resolve() == real_texture_path:
+                target_texture = texture_element
+                break
 
-        material_element: ET.Element
-        for material_element in root.findall(".//material"):
-            if material_element.get("name") == self._material_name:
-                material_element.set("texuniform", "false")
+        # override_texture_path 可能与 XML 原始 file 不同；保留旧命名作为 fallback。
+        if target_texture is None:
+            target_texture = next(
+                (
+                    element
+                    for element in texture_elements
+                    if element.get("name") == self._texture_name
+                ),
+                None,
+            )
+        if target_texture is None and len(texture_elements) == 1:
+            target_texture = texture_elements[0]
+        if target_texture is None:
+            raise ValueError(
+                "Unable to identify target texture in XML "
+                f"{self.xml_path} for {self.real_texture_path}"
+            )
+
+        target_texture_name: Optional[str] = target_texture.get("name")
+        target_texture.set("file", str(resolved_texture_path))
+        target_texture.set("type", "2d")
+
+        material_elements: list[ET.Element] = root.findall(".//material")
+        target_material: Optional[ET.Element] = next(
+            (
+                element
+                for element in material_elements
+                if target_texture_name is not None
+                and element.get("texture") == target_texture_name
+            ),
+            None,
+        )
+        if target_material is None:
+            target_material = next(
+                (
+                    element
+                    for element in material_elements
+                    if element.get("name") == self._material_name
+                ),
+                None,
+            )
+        if target_material is None and len(material_elements) == 1:
+            target_material = material_elements[0]
+        if target_material is None:
+            raise ValueError(
+                "Unable to identify material referencing texture "
+                f"{target_texture_name!r} in XML {self.xml_path}"
+            )
+        target_material.set("texuniform", "false")
         tree.write(self.xml_path)
 
         should_mirror: bool = (
