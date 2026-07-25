@@ -133,6 +133,18 @@ openvla/experiments/robot/libero/attack_openvla.py \
 - 生成 `Spectral_Coefficients.pt` 与 UV PNG；
 - episode 使用 State 1，流程正常结束。
 
+2026-07-25 已在真实 GPU 流程通过上述 smoke。产物核对结果：
+
+- loss history 为有限值 `[19.760244]`；
+- 谱系数 shape 为 `[128, 3]`，384 个系数均发生非零更新且数值有限；
+- gradient norm 为 `1.188943e+02`；
+- `Actual Surface Step = 7.843138e-03`，等于 `2/255`；
+- `Max Surface Delta = 7.843138e-03`，未触及 `128/255` 上界；
+- UV PNG、Spectral Coefficients、gradient log 和 State 1 rollout 均正常生成。
+
+本次单次 held-out rollout 成功率为 100%，但 smoke 仅验证工程数据流，不将该
+数值解释为谱攻击效果。
+
 ## 第一轮正式源模型实验
 
 正式 Geometry Vertex 与 Spectral 命令仅改变参数化相关字段。两者均使用：
@@ -197,6 +209,7 @@ direct adapter 会：
 - CPU 数值与回归测试：57 passed、1 skipped；
 - 真实 Akita mesh + K=128 basis 的 CPU 加载：
   `coefficients=(128, 3)`、384 参数、零 Surface Delta；
-- GPU spectral smoke：尚未执行；
+- GPU spectral smoke：已通过，梯度、曲面归一化更新、bake、产物保存与
+  held-out rollout 均正常；
 - OFT direct Active Texture adapter：CPU 测试通过；目标运行环境待确认；
 - OpenVLA/OFT 正式实验：尚未执行。
