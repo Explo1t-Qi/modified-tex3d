@@ -51,6 +51,7 @@
 
   ```bash
   CUDA_VISIBLE_DEVICES='' PYTHONDONTWRITEBYTECODE=1 TF_CPP_MIN_LOG_LEVEL=3 \
+    NUMBA_CACHE_DIR=/tmp/tex3d-numba-cache \
     /home/xiaomengqi/miniconda3/envs/tex3d-openvla/bin/python -m pytest -q tests
   ```
 
