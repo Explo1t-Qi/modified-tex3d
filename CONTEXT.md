@@ -29,6 +29,16 @@ _Avoid_: optimizer loop, attack step
 一次评估运行内对 **Clean Asset** 进行临时修改并保证最终恢复的生命周期。
 _Avoid_: file helper, XML utility
 
+**Surface Delta**:
+定义在 OBJ 几何顶点上的 RGB 颜色增量；它与 UV seam 复制出的渲染顶点分离，
+并由统一的 L∞ 预算约束。
+_Avoid_: vertex noise, texture noise
+
+**Texture Parameterization**:
+把可学习参数映射为 **Surface Delta** 的方式。当前包括逐几何顶点的
+Geometry Vertex adapter 与低维谱系数的 Spectral adapter。
+_Avoid_: optimizer, texture format
+
 ## Relationships
 
 - 一个 **Runtime Asset Transaction** 保存一组 **Clean Asset**
@@ -36,6 +46,9 @@ _Avoid_: file helper, XML utility
 - 一个 **Attack Artifact** 可以被选为 **Active Texture**，但不会因此成为 **Clean Asset**
 - 一次 **Attack Training** 消费多个 **Training Frame** 并生成一组 **Attack Artifact**
 - 每个 task 开始前和评估退出时，**Active Texture** 都恢复为 **Clean Asset**
+- 一种 **Texture Parameterization** 生成一个 **Surface Delta**
+- Geometry Vertex 与 Spectral **Texture Parameterization** 使用相同的
+  **Surface Delta** 预算与更新步长语义
 
 ## Example dialogue
 
@@ -49,3 +62,5 @@ _Avoid_: file helper, XML utility
 
 - “texture” 曾同时表示源纹理、当前注入纹理和实验输出；现在分别使用
   **Clean Asset**、**Active Texture** 和 **Attack Artifact**。
+- “vertex noise” 曾混合表示无界优化参数与真正施加到表面的 RGB 变化；现在
+  后者统一称为 **Surface Delta**。
