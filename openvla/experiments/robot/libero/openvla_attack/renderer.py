@@ -24,12 +24,31 @@ import trimesh
 from numpy.typing import NDArray
 from PIL import Image
 
+from .spectral_geometry import (
+    build_render_to_geometry_map,
+    load_obj_geometry,
+    load_spectral_basis,
+    validate_basis_geometry,
+)
+from .texture_parameterization import (
+    GeometryVertexTextureParameterization,
+    SpectralTextureParameterization,
+    SurfaceStepStats,
+    SurfaceTextureParameterization,
+    surface_normalized_step_,
+)
+
 
 Tensor: TypeAlias = torch.Tensor
 ImageResolution: TypeAlias = tuple[int, int]
 Device: TypeAlias = str | torch.device
 PathLike: TypeAlias = str | Path
 FloatingArray: TypeAlias = NDArray[np.floating[Any]]
+TextureParameterizationKind: TypeAlias = Literal[
+    "legacy_vertex",
+    "geometry_vertex",
+    "spectral",
+]
 
 
 @dataclass(frozen=True)
@@ -68,11 +87,13 @@ def resolve_position_offset(
 
 
 class DifferentiableRenderer(nn.Module):
-    """对 mesh 顶点颜色施加可学习扰动并渲染到相机画面。
+    """在保留原始 UV 的前提下施加可学习曲面颜色增量。
 
-    可学习参数只有 ``adv_noise``，形状为 ``[num_vertices, 3]``。mesh 几何、
-    UV、法线、原始纹理和光照校准参数都注册为 module buffer，随 renderer
-    一起迁移 device，但不会被 optimizer 当作可学习参数。
+    ``legacy_vertex`` 保留原实现，优化 seam-split 渲染顶点的无界
+    ``adv_noise [V, 3]``。``geometry_vertex`` 与 ``spectral`` 共享新的
+    **Surface Delta** 路径：先在原始 UV texture 上采样 clean color，再把
+    ``render_delta [V, 3]`` 插值到像素并相加。谱方法的唯一可学习参数为
+    ``coefficients [K, 3]``。
     """
 
     def __init__(
@@ -83,6 +104,11 @@ class DifferentiableRenderer(nn.Module):
         scale_xyz: Optional[Sequence[float]] = None,
         pos_offset: Optional[Sequence[float]] = None,
         epsilon: float = 128.0 / 255.0,
+        texture_parameterization: TextureParameterizationKind = (
+            "legacy_vertex"
+        ),
+        spectral_basis_path: Optional[PathLike] = None,
+        spectral_basis_count: int = 128,
     ) -> None:
         """加载物体资产并创建 CUDA rasterizer context。
 
@@ -94,11 +120,19 @@ class DifferentiableRenderer(nn.Module):
             scale_xyz: mesh 三轴缩放，长度应为 3；缺省为 ``[1, 1, 1]``。
             pos_offset: 可选的 model-space 顶点平移，长度必须为 3。缺省为
                 精确零偏移；只有经过轮廓对齐测量的特殊资产才应显式传值。
-            epsilon: ``tanh(adv_noise)`` 的最大逐通道颜色扰动幅度。
+            epsilon: 实际 **Surface Delta** 的最大逐通道颜色扰动幅度。
+            texture_parameterization: ``legacy_vertex`` 保留旧行为；
+                ``geometry_vertex`` 为公平的高维 UV 保真基线；
+                ``spectral`` 优化低维谱系数。
+            spectral_basis_path: ``spectral`` 模式必需的 NPZ 谱基产物。
+            spectral_basis_count: 从产物中取前 K 个非恒定低频模态。
         """
         super().__init__()
         self.device: Device = device
         self.epsilon: float = epsilon
+        self.texture_parameterization_kind: TextureParameterizationKind = (
+            texture_parameterization
+        )
         self.tex_h: int = 256
         self.tex_w: int = 256
 
@@ -120,14 +154,26 @@ class DifferentiableRenderer(nn.Module):
         )
         scale_array: FloatingArray = np.asarray(resolved_scale, dtype=np.float64)
 
+        mesh_load_succeeded: bool = True
         try:
             mesh: trimesh.Trimesh = trimesh.load(mesh_path, force="mesh")
         except Exception:
+            mesh_load_succeeded = False
             print(f"[WARNING] Failed to load mesh from {mesh_path}, using dummy box.")
             mesh = trimesh.creation.box(extents=[0.1, 0.1, 0.001])
 
         # vertices: [num_vertices, 3]；faces: [num_faces, 3]。
-        vertices: FloatingArray = np.asarray(mesh.vertices) * scale_array[None, :]
+        render_vertices_unscaled: FloatingArray = np.asarray(
+            mesh.vertices,
+            dtype=np.float64,
+        )
+        render_faces: NDArray[np.int64] = np.asarray(
+            mesh.faces,
+            dtype=np.int64,
+        )
+        vertices: FloatingArray = (
+            render_vertices_unscaled * scale_array[None, :]
+        )
         self.num_vertices: int = len(vertices)
         self.pos: Tensor
         self.faces: Tensor
@@ -135,7 +181,7 @@ class DifferentiableRenderer(nn.Module):
             "pos", torch.from_numpy(vertices.astype(np.float32)).to(device)
         )
         self.register_buffer(
-            "faces", torch.from_numpy(np.asarray(mesh.faces).astype(np.int32)).to(device)
+            "faces", torch.from_numpy(render_faces.astype(np.int32)).to(device)
         )
 
         # uv: [num_uv_vertices, 2]；uv_idx: [num_faces, 3]。
@@ -223,10 +269,65 @@ class DifferentiableRenderer(nn.Module):
         original_vertex_colors: Tensor = self._sample_uv_texture_at_vertices()
         self.orig_vertex_colors: Tensor
         self.register_buffer("orig_vertex_colors", original_vertex_colors)
-
+        # legacy 参数始终保留，以兼容历史 .pt 产物和默认实验命令。新的
+        # Geometry/Spectral 路径只通过 get_texture_param 暴露自己的参数。
         self.adv_noise: nn.Parameter = nn.Parameter(
             torch.zeros(self.num_vertices, 3, dtype=torch.float32, device=device)
         )
+        self.surface_parameterization: Optional[
+            GeometryVertexTextureParameterization
+            | SpectralTextureParameterization
+        ] = None
+        if texture_parameterization != "legacy_vertex":
+            if not mesh_load_succeeded:
+                raise ValueError(
+                    "曲面参数化要求 mesh 成功加载，不能使用 dummy fallback"
+                )
+            geometry_vertices, geometry_faces = load_obj_geometry(mesh_path)
+            render_to_geometry: NDArray[np.int64] = (
+                build_render_to_geometry_map(
+                    geometry_vertices,
+                    geometry_faces,
+                    render_vertices_unscaled,
+                    render_faces,
+                )
+            )
+            if texture_parameterization == "geometry_vertex":
+                self.surface_parameterization = (
+                    GeometryVertexTextureParameterization(
+                        render_to_geometry,
+                        num_geometry_vertices=len(geometry_vertices),
+                        epsilon=epsilon,
+                        device=device,
+                    )
+                )
+            elif texture_parameterization == "spectral":
+                if spectral_basis_path is None:
+                    raise ValueError(
+                        "spectral 参数化必须提供 spectral_basis_path"
+                    )
+                basis_data = load_spectral_basis(
+                    spectral_basis_path,
+                    max_basis=spectral_basis_count,
+                    include_constant=False,
+                )
+                validate_basis_geometry(
+                    basis_data,
+                    geometry_vertices,
+                    geometry_faces,
+                )
+                self.surface_parameterization = (
+                    SpectralTextureParameterization(
+                        basis_data.basis,
+                        render_to_geometry,
+                        epsilon=epsilon,
+                        device=device,
+                    )
+                )
+            else:
+                raise ValueError(
+                    f"未知纹理参数化: {texture_parameterization}"
+                )
         self.light_dir: Tensor = F.normalize(
             torch.tensor([0.2, 0.2, 1.0], device=device), dim=0
         )  # [3]
@@ -290,13 +391,51 @@ class DifferentiableRenderer(nn.Module):
             return sampled_colors.squeeze(0).squeeze(0).contiguous()
 
     def get_texture_param(self) -> nn.Parameter:
-        """返回 optimizer 更新的 ``[num_vertices, 3]`` 顶点颜色噪声。"""
+        """返回当前 adapter 的唯一可学习纹理参数。
+
+        legacy/Geometry Vertex 返回 ``[V, 3]`` 或 ``[N, 3]``；Spectral 返回
+        ``[K, 3]``。
+        """
+        if self.surface_parameterization is not None:
+            return self.surface_parameterization.coefficients
         return self.adv_noise
 
     def reset_texture(self) -> None:
-        """把可学习顶点颜色噪声原地清零。"""
+        """把当前纹理参数原地清零。"""
+        if self.surface_parameterization is not None:
+            self.surface_parameterization.reset_parameters()
+            return
         with torch.no_grad():
             self.adv_noise.data.fill_(0.0)
+
+    def get_texture_parameterization_name(self) -> str:
+        """返回用于日志和产物命名的稳定 adapter 名称。"""
+        return self.texture_parameterization_kind
+
+    def get_surface_delta(self) -> Tensor:
+        """返回与 renderer 顶点对齐的 float ``[V, 3]`` Surface Delta。"""
+        if self.surface_parameterization is not None:
+            return self.surface_parameterization.render_delta()
+        return torch.tanh(self.adv_noise) * self.epsilon
+
+    def step_surface_parameterization_(
+        self,
+        gradient: Tensor,
+        surface_step: float,
+    ) -> SurfaceStepStats:
+        """对 Geometry/Spectral adapter 执行统一的曲面归一化更新。"""
+        parameterization: Optional[SurfaceTextureParameterization] = (
+            self.surface_parameterization
+        )
+        if parameterization is None:
+            raise RuntimeError(
+                "legacy_vertex 不支持 surface-normalized 更新"
+            )
+        return surface_normalized_step_(
+            parameterization,
+            gradient,
+            surface_step,
+        )
 
     def load_adversarial_texture(
         self,
@@ -316,16 +455,30 @@ class DifferentiableRenderer(nn.Module):
         source_kind: Literal["parameter", "baked_texture"]
         delta: Tensor
 
+        texture_parameter: nn.Parameter = self.get_texture_param()
         if str(resolved_path).endswith(".pt"):
             source_kind = "parameter"
             loaded_noise: Tensor = torch.load(
                 resolved_path,
-                map_location=self.adv_noise.device,
+                map_location=texture_parameter.device,
             )
+            if loaded_noise.shape != texture_parameter.shape:
+                raise ValueError(
+                    f"纹理参数 shape 不匹配: {tuple(loaded_noise.shape)} != "
+                    f"{tuple(texture_parameter.shape)}"
+                )
             with torch.no_grad():
-                self.adv_noise.copy_(loaded_noise)
-                delta = torch.tanh(loaded_noise) * self.epsilon
+                texture_parameter.copy_(loaded_noise)
+                if self.surface_parameterization is not None:
+                    delta = self.surface_parameterization.geometry_delta()
+                else:
+                    delta = torch.tanh(loaded_noise) * self.epsilon
         else:
+            if self.surface_parameterization is not None:
+                raise ValueError(
+                    "Geometry/Spectral 参数化不能从 bake PNG 无损恢复参数；"
+                    "迁移评估应把 PNG 直接激活为 MuJoCo Active Texture"
+                )
             source_kind = "baked_texture"
             with Image.open(resolved_path) as baked_image:
                 # baked_pixels: float32 HWC [texture_height, texture_width, 3]。
@@ -337,7 +490,7 @@ class DifferentiableRenderer(nn.Module):
             baked_texture: Tensor = (
                 torch.from_numpy(baked_pixels)
                 .unsqueeze(0)
-                .to(self.adv_noise.device)
+                .to(texture_parameter.device)
             )
             stored_texture: Tensor = torch.flip(
                 baked_texture,
@@ -361,7 +514,7 @@ class DifferentiableRenderer(nn.Module):
             )
             loaded_noise = torch.atanh(delta / self.epsilon)
             with torch.no_grad():
-                self.adv_noise.copy_(loaded_noise)
+                texture_parameter.copy_(loaded_noise)
 
         max_absolute_delta: float = float(delta.abs().max().item())
         nonzero_percentage: float = float(
@@ -544,30 +697,64 @@ class DifferentiableRenderer(nn.Module):
             position_clip.unsqueeze(0),
             self.faces,
             resolution=resolution,
-        )
+        )   # 光栅化得到 [1, H, W, 4]
 
-        # straight-through clamp：forward 限制颜色，backward 保留 unclamped 梯度。
-        noise_parameter: Tensor = torch.tanh(self.adv_noise) * self.epsilon
-        raw_adversarial_vertex_color: Tensor = (
-            self.orig_vertex_colors + noise_parameter
-        )
-        adversarial_vertex_color: Tensor = raw_adversarial_vertex_color + (
-            raw_adversarial_vertex_color.clamp(0, 1) - raw_adversarial_vertex_color
-        ).detach()
-
-        # clean/adversarial_color: [1, H, W, 3]。
+        # clean/adversarial_color: float NHWC [1, H, W, 3]。
         clean_color: Tensor
         adversarial_color: Tensor
-        clean_color, _ = dr.interpolate(
-            self.orig_vertex_colors.unsqueeze(0).contiguous(),
-            raster,
-            self.faces,
-        )
-        adversarial_color, _ = dr.interpolate(
-            adversarial_vertex_color.unsqueeze(0).contiguous(),
-            raster,
-            self.faces,
-        )
+        if self.surface_parameterization is None:
+            # legacy 路径：先把 UV texture 采样成顶点颜色，再对顶点颜色插值。
+            # 这会在 UV bake 时产生已知的重采样模糊，仅用于历史行为对照。
+            raw_adversarial_vertex_color: Tensor = (
+                self.orig_vertex_colors + self.get_surface_delta()
+            )
+            adversarial_vertex_color: Tensor = (
+                raw_adversarial_vertex_color
+                + (
+                    raw_adversarial_vertex_color.clamp(0, 1)
+                    - raw_adversarial_vertex_color
+                ).detach()
+            )
+            clean_color, _ = dr.interpolate(
+                self.orig_vertex_colors.unsqueeze(0).contiguous(),
+                raster,
+                self.faces,
+            )
+            adversarial_color, _ = dr.interpolate(
+                adversarial_vertex_color.unsqueeze(0).contiguous(),
+                raster,
+                self.faces,
+            )
+        else:
+            # UV 保真路径：clean RGB 始终直接来自原始 atlas。pixel_uv 使用
+            # ``uv_idx``，而 Surface Delta 使用几何 ``faces``；两者的 triangle
+            # 顺序相同，所以可以在像素域精确相加。
+            pixel_uv: Tensor
+            pixel_uv, _ = dr.interpolate(
+                self.uv.unsqueeze(0).contiguous(),
+                raster,
+                self.uv_idx.int(),
+            )
+            clean_color = dr.texture(
+                self.orig_texture.contiguous(),
+                pixel_uv.contiguous(),
+                filter_mode="linear",
+            )
+            interpolated_delta: Tensor
+            interpolated_delta, _ = dr.interpolate(
+                self.get_surface_delta().unsqueeze(0).contiguous(),
+                raster,
+                self.faces,
+            )
+            raw_adversarial_color: Tensor = (
+                clean_color + interpolated_delta
+            )
+            # straight-through clamp：forward 保证合法 RGB，backward 保留
+            # unclamped 梯度，避免边界像素永久失去优化信号。
+            adversarial_color = raw_adversarial_color + (
+                raw_adversarial_color.clamp(0, 1)
+                - raw_adversarial_color
+            ).detach()
 
         world_vertex_normals: Tensor = (
             (model_rot @ self.vn.T).T if model_rot is not None else self.vn
@@ -631,33 +818,16 @@ class DifferentiableRenderer(nn.Module):
         return adversarial_lit, visibility_mask
 
     def get_baked_adv_texture(self) -> Tensor:
-        """把对抗顶点颜色完整 bake 到 UV atlas。
+        """把当前 Surface Delta bake 到 UV atlas。3D纹理变成 uv png
 
         Returns:
             NHWC texture tensor，形状 ``[1, tex_h, tex_w, 3]``，数值位于
             ``[0, 1]``。输出沿高度翻转，以恢复写入图像文件所需的 UV 方向。
         """
         with torch.no_grad():
-            noise_parameter: Tensor = torch.tanh(self.adv_noise) * self.epsilon
-            adversarial_vertex_color: Tensor = (
-                self.orig_vertex_colors + noise_parameter
-            ).clamp(0, 1)  # [num_vertices, 3]
-
             height: int = self.tex_h
             width: int = self.tex_w
             num_uv_vertices: int = int(self.uv.shape[0])
-
-            # uv_to_position: [num_uv_vertices]，把 UV 顶点映射到几何顶点。
-            uv_to_position: Tensor = torch.zeros(
-                num_uv_vertices, dtype=torch.long, device=self.device
-            )
-            face_vertex_indices: Tensor = self.faces.long()
-            face_uv_indices: Tensor = self.uv_idx.long()
-            for corner_index in range(3):
-                uv_to_position[face_uv_indices[:, corner_index]] = (
-                    face_vertex_indices[:, corner_index]
-                )
-            uv_vertex_color: Tensor = adversarial_vertex_color[uv_to_position]
 
             # uv_clip: [num_uv_vertices, 4]，把 [0, 1] UV 映射到 [-1, 1] clip space。
             uv_clip: Tensor = torch.zeros(
@@ -674,20 +844,55 @@ class DifferentiableRenderer(nn.Module):
                 self.uv_idx.int(),
                 resolution=[height, width],
             )
-            baked_colors: Tensor
-            baked_colors, _ = dr.interpolate(
-                uv_vertex_color.unsqueeze(0).contiguous(),
-                uv_raster,
-                self.uv_idx.int(),
-            )
-
             uv_visibility_mask: Tensor = (
                 (uv_raster[..., 3] > 0).unsqueeze(-1).float()
             )
-            baked_texture: Tensor = (
-                uv_visibility_mask * baked_colors
-                + (1.0 - uv_visibility_mask) * self.orig_texture
-            )
+            baked_texture: Tensor
+            if self.surface_parameterization is None:
+                noise_parameter: Tensor = self.get_surface_delta()
+                adversarial_vertex_color: Tensor = (
+                    self.orig_vertex_colors + noise_parameter
+                ).clamp(0, 1)  # [num_render_vertices, 3]
+
+                # uv_to_position: [num_uv_vertices]，把 UV 顶点映射到渲染顶点。
+                uv_to_position: Tensor = torch.zeros(
+                    num_uv_vertices,
+                    dtype=torch.long,
+                    device=self.device,
+                )
+                face_vertex_indices: Tensor = self.faces.long()
+                face_uv_indices: Tensor = self.uv_idx.long()
+                for corner_index in range(3):
+                    uv_to_position[face_uv_indices[:, corner_index]] = (
+                        face_vertex_indices[:, corner_index]
+                    )
+                uv_vertex_color: Tensor = adversarial_vertex_color[
+                    uv_to_position
+                ]
+                baked_colors: Tensor
+                baked_colors, _ = dr.interpolate(
+                    uv_vertex_color.unsqueeze(0).contiguous(),
+                    uv_raster,
+                    self.uv_idx.int(),
+                )
+                baked_texture = (
+                    uv_visibility_mask * baked_colors
+                    + (1.0 - uv_visibility_mask) * self.orig_texture
+                )
+            else:
+                # UV 保真 bake 不再执行 UV→顶点→UV 重采样。只将 Surface Delta
+                # 插值到 atlas，再与原始 texel 相加；零参数时结果逐元素等于
+                # orig_texture。
+                baked_delta: Tensor
+                baked_delta, _ = dr.interpolate(
+                    self.get_surface_delta().unsqueeze(0).contiguous(),
+                    uv_raster,
+                    self.faces,
+                )
+                raw_baked_texture: Tensor = (
+                    self.orig_texture + uv_visibility_mask * baked_delta
+                )
+                baked_texture = raw_baked_texture.clamp(0, 1)
             return torch.flip(baked_texture, dims=[1])
 
     def bake_vertex_colors_to_texture(

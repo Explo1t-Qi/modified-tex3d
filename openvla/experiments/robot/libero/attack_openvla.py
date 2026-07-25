@@ -9,7 +9,7 @@ import os
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable, Optional, Sequence, TextIO, Union
+from typing import Any, Iterable, Literal, Optional, Sequence, TextIO, Union
 
 import draccus
 import tqdm
@@ -51,6 +51,10 @@ from openvla_attack.renderer import (
 )
 from openvla_attack.runtime_assets import RuntimeAssetTransaction
 from openvla_attack.scene import SearchKeywords
+from openvla_attack.state_selection import (
+    InitialStatePartition,
+    select_initial_state_partition,
+)
 from openvla_attack.training import (
     AttackTrainer,
     AttackTrainingModel,
@@ -91,8 +95,20 @@ class GenerateConfig:
     enable_attack: bool = True
     attack_iters: int = 10
     attack_lr: float = 0.05
+    attack_surface_step: float = 2.0 / 255.0
+    attack_epsilon: float = 128.0 / 255.0
+    texture_parameterization: Literal[
+        "legacy_vertex",
+        "geometry_vertex",
+        "spectral",
+    ] = "legacy_vertex"
+    spectral_basis_path: Optional[str] = None
+    spectral_basis_count: int = 128
     num_frames_to_attack: int = 20
     num_train_init_states: int = 10
+    train_init_state_ids: Optional[str] = None
+    eval_init_state_ids: Optional[str] = None
+    require_disjoint_init_states: bool = True
     train_frames_per_state: int = 1
     alpha_action: float = 1.0
     alpha_feature: float = 10.0
@@ -191,7 +207,20 @@ def eval_libero(cfg: GenerateConfig) -> None:
             orig_texture_path=texture_path,
             device=str(model.device),
             scale_xyz=scale_xyz,
+            epsilon=cfg.attack_epsilon,
+            texture_parameterization=cfg.texture_parameterization,
+            spectral_basis_path=cfg.spectral_basis_path,
+            spectral_basis_count=cfg.spectral_basis_count,
         ).to(model.device)
+        texture_parameter_count: int = int(
+            renderer.get_texture_param().numel()
+        )
+        print(
+            "[INFO] Texture parameterization: "
+            f"{renderer.get_texture_parameterization_name()}, "
+            f"parameters={texture_parameter_count:,}, "
+            f"epsilon={cfg.attack_epsilon:.6f}"
+        )
     total_episodes: int = 0
     total_successes: int = 0
     video_resolution: int = 512
@@ -229,8 +258,24 @@ def eval_libero(cfg: GenerateConfig) -> None:
             task: Any = task_suite_obj.get_task(task_id)
             init_states: Sequence[Any] = (
                 task_suite_obj.get_task_init_states(task_id)
+            )   # 获取当前 task 对应的 init_states
+            state_partition: InitialStatePartition = (
+                select_initial_state_partition(
+                    init_states,
+                    num_train_states=cfg.num_train_init_states,
+                    num_eval_states=cfg.num_trials_per_task,
+                    train_state_specification=cfg.train_init_state_ids,
+                    eval_state_specification=cfg.eval_init_state_ids,
+                    reserve_training_states=cfg.enable_attack,
+                    require_disjoint=cfg.require_disjoint_init_states,
+                )
             )
-
+            print(
+                "[INFO] Initial-state partition: "
+                f"train={list(state_partition.train_state_ids)}, "
+                f"eval={list(state_partition.eval_state_ids)}"
+            )
+            # 已有对抗纹理的处理逻辑
             if cfg.enable_attack and cfg.load_texture_path is not None:
                 if renderer is None:
                     raise RuntimeError(
@@ -293,10 +338,10 @@ def eval_libero(cfg: GenerateConfig) -> None:
                 attack_trainer.train(
                     task=task,
                     task_description=train_task_desc,
-                    fallback_initial_state=init_states[0],
+                    fallback_initial_state=state_partition.train_states[0],
                     task_id=task_id,
                     num_iters=cfg.attack_iters,
-                    initial_states=init_states,
+                    initial_states=state_partition.train_states,
                 )
 
                 trained_tex_path: Path = artifact_store.save_trained_texture(
@@ -322,7 +367,7 @@ def eval_libero(cfg: GenerateConfig) -> None:
 
             n_eval: int = min(
                 cfg.num_trials_per_task,
-                len(init_states),
+                len(state_partition.eval_states),
             )
             episode_index: int
             for episode_index in tqdm.tqdm(
@@ -331,7 +376,7 @@ def eval_libero(cfg: GenerateConfig) -> None:
             ):
                 rollout_result: RolloutResult = episode_runner.run(
                     task=task,
-                    initial_state=init_states[episode_index],
+                    initial_state=state_partition.eval_states[episode_index],
                     task_id=task_id,
                     episode_index=episode_index,
                 )
@@ -341,6 +386,7 @@ def eval_libero(cfg: GenerateConfig) -> None:
                 total_episodes += 1
                 log_str: str = (
                     f"Task: {task_id} | Ep: {episode_index} | "
+                    f"State: {state_partition.eval_state_ids[episode_index]} | "
                     f"Success: {rollout_result.success}"
                 )
                 print(log_str)

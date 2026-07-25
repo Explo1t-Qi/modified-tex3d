@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Optional, Protocol, Sequence
+from typing import Any, Callable, Literal, Optional, Protocol, Sequence
 
 import numpy as np
 import torch
@@ -31,6 +31,7 @@ from .compositing import (
 )
 from .frame_collection import TrainingFrame
 from .objective import get_attack_loss
+from .texture_parameterization import SurfaceStepStats
 
 
 class OptimizationConfig(Protocol):
@@ -38,6 +39,7 @@ class OptimizationConfig(Protocol):
 
     num_frames_to_attack: int
     attack_lr: float
+    attack_surface_step: float
     alpha_action: float
     alpha_feature: float
     live_test_enabled: bool
@@ -57,7 +59,25 @@ class OptimizationModel(Protocol):
 class OptimizationRenderer(ForegroundRenderer, Protocol):
     """攻击优化需要读取和更新的 renderer interface。"""
 
-    adv_noise: nn.Parameter
+    def get_texture_param(self) -> nn.Parameter:
+        """返回唯一可学习参数，shape 为 ``[P, 3]`` 或 legacy ``[P]``。"""
+        ...
+
+    def get_texture_parameterization_name(self) -> str:
+        """返回 legacy_vertex、geometry_vertex 或 spectral。"""
+        ...
+
+    def get_surface_delta(self) -> torch.Tensor:
+        """返回渲染顶点域 float ``[V, 3]`` Surface Delta。"""
+        ...
+
+    def step_surface_parameterization_(
+        self,
+        gradient: torch.Tensor,
+        surface_step: float,
+    ) -> SurfaceStepStats:
+        """执行 Geometry/Spectral 的曲面归一化更新。"""
+        ...
 
 
 class ViewSampler(Protocol):
@@ -254,11 +274,21 @@ class AttackOptimizer:
             self._cfg.num_frames_to_attack,
             frame_pool_size,
         )
-        pgd_step: float = self._cfg.attack_lr
+        legacy_parameter_step: float = self._cfg.attack_lr
+        surface_step: float = self._cfg.attack_surface_step
+        parameterization_name: str = (
+            self._renderer.get_texture_parameterization_name()
+        )
+        update_rule: Literal["legacy_sign", "surface_normalized"] = (
+            "legacy_sign"
+            if parameterization_name == "legacy_vertex"
+            else "surface_normalized"
+        )
         loss_history: list[float] = []
         resolved_log_path = Path(gradient_log_path)
         resolved_log_path.write_text(
-            "Iter | Total Loss | Action Loss | Feature Loss | Grad Norm | LR\n"
+            "Iter | Total Loss | Action Loss | Feature Loss | Grad Norm | "
+            "Update Rule | Actual Surface Step | Max Surface Delta\n"
         )
 
         iterator = tqdm.tqdm(
@@ -267,7 +297,10 @@ class AttackOptimizer:
             leave=False,
         )
         for iteration_index in iterator:
-            self._renderer.adv_noise.grad = None
+            texture_parameter: nn.Parameter = (
+                self._renderer.get_texture_param()
+            )
+            texture_parameter.grad = None
             average_total_loss: float = 0.0
             average_action_loss: float = 0.0
             average_feature_loss: float = 0.0
@@ -326,10 +359,44 @@ class AttackOptimizer:
                 average_feature_loss /= valid_frame_count
             loss_history.append(average_total_loss)
 
-            gradient: Optional[torch.Tensor] = self._renderer.adv_noise.grad
+            gradient: Optional[torch.Tensor] = texture_parameter.grad
             gradient_norm: float = (
                 gradient.norm().item() if gradient is not None else 0.0
             )
+
+            if gradient is None:
+                raise RuntimeError(
+                    "攻击优化没有得到纹理梯度；请检查训练帧 MVP 和 view sampler"
+                )
+            before_surface_delta: torch.Tensor = (
+                self._renderer.get_surface_delta().detach().clone()
+            )
+            with torch.no_grad():
+                if update_rule == "legacy_sign":
+                    texture_parameter.data -= (
+                        legacy_parameter_step * gradient.sign()
+                    )
+                    after_surface_delta: torch.Tensor = (
+                        self._renderer.get_surface_delta().detach()
+                    )
+                    actual_surface_step: float = float(
+                        (
+                            after_surface_delta - before_surface_delta
+                        ).abs().amax().item()
+                    )
+                    max_surface_delta: float = float(
+                        after_surface_delta.abs().amax().item()
+                    )
+                else:
+                    step_stats: SurfaceStepStats = (
+                        self._renderer.step_surface_parameterization_(
+                            gradient,
+                            surface_step,
+                        )
+                    )
+                    actual_surface_step = step_stats.actual_surface_step
+                    max_surface_delta = step_stats.max_abs_delta
+
             with resolved_log_path.open("a") as log_file:
                 log_file.write(
                     f"{iteration_index:02d} | "
@@ -337,19 +404,15 @@ class AttackOptimizer:
                     f"{average_action_loss:.6f} | "
                     f"{average_feature_loss:.6f} | "
                     f"{gradient_norm:.6e} | "
-                    f"{pgd_step:.6e}\n"
+                    f"{update_rule} | "
+                    f"{actual_surface_step:.6e} | "
+                    f"{max_surface_delta:.6e}\n"
                 )
-
-            if gradient is None:
-                raise RuntimeError(
-                    "攻击优化没有得到纹理梯度；请检查训练帧 MVP 和 view sampler"
-                )
-            with torch.no_grad():
-                self._renderer.adv_noise.data -= pgd_step * gradient.sign()
             iterator.set_postfix(
                 act=f"{average_action_loss:.4f}",
                 feat=f"{average_feature_loss:.4f}",
                 gnorm=f"{gradient_norm:.4f}",
+                step=f"{actual_surface_step:.4f}",
             )
 
             one_based_iteration: int = iteration_index + 1

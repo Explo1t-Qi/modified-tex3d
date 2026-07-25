@@ -25,6 +25,11 @@ from openvla_attack.optimization import (
     WeightedTrainingFrame,
     sample_uniform_frame_batch,
 )
+from openvla_attack.texture_parameterization import SurfaceStepStats
+from openvla_attack.texture_parameterization import (
+    GeometryVertexTextureParameterization,
+    surface_normalized_step_,
+)
 
 
 @dataclass
@@ -33,6 +38,7 @@ class FakeOptimizationConfig:
 
     num_frames_to_attack: int = 1
     attack_lr: float = 0.1
+    attack_surface_step: float = 0.02
     alpha_action: float = 1.0
     alpha_feature: float = 0.0
     live_test_enabled: bool = True
@@ -44,6 +50,23 @@ class FakeOptimizationRenderer:
 
     def __init__(self) -> None:
         self.adv_noise = nn.Parameter(torch.tensor([0.2], dtype=torch.float32))
+
+    def get_texture_param(self) -> nn.Parameter:
+        return self.adv_noise
+
+    def get_texture_parameterization_name(self) -> str:
+        return "legacy_vertex"
+
+    def get_surface_delta(self) -> torch.Tensor:
+        return self.adv_noise
+
+    def step_surface_parameterization_(
+        self,
+        gradient: torch.Tensor,
+        surface_step: float,
+    ) -> SurfaceStepStats:
+        del gradient, surface_step
+        raise AssertionError("legacy 测试不应调用曲面更新")
 
 
 class FakeOptimizationModel:
@@ -57,6 +80,38 @@ class FakeOptimizationModel:
         logits = scalar.reshape(1, 1, 1)
         hidden = scalar.reshape(1, 1, 1)
         return SimpleNamespace(logits=logits, hidden_states=[hidden])
+
+
+class FakeSurfaceOptimizationRenderer:
+    """使用真实 Geometry adapter 覆盖 surface-normalized optimizer 分支。"""
+
+    def __init__(self) -> None:
+        self.parameterization = GeometryVertexTextureParameterization(
+            render_to_geometry=torch.tensor([0]),
+            num_geometry_vertices=1,
+            epsilon=0.5,
+            device="cpu",
+        )
+
+    def get_texture_param(self) -> nn.Parameter:
+        return self.parameterization.coefficients
+
+    def get_texture_parameterization_name(self) -> str:
+        return "geometry_vertex"
+
+    def get_surface_delta(self) -> torch.Tensor:
+        return self.parameterization.render_delta()
+
+    def step_surface_parameterization_(
+        self,
+        gradient: torch.Tensor,
+        surface_step: float,
+    ) -> SurfaceStepStats:
+        return surface_normalized_step_(
+            self.parameterization,
+            gradient,
+            surface_step,
+        )
 
 
 def _training_frame() -> TrainingFrame:
@@ -189,7 +244,55 @@ def test_optimizer_uses_view_sampler_updates_texture_logs_and_schedules_callback
 
     gradient_log = gradient_log_path.read_text()
     assert gradient_log.startswith(
-        "Iter | Total Loss | Action Loss | Feature Loss | Grad Norm | LR\n"
+        "Iter | Total Loss | Action Loss | Feature Loss | Grad Norm | "
+        "Update Rule | Actual Surface Step | Max Surface Delta\n"
     )
     assert "0.200195" in gradient_log
+    assert "legacy_sign" in gradient_log
     assert "1.000000e-01" in gradient_log
+
+
+def test_optimizer_uses_surface_normalized_update_for_new_adapter(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    renderer = FakeSurfaceOptimizationRenderer()
+
+    def surface_view_sampler(
+        current_renderer: FakeSurfaceOptimizationRenderer,
+        frame: SingleViewFrame,
+        render_resolution: int,
+    ) -> list[torch.Tensor]:
+        del frame, render_resolution
+        scalar = current_renderer.get_surface_delta().mean()
+        return [scalar.reshape(1, 1, 1, 1).expand(1, 3, 2, 2)]
+
+    monkeypatch.setattr(
+        optimization,
+        "get_attack_loss",
+        lambda logits, clean_ids: logits.mean(),
+    )
+    monkeypatch.setattr(
+        optimization,
+        "autocast",
+        lambda **kwargs: nullcontext(),
+    )
+    gradient_log_path = tmp_path / "surface-gradient.txt"
+    optimizer = AttackOptimizer(
+        cfg=FakeOptimizationConfig(attack_surface_step=0.02),
+        model=FakeOptimizationModel(),
+        renderer=renderer,
+        view_sampler=surface_view_sampler,
+        render_resolution=2,
+    )
+
+    optimizer.optimize(
+        frames=[_training_frame()],
+        num_iters=1,
+        gradient_log_path=gradient_log_path,
+    )
+
+    assert abs(renderer.parameterization.max_abs_delta() - 0.02) < 1e-6
+    gradient_log = gradient_log_path.read_text()
+    assert "surface_normalized" in gradient_log
+    assert "2.000000e-02" in gradient_log

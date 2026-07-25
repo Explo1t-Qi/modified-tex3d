@@ -40,6 +40,9 @@
 | Module | 主要 interface | 隐藏的实现知识 |
 |---|---|---|
 | `assets.py` | `OBJECT_ASSETS`, `parse_mesh_scale` | Object/Suite/task 映射与 XML mesh scale |
+| `spectral_geometry.py` | `SpectralBasisData`、谱基生成/校验 | CPU 曲面谱几何与严格拓扑映射 |
+| `texture_parameterization.py` | Geometry Vertex / Spectral adapters | 可学习参数到 Surface Delta 的统一 seam |
+| `state_selection.py` | `InitialStatePartition` | 训练与 held-out 评估初始状态隔离 |
 | `action_codec.py` | `decode_action_from_generated_ids` | OpenVLA action token、bin center 和反归一化 mask |
 | `scene.py` | `find_target_body_pose`, `compute_render_mvp` | MuJoCo body 查询、相机矩阵和去目标背景 |
 | `renderer.py` | `DifferentiableRenderer` | mesh/UV、顶点扰动、nvdiffrast、光照校准、texture bake/加载 |

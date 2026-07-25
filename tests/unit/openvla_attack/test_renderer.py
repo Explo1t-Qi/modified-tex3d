@@ -91,6 +91,8 @@ def _minimal_cpu_renderer() -> DifferentiableRenderer:
     nn.Module.__init__(renderer)
     renderer.device = torch.device("cpu")
     renderer.epsilon = 0.5
+    renderer.texture_parameterization_kind = "legacy_vertex"
+    renderer.surface_parameterization = None
     renderer.adv_noise = nn.Parameter(
         torch.zeros((2, 3), dtype=torch.float32)
     )
@@ -169,3 +171,48 @@ def test_renderer_converts_baked_png_to_vertex_noise(
     torch.testing.assert_close(loaded_delta, expected_delta)
     assert result.source_kind == "baked_texture"
     assert result.max_absolute_delta == expected_delta.abs().max().item()
+
+
+def test_geometry_vertex_renderer_builds_surface_parameterization(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    """新 adapter 应使用 OBJ 几何顶点，而非无界 legacy 参数。"""
+    mesh_path = tmp_path / "triangle.obj"
+    mesh_path.write_text(
+        "\n".join(
+            [
+                "v 0 0 0",
+                "v 1 0 0",
+                "v 0 1 0",
+                "f 1 2 3",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        "openvla_attack.renderer.dr.RasterizeCudaContext",
+        lambda: object(),
+    )
+    monkeypatch.setattr(
+        DifferentiableRenderer,
+        "_sample_uv_texture_at_vertices",
+        lambda renderer: torch.zeros(
+            (renderer.num_vertices, 3),
+            dtype=torch.float32,
+            device=renderer.device,
+        ),
+    )
+
+    renderer = DifferentiableRenderer(
+        mesh_path=mesh_path,
+        device=torch.device("cpu"),
+        texture_parameterization="geometry_vertex",
+    )
+
+    assert renderer.get_texture_parameterization_name() == "geometry_vertex"
+    assert renderer.get_texture_param().shape == (3, 3)
+    torch.testing.assert_close(
+        renderer.get_surface_delta(),
+        torch.zeros((3, 3)),
+    )

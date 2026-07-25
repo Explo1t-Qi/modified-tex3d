@@ -31,10 +31,12 @@ PathLike: TypeAlias = str | Path
 class ArtifactRenderer(Protocol):
     """保存攻击产物所需的最小 renderer interface。"""
 
-    adv_noise: nn.Parameter
-
     def get_texture_param(self) -> nn.Parameter:
-        """返回可学习纹理参数，shape 为 ``[num_vertices, 3]``。"""
+        """返回可学习纹理参数，shape 为 ``[parameter_count, 3]``。"""
+        ...
+
+    def get_texture_parameterization_name(self) -> str:
+        """返回当前纹理参数化的稳定名称。"""
         ...
 
     def get_baked_adv_texture(self) -> torch.Tensor:
@@ -129,16 +131,17 @@ class AttackArtifactStore:
     ) -> Image.Image:
         """把 renderer 的 NHWC float texture 转成历史格式的 RGB PNG。
 
-        renderer 返回 ``[1, tex_h, tex_w, 3]``、值域 ``[0, 1]``。保持旧实现
-        的数值语义：先乘 255，再直接转换为 uint8（小数向零截断）。
+        renderer 返回 ``[1, tex_h, tex_w, 3]``、值域 ``[0, 1]``。转换时舍入到
+        最近的 uint8 texel；这样从原始 uint8 PNG 读取后再做零增量 bake，能够
+        精确恢复原像素，而不会因浮点除法后的向零截断产生偶发 ``-1``。
         """
         # baked_texture: float CPU NHWC [1, tex_h, tex_w, 3]。
         baked_texture: torch.Tensor = (
             renderer.get_baked_adv_texture().squeeze(0).cpu()
         )
-        texture_pixels: np.ndarray = (
-            baked_texture.numpy() * 255
-        ).astype(np.uint8)
+        texture_pixels: np.ndarray = np.rint(
+            baked_texture.numpy() * 255.0
+        ).clip(0, 255).astype(np.uint8)
         return Image.fromarray(texture_pixels)
 
     def _save_baked_texture(
@@ -151,6 +154,23 @@ class AttackArtifactStore:
         self._baked_texture_to_image(renderer).save(path)
         return path
 
+    @staticmethod
+    def _parameter_artifact_tag(renderer: ArtifactRenderer) -> str:
+        """把 adapter 名称转换为可读且稳定的参数产物标签。"""
+        parameterization_name: str = (
+            renderer.get_texture_parameterization_name()
+        )
+        tags: dict[str, str] = {
+            "legacy_vertex": "Vertex_Noise",
+            "geometry_vertex": "Geometry_Vertex_Delta",
+            "spectral": "Spectral_Coefficients",
+        }
+        if parameterization_name not in tags:
+            raise ValueError(
+                f"未知纹理参数化产物名称: {parameterization_name}"
+            )
+        return tags[parameterization_name]
+
     def save_optimization_result(
         self,
         *,
@@ -160,11 +180,13 @@ class AttackArtifactStore:
     ) -> OptimizationArtifactPaths:
         """保存优化终态噪声、UV texture 与逐轮 loss。
 
-        ``noise`` 保持 float tensor，shape ``[num_vertices, 3]``；
+        参数保持 float tensor：legacy/Geometry 为 ``[V 或 N, 3]``，
+        Spectral 为 ``[K, 3]``；
         ``loss_history`` 保存为一维 NumPy array，shape ``[num_iters]``。
         """
+        parameter_tag: str = self._parameter_artifact_tag(renderer)
         noise_path: Path = self.attack_directory / (
-            f"Ep{episode_index}_Vertex_Noise.pt"
+            f"Ep{episode_index}_{parameter_tag}.pt"
         )
         texture_path: Path = self.attack_directory / (
             f"Ep{episode_index}_UV_Map.png"
@@ -203,8 +225,11 @@ class AttackArtifactStore:
             f"Ep{episode_index}_noise_{iteration_tag}.pt"
         )
         self._save_baked_texture(path=texture_path, renderer=renderer)
-        # noise: float CPU [num_vertices, 3]。
-        torch.save(renderer.adv_noise.detach().cpu(), noise_path)
+        # parameter: float CPU [parameter_count, 3]。
+        torch.save(
+            renderer.get_texture_param().detach().cpu(),
+            noise_path,
+        )
         return LiveSnapshotPaths(
             texture_path=texture_path,
             noise_path=noise_path,

@@ -38,6 +38,10 @@ class FakeArtifactRenderer:
         """返回需要保存的可学习纹理参数。"""
         return self.adv_noise
 
+    def get_texture_parameterization_name(self) -> str:
+        """测试默认覆盖历史 legacy 文件名。"""
+        return "legacy_vertex"
+
     def get_baked_adv_texture(self) -> torch.Tensor:
         """返回 NHWC [1, texture_height, texture_width, 3] 的测试纹理。"""
         return torch.tensor(
@@ -93,7 +97,7 @@ def test_store_preserves_run_paths_and_optimization_artifact_formats(
     saved_pixels: np.ndarray = np.array(Image.open(saved.texture_path))
     np.testing.assert_array_equal(
         saved_pixels,
-        np.array([[[0, 127, 255], [255, 63, 0]]], dtype=np.uint8),
+        np.array([[[0, 128, 255], [255, 64, 0]]], dtype=np.uint8),
     )
 
 

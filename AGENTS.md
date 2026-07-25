@@ -11,6 +11,21 @@
 - 不要求严格保持旧的 Python 内部 interface；实验行为、关键数值语义和可复查
   的命令行流程应通过测试或基线文档保护。
 
+## 当前谱参数化目标
+
+- OpenVLA 第一版使用 LIBERO Spatial task 0 / `akita_black_bowl`，从 K=128
+  个非恒定低频谱基开始；实现和命令见
+  `docs/spectral/openvla-spectral-mvp.md`。
+- Geometry Vertex 与 Spectral 必须通过同一个 Texture Parameterization
+  interface 生成 Surface Delta，并使用相同 L∞ 预算、曲面归一化步长、原始
+  UV 采样路径及训练帧。
+- 谱基定义在原始 OBJ 几何顶点上；UV seam 的 renderer 顶点必须用 face
+  corner 拓扑严格映射，禁止用最近邻猜测。
+- 零 Surface Delta 必须保留原 UV。迁移评估直接激活 bake PNG 并使用目标
+  policy 的 MuJoCo observation，禁止在目标模型侧再次做 PNG→顶点→PNG。
+- 默认攻击状态划分为 train 0–9、held-out eval 10–49；实验日志必须保留原始
+  state ID。谱基、视频、模型权重和攻击纹理等实验产物不进入 Git。
+
 ## 代码规范
 
 - 新建或重写的 Python 代码尽量完整标注参数、返回值、属性和局部变量类型。
