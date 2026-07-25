@@ -26,18 +26,28 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-print("[INFO] Setting up OSMesa for CPU Rendering...")
-os.environ['MUJOCO_GL'] = 'osmesa'
-os.environ['PYOPENGL_PLATFORM'] = 'osmesa'
+os.environ.setdefault("MUJOCO_GL", "egl")
+os.environ.setdefault("PYOPENGL_PLATFORM", "egl")
+print(
+    "[INFO] MuJoCo rendering backend: "
+    f"{os.environ['MUJOCO_GL']}"
+)
+if os.environ["MUJOCO_GL"].lower() == "osmesa":
+    try:
+        ctypes.CDLL("libOSMesa.so")
+    except Exception as e:
+        print(f"[WARNING] Failed to load libOSMesa.so: {e}")
 
-try:
-    ctypes.CDLL("libOSMesa.so")
-except Exception as e:
-    print(f"[WARNING] Failed to load libOSMesa.so: {e}")
-
-PATH_TO_LIBERO_ROOT = "./LIBERO-master"
-ASSET_ROOT_SCANNED  = "./LIBERO-master/libero/libero/assets/stable_scanned_objects"
-ASSET_ROOT_HOPE     = "./LIBERO-master/libero/libero/assets/stable_hope_objects"
+PATH_TO_LIBERO_ROOT = os.environ.get(
+    "LIBERO_ROOT",
+    "/home/xiaomengqi/src/github/paper_code/LIBERO",
+)
+ASSET_ROOT_SCANNED = (
+    f"{PATH_TO_LIBERO_ROOT}/libero/libero/assets/stable_scanned_objects"
+)
+ASSET_ROOT_HOPE = (
+    f"{PATH_TO_LIBERO_ROOT}/libero/libero/assets/stable_hope_objects"
+)
 
 if PATH_TO_LIBERO_ROOT not in sys.path:
     sys.path.append(PATH_TO_LIBERO_ROOT)
@@ -53,6 +63,11 @@ try:
     from libero_utils import get_libero_wrist_image
 except Exception:
     get_libero_wrist_image = None
+from transfer_evaluation import (
+    activate_texture_in_xml,
+    parse_eval_state_ids,
+    validate_active_texture,
+)
 sys.path.append(str(Path(__file__).parent.parent))
 from openvla_utils import get_processor
 try:
@@ -1223,6 +1238,8 @@ class GenerateConfig:
 
     save_attack_artifacts: bool           = True
     load_texture_path:     Optional[str]  = None
+    direct_active_texture_evaluation: bool = True
+    eval_init_state_ids: Optional[str] = None
     local_log_dir:         str            = "./experiments/logs"
 
     use_wandb:     bool           = False
@@ -1342,8 +1359,14 @@ def eval_libero(cfg: GenerateConfig) -> None:
     if get_noisy_action_projector is not None and cfg.use_diffusion:
         noisy_action_projector = get_noisy_action_projector(cfg, model.llm_dim)
 
+    direct_active_texture_evaluation = (
+        cfg.enable_attack
+        and cfg.load_texture_path is not None
+        and not cfg.load_texture_path.endswith(".pt")
+        and cfg.direct_active_texture_evaluation
+    )
     renderer = None
-    if cfg.enable_attack:
+    if cfg.enable_attack and not direct_active_texture_evaluation:
         print("[INFO] Initializing DifferentiableRenderer...")
         renderer = DifferentiableRenderer(
             mesh_path=mesh_path,
@@ -1364,11 +1387,53 @@ def eval_libero(cfg: GenerateConfig) -> None:
 
             task        = task_suite_obj.get_task(task_id)
             init_states = task_suite_obj.get_task_init_states(task_id)
+            eval_state_ids = parse_eval_state_ids(
+                cfg.eval_init_state_ids,
+                total_states=len(init_states),
+                maximum_count=cfg.num_trials_per_task,
+            )
+            print(
+                "[INFO] OFT eval init states: "
+                f"{list(eval_state_ids)}"
+            )
 
             if cfg.enable_attack and cfg.load_texture_path is not None:
-                cfg.use_proprio = False
-                print(f"[INFO] Loading pre-trained adversarial noise from {cfg.load_texture_path}")
-                if cfg.load_texture_path.endswith(".pt"):
+                print(
+                    "[INFO] Loading external Attack Artifact from "
+                    f"{cfg.load_texture_path}"
+                )
+                if direct_active_texture_evaluation:
+                    active_texture_info = validate_active_texture(
+                        cfg.load_texture_path
+                    )
+                    adv_tex_inj_path = str(active_texture_info.path)
+                    activate_texture_in_xml(
+                        xml_path=original_xml,
+                        object_name=cfg.object_name,
+                        active_texture_path=active_texture_info.path,
+                    )
+                    print(
+                        "[INFO] Direct MuJoCo Active Texture enabled: "
+                        f"{active_texture_info.width}x"
+                        f"{active_texture_info.height}, "
+                        f"sha256={active_texture_info.sha256}"
+                    )
+                    print(
+                        "[INFO] Policy input source: MuJoCo observation "
+                        "(no PNG→vertex resampling, no nvdiffrast composite)"
+                    )
+                    if _real_tex_path.exists() or _real_tex_backup is not None:
+                        shutil.copy(active_texture_info.path, _real_tex_path)
+                        print(
+                            "[INFO] Real MuJoCo texture overwritten → "
+                            f"{_real_tex_path}"
+                        )
+                elif cfg.load_texture_path.endswith(".pt"):
+                    cfg.use_proprio = False
+                    if renderer is None:
+                        raise RuntimeError(
+                            ".pt 参数加载需要 DifferentiableRenderer"
+                        )
                     noise_t = torch.load(cfg.load_texture_path,
                                          map_location=renderer.adv_noise.device)
                     renderer.adv_noise.data.copy_(noise_t)
@@ -1378,6 +1443,11 @@ def eval_libero(cfg: GenerateConfig) -> None:
                           f"max_delta={delta.abs().max():.4f}, "
                           f"nonzero={(delta.abs() > 1e-3).float().mean() * 100:.1f}%")
                 else:
+                    cfg.use_proprio = False
+                    if renderer is None:
+                        raise RuntimeError(
+                            "legacy PNG 重采样需要 DifferentiableRenderer"
+                        )
                     baked_np  = np.array(Image.open(cfg.load_texture_path)).astype(np.float32) / 255.0
                     baked_t   = torch.from_numpy(baked_np).unsqueeze(0).to(renderer.adv_noise.device)
                     baked_stored = torch.flip(baked_t, dims=[1])
@@ -1392,28 +1462,31 @@ def eval_libero(cfg: GenerateConfig) -> None:
                     print(f"[INFO] adv_noise loaded from PNG: "
                           f"max_delta={delta.abs().max():.4f}, "
                           f"nonzero={(delta.abs() > 1e-3).float().mean() * 100:.1f}%")
-                adv_tex_inj_path = os.path.join(artifact_dir, f"task_{task_id}_adv_tex_loaded.png")
-                with torch.no_grad():
-                    baked_vis = renderer.get_baked_adv_texture()
-                Image.fromarray(
-                    (baked_vis.squeeze(0).cpu().numpy() * 255).astype(np.uint8)
-                ).save(adv_tex_inj_path)
-                tree = ET.parse(original_xml)
-                root = tree.getroot()
-                for asset_elem in root.findall("asset"):
-                    for tex_elem in asset_elem.findall("texture"):
-                        if tex_elem.get("name") == f"tex-{cfg.object_name}":
-                            tex_elem.set("file", str(Path(adv_tex_inj_path).resolve()))
-                            tex_elem.set("type", "2d")
-                            break
-                for mat_elem in root.findall(".//material"):
-                    if mat_elem.get("name") == f"mat-{cfg.object_name}":
-                        mat_elem.set("texuniform", "false")
-                tree.write(original_xml)
-                print(f"[INFO] MuJoCo XML updated with adversarial texture → {adv_tex_inj_path}")
-                if _real_tex_path.exists() or _real_tex_backup is not None:
-                    shutil.copy(adv_tex_inj_path, _real_tex_path)
-                    print(f"[INFO] Real MuJoCo texture overwritten → {_real_tex_path}")
+                if not direct_active_texture_evaluation:
+                    adv_tex_inj_path = os.path.join(
+                        artifact_dir,
+                        f"task_{task_id}_adv_tex_loaded.png",
+                    )
+                    with torch.no_grad():
+                        baked_vis = renderer.get_baked_adv_texture()
+                    Image.fromarray(
+                        (baked_vis.squeeze(0).cpu().numpy() * 255).astype(np.uint8)
+                    ).save(adv_tex_inj_path)
+                    activate_texture_in_xml(
+                        xml_path=original_xml,
+                        object_name=cfg.object_name,
+                        active_texture_path=adv_tex_inj_path,
+                    )
+                    print(
+                        "[INFO] MuJoCo XML updated with adversarial texture → "
+                        f"{adv_tex_inj_path}"
+                    )
+                    if _real_tex_path.exists() or _real_tex_backup is not None:
+                        shutil.copy(adv_tex_inj_path, _real_tex_path)
+                        print(
+                            "[INFO] Real MuJoCo texture overwritten → "
+                            f"{_real_tex_path}"
+                        )
 
             if cfg.enable_attack and cfg.load_texture_path is None and cfg.attack_iters > 0:
                 print(f"[INFO] Attack training for Task {task_id}...")
@@ -1465,13 +1538,17 @@ def eval_libero(cfg: GenerateConfig) -> None:
                     shutil.copy(trained_tex_path, _real_tex_path)
                     print(f"[INFO] Real MuJoCo texture overwritten → {_real_tex_path}")
 
-            for ep in tqdm.tqdm(range(cfg.num_trials_per_task),
-                                 desc=f"Task {task_id} Episodes"):
+            for ep, state_id in enumerate(
+                tqdm.tqdm(
+                    eval_state_ids,
+                    desc=f"Task {task_id} Episodes",
+                )
+            ):
                 env, task_description = get_libero_env(
                     task, cfg.model_family, resolution=VIDEO_RES
                 )
                 env.reset()
-                obs = env.set_init_state(init_states[ep])
+                obs = env.set_init_state(init_states[state_id])
                 env.env.sim.forward()
 
                 t, max_steps, done, replay_images = 0, 300, False, []
@@ -1557,7 +1634,10 @@ def eval_libero(cfg: GenerateConfig) -> None:
                         break
 
                 total_episodes += 1
-                log_str = f"Task: {task_id} | Ep: {ep} | Success: {done}"
+                log_str = (
+                    f"Task: {task_id} | Ep: {ep} | State: {state_id} | "
+                    f"Success: {done}"
+                )
                 print(log_str)
                 log_file.write(log_str + "\n")
                 log_file.flush()
