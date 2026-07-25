@@ -24,6 +24,7 @@ import trimesh
 from numpy.typing import NDArray
 from PIL import Image
 
+from .configuration import TextureParameterizationKind
 from .spectral_geometry import (
     build_render_to_geometry_map,
     load_obj_geometry,
@@ -44,11 +45,6 @@ ImageResolution: TypeAlias = tuple[int, int]
 Device: TypeAlias = str | torch.device
 PathLike: TypeAlias = str | Path
 FloatingArray: TypeAlias = NDArray[np.floating[Any]]
-TextureParameterizationKind: TypeAlias = Literal[
-    "legacy_vertex",
-    "geometry_vertex",
-    "spectral",
-]
 
 
 @dataclass(frozen=True)

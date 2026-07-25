@@ -194,7 +194,7 @@ direct adapter 会：
 
 ## 当前验证状态
 
-- CPU 数值与回归测试：55 passed、1 skipped；
+- CPU 数值与回归测试：57 passed、1 skipped；
 - 真实 Akita mesh + K=128 basis 的 CPU 加载：
   `coefficients=(128, 3)`、384 参数、零 Surface Delta；
 - GPU spectral smoke：尚未执行；

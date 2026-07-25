@@ -40,6 +40,7 @@
 | Module | 主要 interface | 隐藏的实现知识 |
 |---|---|---|
 | `assets.py` | `OBJECT_ASSETS`, `parse_mesh_scale` | Object/Suite/task 映射与 XML mesh scale |
+| `configuration.py` | `GenerateConfig`、CLI 类型收窄 | 无运行时副作用的 Draccus schema |
 | `spectral_geometry.py` | `SpectralBasisData`、谱基生成/校验 | CPU 曲面谱几何与严格拓扑映射 |
 | `texture_parameterization.py` | Geometry Vertex / Spectral adapters | 可学习参数到 Surface Delta 的统一 seam |
 | `state_selection.py` | `InitialStatePartition` | 训练与 held-out 评估初始状态隔离 |

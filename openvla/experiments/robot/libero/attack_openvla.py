@@ -7,9 +7,8 @@ Attack Training、可微渲染、优化、评估状态机、Attack Artifact 与 
 
 import os
 import sys
-from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable, Literal, Optional, Sequence, TextIO, Union
+from typing import Any, Iterable, Optional, Sequence, TextIO
 
 import draccus
 import tqdm
@@ -40,6 +39,11 @@ from libero.libero import benchmark
 
 from libero_utils import get_libero_env, save_rollout_video
 from openvla_attack.artifacts import AttackArtifactStore
+from openvla_attack.configuration import (
+    GenerateConfig,
+    TextureParameterizationKind,
+    resolve_texture_parameterization,
+)
 from openvla_attack.evaluation import (
     LiberoEpisodeRunner,
     RolloutResult,
@@ -67,82 +71,16 @@ if OPENVLA_REPO_ROOT not in sys.path:
     sys.path.insert(0, OPENVLA_REPO_ROOT)
 
 from openvla_utils import get_processor
-from robot_utils import (
-    DATE_TIME,
-    get_model,
-    set_seed_everywhere,
-)
-
-
-@dataclass
-class GenerateConfig:
-    model_family: str = "openvla"
-    pretrained_checkpoint: Union[str, Path] = "./openvla-7b-finetuned-libero-spatial"
-    load_in_8bit: bool = False
-    load_in_4bit: bool = False
-    center_crop: bool = True
-
-    object_name: str = "akita_black_bowl"
-    override_mesh_path: Optional[str] = None
-    override_texture_path: Optional[str] = None
-    override_xml_path: Optional[str] = None
-
-    task_suite_name: str = "libero_spatial"
-    task_id: Optional[int] = 7
-    num_steps_wait: int = 10
-    num_trials_per_task: int = 50
-
-    enable_attack: bool = True
-    attack_iters: int = 10
-    attack_lr: float = 0.05
-    attack_surface_step: float = 2.0 / 255.0
-    attack_epsilon: float = 128.0 / 255.0
-    texture_parameterization: Literal[
-        "legacy_vertex",
-        "geometry_vertex",
-        "spectral",
-    ] = "legacy_vertex"
-    spectral_basis_path: Optional[str] = None
-    spectral_basis_count: int = 128
-    num_frames_to_attack: int = 20
-    num_train_init_states: int = 10
-    train_init_state_ids: Optional[str] = None
-    eval_init_state_ids: Optional[str] = None
-    require_disjoint_init_states: bool = True
-    train_frames_per_state: int = 1
-    alpha_action: float = 1.0
-    alpha_feature: float = 10.0
-    frame_collect_with_policy: bool = False
-    collect_grasp_frames: bool = False
-    grasp_pre_frames: int = 40
-    grasp_post_frames: int = 0
-    grasp_max_steps: int = 400
-    grasp_qpos_threshold: float = 0.02
-
-    photometric_calib_frames: int = 5
-
-    live_test_enabled: bool = True
-    live_test_every_n_iters: int = 20
-    live_test_resolution: int = 256
-    live_test_max_steps: int = 300
-
-    save_attack_artifacts: bool = True
-    load_texture_path: Optional[str] = None
-    local_log_dir: str = "./experiments/logs"
-
-    use_wandb: bool = False
-    wandb_project: str = "openvla_attack"
-    wandb_entity: str = "user"
-
-    seed: int = 7
-    run_id_note: Optional[str] = None
-    unnorm_key: Optional[str] = None
+from robot_utils import DATE_TIME, get_model, set_seed_everywhere
 
 
 @draccus.wrap()
 def eval_libero(cfg: GenerateConfig) -> None:
     set_seed_everywhere(cfg.seed)
-
+    texture_parameterization: TextureParameterizationKind = (
+        resolve_texture_parameterization(cfg.texture_parameterization)
+    )
+    # 1. 解析配置
     if cfg.object_name not in OBJECT_ASSETS:
         raise ValueError(
             f"未知物体 '{cfg.object_name}'，可选: {list(OBJECT_ASSETS.keys())}"
@@ -208,7 +146,7 @@ def eval_libero(cfg: GenerateConfig) -> None:
             device=str(model.device),
             scale_xyz=scale_xyz,
             epsilon=cfg.attack_epsilon,
-            texture_parameterization=cfg.texture_parameterization,
+            texture_parameterization=texture_parameterization,
             spectral_basis_path=cfg.spectral_basis_path,
             spectral_basis_count=cfg.spectral_basis_count,
         ).to(model.device)

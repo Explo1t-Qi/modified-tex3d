@@ -31,6 +31,8 @@
 - 新建或重写的 Python 代码尽量完整标注参数、返回值、属性和局部变量类型。
 - 结构化字典优先使用 `TypedDict`，可替换对象优先使用 `Protocol`，固定常量
   使用 `Final`。不要只为了类型或 shape 标注新增运行时依赖。
+- 当前 Draccus 版本不能解码 `typing.Literal`。CLI dataclass 字段使用 Draccus
+  支持的 `str`，并在入口立即校验、收窄为内部 `Literal` 类型。
 - 张量和数组在 docstring 或首次出现处用中文标明语义、dtype、device 和 shape，
   例如 `[batch_size, sequence_length, vocab_size]`。
 - 新模块使用详细中文 docstring 和中文注释说明数据流、算法约束和不直观的转换；

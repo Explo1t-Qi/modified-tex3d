@@ -1,0 +1,109 @@
+"""OpenVLA 对抗纹理入口的纯配置 schema 与类型收窄。
+
+该模块不导入 LIBERO、OpenVLA、nvdiffrast 或 wandb。Draccus 可以独立解码
+``GenerateConfig``，单元测试也不会因为导入实验入口而修改 ``sys.path``。
+"""
+
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Literal, Optional, TypeAlias, Union, cast
+
+
+TextureParameterizationKind: TypeAlias = Literal[
+    "legacy_vertex",
+    "geometry_vertex",
+    "spectral",
+]
+SUPPORTED_TEXTURE_PARAMETERIZATIONS: frozenset[str] = frozenset(
+    {"legacy_vertex", "geometry_vertex", "spectral"}
+)
+
+
+def resolve_texture_parameterization(
+    raw_value: str,
+) -> TextureParameterizationKind:
+    """把 Draccus 可解码的字符串收窄为 renderer 强类型参数。
+
+    当前环境中的 Draccus 无法直接解码 ``typing.Literal``，因此 CLI dataclass
+    先接收 ``str``。所有合法值仍在实验入口统一校验，任意字符串不会继续传播
+    到 Texture Parameterization 核心数据流。
+    """
+    if raw_value not in SUPPORTED_TEXTURE_PARAMETERIZATIONS:
+        raise ValueError(
+            f"未知纹理参数化 {raw_value!r}；可选值为 "
+            f"{sorted(SUPPORTED_TEXTURE_PARAMETERIZATIONS)}"
+        )
+    return cast(TextureParameterizationKind, raw_value)
+
+
+@dataclass
+class GenerateConfig:
+    """OpenVLA LIBERO 对抗纹理训练与评估的命令行配置。
+
+    资产相关数据流：
+
+    ``object_name -> OBJECT_ASSETS -> XML / mesh / texture / search keywords``
+    """
+
+    model_family: str = "openvla"
+    pretrained_checkpoint: Union[
+        str,
+        Path,
+    ] = "./openvla-7b-finetuned-libero-spatial"
+    load_in_8bit: bool = False
+    load_in_4bit: bool = False
+    center_crop: bool = True
+
+    object_name: str = "akita_black_bowl"
+    override_mesh_path: Optional[str] = None
+    override_texture_path: Optional[str] = None
+    override_xml_path: Optional[str] = None
+
+    task_suite_name: str = "libero_spatial"
+    task_id: Optional[int] = 7
+    num_steps_wait: int = 10
+    num_trials_per_task: int = 50
+
+    enable_attack: bool = True
+    attack_iters: int = 10
+    attack_lr: float = 0.05
+    attack_surface_step: float = 2.0 / 255.0
+    attack_epsilon: float = 128.0 / 255.0
+    # Draccus 0.x 不支持直接解码 typing.Literal；eval_libero 会立即校验并收窄
+    # 为 TextureParameterizationKind。
+    texture_parameterization: str = "legacy_vertex"
+    spectral_basis_path: Optional[str] = None
+    spectral_basis_count: int = 128
+    num_frames_to_attack: int = 20
+    num_train_init_states: int = 10
+    train_init_state_ids: Optional[str] = None
+    eval_init_state_ids: Optional[str] = None
+    require_disjoint_init_states: bool = True
+    train_frames_per_state: int = 1
+    alpha_action: float = 1.0
+    alpha_feature: float = 10.0
+    frame_collect_with_policy: bool = False
+    collect_grasp_frames: bool = False
+    grasp_pre_frames: int = 40
+    grasp_post_frames: int = 0
+    grasp_max_steps: int = 400
+    grasp_qpos_threshold: float = 0.02
+
+    photometric_calib_frames: int = 5
+
+    live_test_enabled: bool = True
+    live_test_every_n_iters: int = 20
+    live_test_resolution: int = 256
+    live_test_max_steps: int = 300
+
+    save_attack_artifacts: bool = True
+    load_texture_path: Optional[str] = None
+    local_log_dir: str = "./experiments/logs"
+
+    use_wandb: bool = False
+    wandb_project: str = "openvla_attack"
+    wandb_entity: str = "user"
+
+    seed: int = 7
+    run_id_note: Optional[str] = None
+    unnorm_key: Optional[str] = None
