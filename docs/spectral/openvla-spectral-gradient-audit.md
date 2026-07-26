@@ -206,6 +206,23 @@ Smoke 通过后，正式 source-only 审计只需把以下字段替换为：
 --run_id_note spectral-audit-k512-states0-9
 ```
 
+2026-07-26 已在真实 OpenVLA checkpoint 上完成单状态 smoke：
+
+- 有效样本为 state 0、step 0，Action/Feature 梯度 shape 均为
+  `[1, 512, 3]`，所有数值有限，512 个模态均有非零梯度；
+- Action loss 为 `21.916494`，SigLIP feature loss 为 `-0.076172`，
+  与此前零扰动 K=128 Shared-SigLIP smoke 一致；
+- Action 梯度整体 L2 norm 为 `94.167759`，最大绝对值为 `13.590073`；
+- Feature 梯度整体 L2 norm 为 `2.863929`，最大绝对值为 `0.276452`；
+- 连续低频 K=128/256/384 的 Action 累计能量分别为
+  `49.39% / 71.90% / 88.29%`；
+- 连续低频 K=128/256/384 的 Feature 累计能量分别为
+  `31.30% / 55.42% / 82.89%`；
+- Feature stable-score Top-128 中有 66 个模态来自 `[0,128)`，24 个来自
+  `[128,256)`，38 个来自 `[256,512)`；单状态时 consistency 恒为 1，
+  该排名只能验证中高频候选确有局部贡献，不能作为最终选基依据；
+- NPZ、CSV（512 行）和 JSON 均成功写入。
+
 ## 第一轮决策
 
 读取审计结果后只比较两个候选：
@@ -225,4 +242,5 @@ Smoke 通过后，正式 source-only 审计只需把以下字段替换为：
 - 单帧独立 Action/SigLIP autograd：CPU 测试通过；
 - trainer audit-only 编排：CPU 测试通过；
 - K=512 候选 basis：已生成并通过几何、正交性、残差与低频一致性校验；
+- 真实 OpenVLA state 0 单样本 smoke：通过；
 - 真实 OpenVLA states 0–9 梯度审计：待 GPU 运行。
