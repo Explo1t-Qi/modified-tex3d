@@ -85,6 +85,34 @@ def eval_libero(cfg: GenerateConfig) -> None:
     feature_objective: FeatureObjectiveKind = resolve_feature_objective(
         cfg.feature_objective
     )
+    if (
+        cfg.spectral_gradient_audit_only
+        and not cfg.spectral_gradient_audit_enabled
+    ):
+        raise ValueError(
+            "spectral_gradient_audit_only=True 要求同时启用 "
+            "spectral_gradient_audit_enabled"
+        )
+    if cfg.spectral_gradient_audit_enabled:
+        if not cfg.enable_attack:
+            raise ValueError("谱基梯度审计要求 enable_attack=True")
+        if texture_parameterization != "spectral":
+            raise ValueError(
+                "谱基梯度审计要求 texture_parameterization='spectral'"
+            )
+        if feature_objective != "siglip_patch":
+            raise ValueError(
+                "谱基梯度审计要求 feature_objective='siglip_patch'"
+            )
+        if (
+            cfg.spectral_gradient_audit_top_k <= 0
+            or cfg.spectral_gradient_audit_top_k
+            > cfg.spectral_basis_count
+        ):
+            raise ValueError(
+                "spectral_gradient_audit_top_k 必须位于 "
+                f"[1, {cfg.spectral_basis_count}]"
+            )
     # 1. 解析配置
     if cfg.object_name not in OBJECT_ASSETS:
         raise ValueError(
@@ -292,7 +320,16 @@ def eval_libero(cfg: GenerateConfig) -> None:
                     task_id=task_id,
                     num_iters=cfg.attack_iters,
                     initial_states=state_partition.train_states,
+                    initial_state_ids=(
+                        state_partition.train_state_ids
+                    ),
                 )
+                if cfg.spectral_gradient_audit_only:
+                    print(
+                        f"[SPECTRAL-AUDIT] Task {task_id} 审计完成；"
+                        "跳过纹理训练产物激活与 held-out rollout"
+                    )
+                    continue
 
                 trained_tex_path: Path = artifact_store.save_trained_texture(
                     task_id=task_id,
@@ -351,19 +388,25 @@ def eval_libero(cfg: GenerateConfig) -> None:
                     log_file=log_file,
                 )
 
-        average_success_rate: float = (
-            total_successes / total_episodes
-            if total_episodes > 0
-            else 0.0
-        )
-        print(
-            f"\n[DONE] Episodes: {total_episodes} | "
-            f"Attack success rate: {average_success_rate:.2%}"
-        )
-        log_file.write(
-            "\nFINAL AVG SUCCESS RATE: "
-            f"{average_success_rate:.2%}\n"
-        )
+        if cfg.spectral_gradient_audit_only:
+            print("\n[DONE] Source-only spectral gradient audit completed.")
+            log_file.write(
+                "\nSOURCE-ONLY SPECTRAL GRADIENT AUDIT COMPLETED\n"
+            )
+        else:
+            average_success_rate: float = (
+                total_successes / total_episodes
+                if total_episodes > 0
+                else 0.0
+            )
+            print(
+                f"\n[DONE] Episodes: {total_episodes} | "
+                f"Attack success rate: {average_success_rate:.2%}"
+            )
+            log_file.write(
+                "\nFINAL AVG SUCCESS RATE: "
+                f"{average_success_rate:.2%}\n"
+            )
 
     finally:
         runtime_assets.close(context="Final cleanup")

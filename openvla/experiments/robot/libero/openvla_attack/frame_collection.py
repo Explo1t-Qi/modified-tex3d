@@ -137,6 +137,8 @@ class TrainingFrame(TypedDict):
     - ``clean_siglip_features``：共享 SigLIP 模式下的干净 patch features，
       ``[1, num_patches, siglip_feature_dim]``；默认 last-hidden 模式为
       ``None``。
+    - ``initial_state_id`` / ``collection_step_index``：该帧对应的原始 LIBERO
+      state ID 与状态内采集步，用于跨状态梯度审计，不能用局部列表下标替代。
     - 四个 mean/std：float32 ``[1, 3, 1, 1]``。
 
     NumPy action 字段 shape 均为 ``[action_dim]``。只有策略驱动采帧时
@@ -153,6 +155,8 @@ class TrainingFrame(TypedDict):
     executed_action: Optional[FloatingArray]
     clean_hidden: torch.Tensor
     clean_siglip_features: Optional[torch.Tensor]
+    initial_state_id: int
+    collection_step_index: int
     siglip_mean: torch.Tensor
     siglip_std: torch.Tensor
     dino_mean: torch.Tensor
@@ -236,6 +240,7 @@ class TrainingFrameCollector:
         observation: _LiberoObservation,
         task_description: str,
         state_index: int,
+        initial_state_id: int,
         step_index: int,
         calibration_count: int,
     ) -> tuple[TrainingFrame, int]:
@@ -401,6 +406,8 @@ class TrainingFrameCollector:
             "executed_action": executed_action,
             "clean_hidden": clean_hidden,
             "clean_siglip_features": clean_siglip_features,
+            "initial_state_id": initial_state_id,
+            "collection_step_index": step_index,
             "siglip_mean": self._siglip_mean,
             "siglip_std": self._siglip_std,
             "dino_mean": self._dino_mean,
@@ -416,6 +423,7 @@ class TrainingFrameCollector:
         task_description: str,
         initial_state: Any,
         state_index: int,
+        initial_state_id: int,
         calibration_count: int,
     ) -> tuple[list[TrainingFrame], int]:
         """在一个初始状态上按当前采样策略收集帧。"""
@@ -455,6 +463,7 @@ class TrainingFrameCollector:
                     observation=observation,
                     task_description=task_description,
                     state_index=state_index,
+                    initial_state_id=initial_state_id,
                     step_index=step_index,
                     calibration_count=calibration_count,
                 )
@@ -534,6 +543,7 @@ class TrainingFrameCollector:
         task_description: str,
         fallback_initial_state: Any,
         initial_states: Optional[Sequence[Any]] = None,
+        initial_state_ids: Optional[Sequence[int]] = None,
     ) -> list[TrainingFrame]:
         """从配置指定数量的初始状态中采集训练帧。
 
@@ -549,6 +559,14 @@ class TrainingFrameCollector:
             self._cfg.num_train_init_states,
             len(available_states),
         )
+        if (
+            initial_state_ids is not None
+            and len(initial_state_ids) < number_of_states
+        ):
+            raise ValueError(
+                "initial_state_ids 数量少于待采集状态数量："
+                f"{len(initial_state_ids)} < {number_of_states}"
+            )
         frames: list[TrainingFrame] = []
         calibration_count: int = 0
 
@@ -559,6 +577,11 @@ class TrainingFrameCollector:
                 task_description=task_description,
                 initial_state=available_states[state_index],
                 state_index=state_index,
+                initial_state_id=(
+                    int(initial_state_ids[state_index])
+                    if initial_state_ids is not None
+                    else state_index
+                ),
                 calibration_count=calibration_count,
             )
             frames.extend(state_frames)

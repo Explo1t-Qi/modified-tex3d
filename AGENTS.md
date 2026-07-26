@@ -28,6 +28,9 @@
 - OpenVLA checkpoint 的视觉分支顺序必须从 `timm_model_ids` 等模型配置读取，
   禁止仅凭 `featurizer` / `fused_featurizer` 属性名猜测 DINOv2 与 SigLIP。
   历史 6 通道顺序只为复现实验保留；新共享特征代码必须走显式模型分支。
+- 谱基选择的第一轮审计严格使用源 OpenVLA 训练 states；目标 OFT 梯度只能
+  作为迁移诊断，不能进入 source-only 排名。逐模态 raw gradient 必须同时报告
+  跨状态方向一致性与 Surface L∞ 幅值归一化，禁止直接按单帧梯度绝对值选基。
 
 ## 代码规范
 

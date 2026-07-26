@@ -22,6 +22,7 @@ from openvla_attack.renderer import (
     DifferentiableRenderer,
     resolve_position_offset,
 )
+from openvla_attack.spectral_geometry import save_spectral_basis
 
 
 def test_renderer_module_can_be_imported_without_creating_cuda_context() -> None:
@@ -215,4 +216,78 @@ def test_geometry_vertex_renderer_builds_surface_parameterization(
     torch.testing.assert_close(
         renderer.get_surface_delta(),
         torch.zeros((3, 3)),
+    )
+
+
+def test_spectral_renderer_exposes_basis_and_matching_eigenvalues(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    mesh_path = tmp_path / "triangle.obj"
+    mesh_path.write_text(
+        "\n".join(
+            [
+                "v 0 0 0",
+                "v 1 0 0",
+                "v 0 1 0",
+                "f 1 2 3",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    vertices = np.asarray(
+        [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+        dtype=np.float64,
+    )
+    faces = np.asarray([[0, 1, 2]], dtype=np.int64)
+    basis_with_constant = np.asarray(
+        [
+            [1.0, 1.0, 0.0],
+            [1.0, 0.0, 1.0],
+            [1.0, -1.0, -1.0],
+        ],
+        dtype=np.float64,
+    )
+    basis_path = tmp_path / "basis.npz"
+    save_spectral_basis(
+        basis_path,
+        vertices=vertices,
+        faces=faces,
+        mass=np.ones(3, dtype=np.float64),
+        eigenvalues_with_constant=np.asarray(
+            [0.0, 0.25, 0.5],
+            dtype=np.float64,
+        ),
+        basis_with_constant=basis_with_constant,
+    )
+    monkeypatch.setattr(
+        "openvla_attack.renderer.dr.RasterizeCudaContext",
+        lambda: object(),
+    )
+    monkeypatch.setattr(
+        DifferentiableRenderer,
+        "_sample_uv_texture_at_vertices",
+        lambda renderer: torch.zeros(
+            (renderer.num_vertices, 3),
+            dtype=torch.float32,
+            device=renderer.device,
+        ),
+    )
+
+    renderer = DifferentiableRenderer(
+        mesh_path=mesh_path,
+        device=torch.device("cpu"),
+        texture_parameterization="spectral",
+        spectral_basis_path=basis_path,
+        spectral_basis_count=2,
+    )
+    basis, eigenvalues = renderer.get_spectral_basis_and_eigenvalues()
+
+    torch.testing.assert_close(
+        basis,
+        torch.from_numpy(basis_with_constant[:, 1:]).float(),
+    )
+    torch.testing.assert_close(
+        eigenvalues,
+        torch.tensor([0.25, 0.5]),
     )

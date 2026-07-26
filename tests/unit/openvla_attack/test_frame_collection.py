@@ -261,6 +261,7 @@ def test_collector_builds_typed_frame_calibrates_and_closes_environment(
         task_description="Pick up the bowl",
         fallback_initial_state=object(),
         initial_states=[object()],
+        initial_state_ids=[17],
     )
 
     assert len(frames) == 1
@@ -280,6 +281,8 @@ def test_collector_builds_typed_frame_calibrates_and_closes_environment(
     assert frame["clean_hidden"].shape == (1, 4, 3)
     assert frame["clean_siglip_features"] is not None
     assert frame["clean_siglip_features"].shape == (1, 1, 3)
+    assert frame["initial_state_id"] == 17
+    assert frame["collection_step_index"] == 0
     assert model.siglip_input_shapes == [(1, 3, 2, 2)]
     assert frame["siglip_mean"].shape == (1, 3, 1, 1)
     assert frame["dino_std"].shape == (1, 3, 1, 1)

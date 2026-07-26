@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, Optional, Sequence
+from typing import Any, Optional, Sequence, cast
 
 import numpy as np
 import pytest
@@ -27,6 +28,10 @@ os.environ.setdefault("NUMBA_DISABLE_JIT", "1")
 import openvla_attack.training as training
 from openvla_attack.artifacts import LiveSnapshotPaths
 from openvla_attack.evaluation import RolloutResult
+from openvla_attack.frame_collection import TrainingFrame
+from openvla_attack.spectral_gradient_audit import (
+    ObjectiveParameterGradients,
+)
 from openvla_attack.training import AttackTrainer
 
 
@@ -38,6 +43,9 @@ class FakeTrainingConfig:
     live_test_resolution: int = 64
     live_test_max_steps: int = 8
     save_attack_artifacts: bool = False
+    spectral_gradient_audit_enabled: bool = False
+    spectral_gradient_audit_only: bool = False
+    spectral_gradient_audit_top_k: int = 1
 
 
 class FakeArtifactStore:
@@ -45,11 +53,13 @@ class FakeArtifactStore:
 
     def __init__(self, root: Path) -> None:
         self.root: Path = root
+        self.attack_directory: Path = root / "attack_artifacts"
         self.directory_prepared: bool = False
         self.saved_video: Optional[dict[str, Any]] = None
 
     def ensure_attack_directory(self) -> None:
         self.directory_prepared = True
+        self.attack_directory.mkdir(parents=True, exist_ok=True)
 
     def gradient_log_path(self, *, episode_index: int) -> Path:
         return self.root / f"Ep{episode_index}_gradient_log.txt"
@@ -227,3 +237,120 @@ def test_trainer_collects_optimizes_and_reuses_episode_runner_for_live_test(
     assert artifact_store.saved_video is not None
     assert artifact_store.saved_video["success"] is True
     assert artifact_store.saved_video["frames"] == [camera_frame]
+
+
+def test_trainer_runs_source_only_spectral_audit_and_skips_optimizer(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    frame = cast(
+        TrainingFrame,
+        {
+            "initial_state_id": 23,
+            "collection_step_index": 4,
+            "mvp": torch.eye(4),
+        },
+    )
+
+    class FakeFrameCollector:
+        def __init__(self, **kwargs: object) -> None:
+            del kwargs
+
+        def collect(self, **kwargs: object) -> list[TrainingFrame]:
+            assert kwargs["initial_state_ids"] == [23]
+            return [frame]
+
+    class FakeEpisodeRunner:
+        def __init__(self, **kwargs: object) -> None:
+            del kwargs
+
+    class FakeOptimizer:
+        def __init__(self, **kwargs: object) -> None:
+            del kwargs
+
+        def compute_objective_parameter_gradients(
+            self,
+            current_frame: TrainingFrame,
+        ) -> ObjectiveParameterGradients:
+            assert current_frame is frame
+            return ObjectiveParameterGradients(
+                action_loss=2.0,
+                feature_loss=-0.5,
+                action_gradient=torch.ones((2, 3)),
+                feature_gradient=-torch.ones((2, 3)),
+            )
+
+        def optimize(self, **kwargs: object) -> list[float]:
+            del kwargs
+            raise AssertionError("audit_only 不应进入攻击优化")
+
+    class FakeSpectralRenderer:
+        def __init__(self) -> None:
+            self.parameter = torch.nn.Parameter(torch.zeros((2, 3)))
+
+        def reset_texture(self) -> None:
+            with torch.no_grad():
+                self.parameter.zero_()
+
+        def get_texture_param(self) -> torch.nn.Parameter:
+            return self.parameter
+
+        def get_texture_parameterization_name(self) -> str:
+            return "spectral"
+
+        def get_spectral_basis_and_eigenvalues(
+            self,
+        ) -> tuple[torch.Tensor, torch.Tensor]:
+            return torch.eye(2), torch.tensor([0.1, 0.2])
+
+    monkeypatch.setattr(
+        training,
+        "TrainingFrameCollector",
+        FakeFrameCollector,
+    )
+    monkeypatch.setattr(
+        training,
+        "LiberoEpisodeRunner",
+        FakeEpisodeRunner,
+    )
+    monkeypatch.setattr(training, "AttackOptimizer", FakeOptimizer)
+
+    config = FakeTrainingConfig(
+        spectral_gradient_audit_enabled=True,
+        spectral_gradient_audit_only=True,
+        spectral_gradient_audit_top_k=1,
+    )
+    artifact_store = FakeArtifactStore(tmp_path)
+    trainer = AttackTrainer(
+        cfg=config,
+        model=SimpleNamespace(device=torch.device("cpu")),
+        processor=object(),
+        renderer=FakeSpectralRenderer(),
+        artifact_store=artifact_store,
+        runtime_assets=FakeRuntimeAssets(),
+        search_keywords=[["akita", "bowl"]],
+        feature_objective="siglip_patch",
+    )
+
+    loss_history = trainer.train(
+        task=object(),
+        task_description="pick up the bowl",
+        fallback_initial_state=object(),
+        task_id=5,
+        num_iters=5000,
+        initial_states=[object()],
+        initial_state_ids=[23],
+    )
+
+    assert loss_history == []
+    assert (
+        artifact_store.attack_directory
+        / "Ep5_Spectral_Gradient_Audit.npz"
+    ).exists()
+    summary_path = (
+        artifact_store.attack_directory
+        / "Ep5_Spectral_Gradient_Audit.json"
+    )
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    assert summary["selection_scope"] == "source_openvla_only"
+    assert summary["state_ids"] == [23]

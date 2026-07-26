@@ -1,0 +1,228 @@
+# OpenVLA Source-only 谱基梯度审计
+
+## 目的
+
+第一版 Spectral K=128 能用 384 个参数在 OpenVLA 上造成任务失败，并保持比
+Geometry Vertex 更连续的纹理；Shared-SigLIP 版本在源 OpenVLA 上的成功率为
+80%，迁移到 OpenVLA-OFT 后仍为 100%。下一阶段不直接盲目增加 K，而是先回答：
+
+1. 前 128 个连续低频模态覆盖了多少 Action/SigLIP 梯度能量；
+2. 128–512 的中频候选中是否存在更强且跨状态稳定的方向；
+3. 相同 128 个模态预算下，梯度选基能否优于连续最低频选基。
+
+本审计严格使用源 OpenVLA 的训练 states 0–9。OFT 梯度不参与排名，保持迁移
+评估的 source-only 语义。
+
+## 数据流
+
+```text
+LIBERO train states 0–9
+          │
+          ▼
+TrainingFrameCollector
+  每帧记录原始 state ID / collection step
+          │
+          ▼
+零初始化候选谱系数 C = 0，shape [M, 3]
+          │
+          ├─ Action Loss ── autograd.grad ──> g_action [M, 3]
+          └─ SigLIP Loss ── autograd.grad ──> g_feature [M, 3]
+                                             │
+                                             ▼
+                             stack [samples, M, 3]
+                                             │
+                                             ├─ 强度
+                                             ├─ 跨状态方向一致性
+                                             ├─ Surface L∞ 预算归一化
+                                             └─ 低频累计梯度能量
+```
+
+每个训练帧都从零 Surface Delta 开始，审计不执行参数更新。Action 与 Feature
+共用一次模型/渲染前向，但分别用 `torch.autograd.grad` 求未乘 `alpha` 的独立
+梯度，不向模型参数或 `parameter.grad` 累积梯度。
+
+## 指标定义
+
+候选 basis 为 `Φ ∈ R^[N,M]`，第 k 个模态为 `φ_k`；一个样本关于该模态 RGB
+系数的梯度为 `g_{s,k} ∈ R^3`。
+
+### 平均梯度强度
+
+```text
+mean_norm_k = mean_s ||g_{s,k}||_2
+```
+
+它描述 loss 对该参数坐标的局部敏感度，但没有校正不同模态在曲面上的幅值。
+
+### 跨样本方向一致性
+
+```text
+consistency_k =
+    ||mean_s g_{s,k}||_2 / mean_s ||g_{s,k}||_2
+```
+
+范围为 `[0,1]`。接近 1 表示不同状态/帧希望沿相近的 RGB 方向更新；接近 0
+表示梯度互相抵消，容易形成状态特异性方向。
+
+### Surface-budget-normalized score
+
+```text
+surface_score_k = mean_norm_k / ||φ_k||_∞
+stable_score_k  = surface_score_k * consistency_k
+```
+
+在 Surface Delta 使用相同 L∞ 预算时，单个模态允许的系数幅值与
+`1 / ||φ_k||_∞` 成正比。因此不能只用 raw coefficient gradient 排名。
+`stable_score` 再抑制跨状态不一致的模态。
+
+### 连续低频累计能量
+
+```text
+energy_k = sum_s ||g_{s,k}||_2²
+cumulative_K = sum_{k < K} energy_k / sum_all_modes energy_k
+```
+
+它直接回答“最低 128/256 个连续模态覆盖候选池多少梯度”。该指标按原始特征值
+顺序累计，不按梯度排名重新排列。
+
+## 产物
+
+每个 task 在 run 的 `attack_artifacts/<run-id>/` 下生成：
+
+```text
+Ep0_Spectral_Gradient_Audit.npz
+Ep0_Spectral_Gradient_Audit.csv
+Ep0_Spectral_Gradient_Audit.json
+```
+
+- NPZ：保留 `[samples,M,3]` 原始 Action/Feature 梯度和全部统计，用于后续选基；
+- CSV：每个谱模态一行，包含 eigenvalue、强度、一致性、曲面归一化分数、
+  累计能量和两项排名；
+- JSON：记录 source-only scope、原始 state IDs、Top-K 索引和低频累计能量，
+  便于快速检查。
+
+当前审计只输出排名，不自动生成非连续谱基 artifact。看到真实梯度分布后再固定
+选基策略，避免在没有数据时引入频率惩罚或 Action/Feature 混合分数。
+
+## CLI
+
+新增字段：
+
+```text
+spectral_gradient_audit_enabled=True
+spectral_gradient_audit_only=True
+spectral_gradient_audit_top_k=128
+```
+
+约束：
+
+- 必须启用 `enable_attack=True`；
+- 必须使用 `texture_parameterization=spectral`；
+- 必须使用 `feature_objective=siglip_patch`；
+- `audit_top_k` 必须位于 `[1, spectral_basis_count]`；
+- `audit_only=True` 时，保存审计产物后跳过纹理优化、激活和 held-out rollout。
+
+## 候选 K=512 谱基
+
+候选 basis 仍由同一 Akita OBJ、cotangent Laplacian 和 lumped mass 生成：
+
+```bash
+cd /data/xiaomengqi/src/tex3d
+
+CUDA_VISIBLE_DEVICES='' PYTHONDONTWRITEBYTECODE=1 \
+/home/xiaomengqi/miniconda3/envs/tex3d-openvla/bin/python \
+scripts/generate_openvla_spectral_basis.py \
+  --mesh /home/xiaomengqi/src/github/paper_code/LIBERO/libero/libero/assets/stable_scanned_objects/akita_black_bowl/akita_black_bowl.obj \
+  --num-basis 512 \
+  --output /data/xiaomengqi/src/tex3d/experiments/spectral_basis/akita_black_bowl_k512.npz
+```
+
+生成文件属于实验产物，不进入 Git。完成后必须检查 geometry hash、shape、
+M-orthogonality error 和 eigen residual，再运行真实 GPU 审计。
+
+2026-07-26 已生成并完成 CPU 数值检查：
+
+- geometry vertices: 21,263；faces: 42,522；
+- 512 个非恒定谱基，文件约 162 MiB；
+- 最大 M-正交误差：`3.06e-15`；
+- 最大特征方程残差：`8.67e-12`；
+- geometry hash 与 K=128 文件一致；
+- K=512 文件的前 128 个模态与原 K=128 文件逐列一致：最小质量内积绝对
+  cosine 大于 `0.999999999999999`，前 129 个特征值最大差为 `2.55e-11`。
+
+因此后续连续 K=128/K=256 与 512 候选池共享同一低频坐标系，可以进行公平
+比较。
+
+## GPU 审计命令
+
+先用一个训练状态检查真实 OpenVLA 前向、两项独立梯度和产物写入。该命令只做
+审计，不更新纹理，也不运行 held-out rollout：
+
+```bash
+cd /data/xiaomengqi/src/tex3d
+
+CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES=<gpu-id> \
+MUJOCO_GL=egl PYOPENGL_PLATFORM=egl TF_CPP_MIN_LOG_LEVEL=2 \
+TOKENIZERS_PARALLELISM=false PYTHONNOUSERSITE=1 PYTHONDONTWRITEBYTECODE=1 \
+PYTHONPATH="$PWD/openvla" \
+/home/xiaomengqi/miniconda3/envs/tex3d-openvla/bin/python \
+openvla/experiments/robot/libero/attack_openvla.py \
+  --pretrained_checkpoint /data/huangsimin/openvla-7b-finetuned-libero-spatial \
+  --unnorm_key libero_spatial_no_noops \
+  --task_suite_name libero_spatial \
+  --object_name akita_black_bowl \
+  --task_id 0 \
+  --num_trials_per_task 1 \
+  --enable_attack True \
+  --texture_parameterization spectral \
+  --spectral_basis_path experiments/spectral_basis/akita_black_bowl_k512.npz \
+  --spectral_basis_count 512 \
+  --feature_objective siglip_patch \
+  --spectral_gradient_audit_enabled True \
+  --spectral_gradient_audit_only True \
+  --spectral_gradient_audit_top_k 128 \
+  --attack_iters 1 \
+  --num_train_init_states 1 \
+  --train_init_state_ids 0 \
+  --eval_init_state_ids 1 \
+  --train_frames_per_state 1 \
+  --num_frames_to_attack 1 \
+  --photometric_calib_frames 1 \
+  --live_test_enabled False \
+  --use_wandb False \
+  --local_log_dir /tmp/tex3d-openvla-spectral-audit-smoke \
+  --run_id_note spectral-audit-k512-smoke
+```
+
+Smoke 通过后，正式 source-only 审计只需把以下字段替换为：
+
+```bash
+--num_train_init_states 10 \
+--train_init_state_ids 0-9 \
+--eval_init_state_ids 10 \
+--num_frames_to_attack 10 \
+--photometric_calib_frames 5 \
+--local_log_dir /data/xiaomengqi/src/tex3d/experiments/logs/spectral-gradient-audit-k512 \
+--run_id_note spectral-audit-k512-states0-9
+```
+
+## 第一轮决策
+
+读取审计结果后只比较两个候选：
+
+1. 连续最低频 K=256：测试增加表达能力是否恢复源攻击；
+2. 从前 512 个候选中按 source-only SigLIP stable score 选择 128 个：
+   测试相同参数量下“选哪些模态”是否比“连续取最低频”更重要。
+
+两种方法都重新进行 Action/SigLIP 单步梯度标定。只有源 OpenVLA states 10–19
+成功率达到 70% 或更低，才进入 OFT 直接迁移。OFT 侧额外记录 feature/action
+变化只能作为诊断，不反向参与本轮选基。
+
+## 当前状态
+
+- 纯统计、shape/有限值校验、CSV/NPZ/JSON 序列化：CPU 测试通过；
+- Training Frame 原始 state ID 数据流：CPU 测试通过；
+- 单帧独立 Action/SigLIP autograd：CPU 测试通过；
+- trainer audit-only 编排：CPU 测试通过；
+- K=512 候选 basis：已生成并通过几何、正交性、残差与低频一致性校验；
+- 真实 OpenVLA states 0–9 梯度审计：待 GPU 运行。

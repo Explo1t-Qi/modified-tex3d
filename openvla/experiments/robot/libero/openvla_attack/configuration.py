@@ -102,6 +102,11 @@ class GenerateConfig:
     # 保持 last_hidden 为默认值以复现现有行为；siglip_patch 直接攻击共享的
     # SigLIP patch features。Draccus 不支持 Literal，入口负责校验和收窄。
     feature_objective: str = "last_hidden"
+    # Source-only 谱基梯度审计复用正常采帧与 loss 路径，但不更新纹理。
+    # ``audit_only`` 启用时，入口在产物保存后跳过攻击训练和 held-out rollout。
+    spectral_gradient_audit_enabled: bool = False
+    spectral_gradient_audit_only: bool = False
+    spectral_gradient_audit_top_k: int = 128
     frame_collect_with_policy: bool = False
     collect_grasp_frames: bool = False
     grasp_pre_frames: int = 40

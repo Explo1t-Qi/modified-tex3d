@@ -44,6 +44,12 @@ from .optimization import (
 )
 from .runtime_assets import RuntimeAssetTransaction
 from .scene import SearchKeywords
+from .spectral_gradient_audit import (
+    SpectralAuditRenderer,
+    SpectralGradientAuditPaths,
+    SpectralGradientAuditResult,
+    SpectralGradientAuditor,
+)
 
 
 DEFAULT_RENDER_RESOLUTION: Final[int] = 256
@@ -60,6 +66,9 @@ class AttackTrainingConfig(
     live_test_resolution: int
     live_test_max_steps: int
     save_attack_artifacts: bool
+    spectral_gradient_audit_enabled: bool
+    spectral_gradient_audit_only: bool
+    spectral_gradient_audit_top_k: int
 
 
 class AttackTrainingModel(TrainingModel, Protocol):
@@ -70,6 +79,7 @@ class AttackTrainingRenderer(
     ArtifactRenderer,
     LightingCalibrator,
     OptimizationRenderer,
+    SpectralAuditRenderer,
     Protocol,
 ):
     """训练、合成和产物保存共同需要的 renderer interface。"""
@@ -146,6 +156,7 @@ class AttackTrainer:
         task_id: int,
         num_iters: int,
         initial_states: Optional[Sequence[Any]] = None,
+        initial_state_ids: Optional[Sequence[int]] = None,
     ) -> list[float]:
         """采集训练帧、优化纹理并保存 task 级 Attack Artifact。"""
         print(
@@ -169,7 +180,45 @@ class AttackTrainer:
             task_description=task_description,
             fallback_initial_state=fallback_initial_state,
             initial_states=initial_states,
+            initial_state_ids=initial_state_ids,
         )
+        if self._cfg.spectral_gradient_audit_enabled:
+            if self._feature_objective != "siglip_patch":
+                raise ValueError(
+                    "谱基梯度审计要求 feature_objective='siglip_patch'"
+                )
+            gradient_auditor = SpectralGradientAuditor(
+                gradient_provider=self._optimizer,
+                renderer=self._renderer,
+                requested_top_k=(
+                    self._cfg.spectral_gradient_audit_top_k
+                ),
+            )
+            audit_result: SpectralGradientAuditResult = (
+                gradient_auditor.run(frame_pool)
+            )
+            audit_paths: SpectralGradientAuditPaths = audit_result.save(
+                output_directory=self._artifact_store.attack_directory,
+                task_id=task_id,
+            )
+            energy_index: int = (
+                self._cfg.spectral_gradient_audit_top_k - 1
+            )
+            print(
+                "[SPECTRAL-AUDIT] "
+                f"samples={audit_result.num_samples}, "
+                f"basis={audit_result.num_basis}, "
+                f"low-K feature energy="
+                f"{audit_result.feature_cumulative_energy[energy_index]:.2%}"
+            )
+            print(
+                "[SPECTRAL-AUDIT] "
+                f"NPZ={audit_paths.npz_path} | "
+                f"CSV={audit_paths.csv_path} | "
+                f"JSON={audit_paths.json_path}"
+            )
+            if self._cfg.spectral_gradient_audit_only:
+                return []
         gradient_log_path: Path = (
             self._artifact_store.gradient_log_path(
                 episode_index=task_id

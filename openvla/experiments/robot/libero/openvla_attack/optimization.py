@@ -32,6 +32,7 @@ from .compositing import (
 from .configuration import FeatureObjectiveKind
 from .frame_collection import TrainingFrame
 from .objective import get_attack_loss
+from .spectral_gradient_audit import ObjectiveParameterGradients
 from .texture_parameterization import SurfaceStepStats
 from .vision_features import (
     SigLIPFeatureModel,
@@ -307,6 +308,78 @@ class AttackOptimizer:
         return -F.mse_loss(
             adversarial_siglip_features,
             clean_siglip_features,
+        )
+
+    def compute_objective_parameter_gradients(
+        self,
+        frame: TrainingFrame,
+    ) -> Optional[ObjectiveParameterGradients]:
+        """在当前纹理处求单帧 Action/Feature 的独立参数梯度。
+
+        该方法不读取 ``alpha``、frame weight，也不写入 ``parameter.grad``。
+        谱基审计会在每帧调用前把系数清零，因此返回的两个浮点 tensor 均表示
+        零 Surface Delta 参考点上的 ``[num_basis, 3]`` 梯度。Action 与
+        Feature 共用一次图像构造/模型前向；第一次 autograd 保留 graph，第二次
+        完成后立即释放。
+        """
+        frame_mvp: Optional[torch.Tensor] = frame["mvp"]
+        if frame_mvp is None:
+            return None
+        view_frame: SingleViewFrame = self._as_single_view_frame(
+            frame,
+            frame_mvp,
+        )
+        adversarial_views: Sequence[torch.Tensor] = self._view_sampler(
+            self._renderer,
+            view_frame,
+            self._render_resolution,
+        )
+        action_loss: torch.Tensor
+        feature_loss: torch.Tensor
+        action_loss, feature_loss = self._compute_view_losses(
+            frame,
+            adversarial_views,
+        )
+        texture_parameter: nn.Parameter = (
+            self._renderer.get_texture_param()
+        )
+
+        def objective_gradient(
+            loss: torch.Tensor,
+            *,
+            retain_graph: bool,
+        ) -> torch.Tensor:
+            gradient: Optional[torch.Tensor] = torch.autograd.grad(
+                loss,
+                texture_parameter,
+                retain_graph=retain_graph,
+                create_graph=False,
+                allow_unused=True,
+            )[0]
+            resolved_gradient: torch.Tensor = (
+                gradient
+                if gradient is not None
+                else torch.zeros_like(texture_parameter)
+            )
+            if not torch.isfinite(resolved_gradient).all():
+                raise RuntimeError(
+                    "独立目标关于纹理参数的梯度包含 NaN/Inf"
+                )
+            return resolved_gradient.detach()
+
+        action_gradient: torch.Tensor = objective_gradient(
+            action_loss,
+            retain_graph=True,
+        )
+        feature_gradient: torch.Tensor = objective_gradient(
+            feature_loss,
+            retain_graph=False,
+        )
+        return ObjectiveParameterGradients(
+            action_loss=float(action_loss.detach().item()),
+            feature_loss=float(feature_loss.detach().item()),
+            action_gradient=action_gradient,
+            feature_gradient=feature_gradient,
         )
 
     def optimize(

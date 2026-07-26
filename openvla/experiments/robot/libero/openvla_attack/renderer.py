@@ -274,6 +274,10 @@ class DifferentiableRenderer(nn.Module):
             GeometryVertexTextureParameterization
             | SpectralTextureParameterization
         ] = None
+        # spectral_eigenvalues: float [K]。仅 spectral adapter 设置；作为
+        # buffer 随 module device 迁移，并与 basis 列严格同序。
+        self.spectral_eigenvalues: Optional[Tensor]
+        self.register_buffer("spectral_eigenvalues", None)
         if texture_parameterization != "legacy_vertex":
             if not mesh_load_succeeded:
                 raise ValueError(
@@ -306,6 +310,11 @@ class DifferentiableRenderer(nn.Module):
                     spectral_basis_path,
                     max_basis=spectral_basis_count,
                     include_constant=False,
+                )
+                self.spectral_eigenvalues = torch.as_tensor(
+                    basis_data.eigenvalues,
+                    dtype=torch.float32,
+                    device=device,
                 )
                 validate_basis_geometry(
                     basis_data,
@@ -407,6 +416,34 @@ class DifferentiableRenderer(nn.Module):
     def get_texture_parameterization_name(self) -> str:
         """返回用于日志和产物命名的稳定 adapter 名称。"""
         return self.texture_parameterization_kind
+
+    def get_spectral_basis_and_eigenvalues(
+        self,
+    ) -> tuple[Tensor, Tensor]:
+        """返回审计使用的 ``basis [N,K]`` 与 ``eigenvalues [K]``。
+
+        Geometry/Legacy 没有谱模态语义，显式报错，禁止梯度审计把逐顶点参数
+        静默解释为谱系数。
+        """
+        parameterization = self.surface_parameterization
+        eigenvalues: Optional[Tensor] = self.spectral_eigenvalues
+        if (
+            not isinstance(
+                parameterization,
+                SpectralTextureParameterization,
+            )
+            or eigenvalues is None
+        ):
+            raise RuntimeError(
+                "当前 renderer 不是 spectral 参数化，无法读取谱基"
+            )
+        if eigenvalues.shape != (parameterization.num_basis,):
+            raise RuntimeError(
+                "谱基与特征值数量不一致："
+                f"{parameterization.num_basis} != "
+                f"{tuple(eigenvalues.shape)}"
+            )
+        return parameterization.basis, eigenvalues
 
     def get_surface_delta(self) -> Tensor:
         """返回与 renderer 顶点对齐的 float ``[V, 3]`` Surface Delta。"""

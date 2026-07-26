@@ -462,4 +462,6 @@ SigLIP feature 与动作输出的影响。若源攻击增强后 OFT 仍为 100%�
   K=128 的 70% 只少造成一个失败，通过源模型门槛；
 - Shared-SigLIP 10-state OFT 迁移：任务成功率 100%，未产生目标模型失败，
   迁移 go/no-go 未通过；
+- 下一阶段 source-only 候选谱基梯度审计的指标、产物和运行约束见
+  `docs/spectral/openvla-spectral-gradient-audit.md`；
 - 40-state confirmation：按预先阈值暂不执行。

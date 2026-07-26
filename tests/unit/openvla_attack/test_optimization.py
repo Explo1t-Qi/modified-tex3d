@@ -159,6 +159,8 @@ def _training_frame() -> TrainingFrame:
         "executed_action": None,
         "clean_hidden": torch.zeros((1, 1, 1), dtype=torch.float32),
         "clean_siglip_features": None,
+        "initial_state_id": 0,
+        "collection_step_index": 0,
         "siglip_mean": zeros,
         "siglip_std": ones,
         "dino_mean": zeros,
@@ -392,3 +394,78 @@ def test_siglip_objective_uses_three_channel_shared_features_and_backpropagates(
         torch.tensor([0.3]),
     )
     assert model.siglip.input_shapes == [(1, 3, 2, 2)]
+
+
+def test_objective_gradient_audit_returns_unweighted_independent_gradients(
+    monkeypatch,
+) -> None:
+    renderer = FakeOptimizationRenderer()
+    model = FakeSharedFeatureModel()
+    frame = _training_frame()
+    frame["initial_state_id"] = 9
+    frame["clean_siglip_features"] = torch.zeros(
+        (1, 1, 3),
+        dtype=torch.float32,
+    )
+
+    def fake_view_sampler(
+        current_renderer: FakeOptimizationRenderer,
+        current_frame: SingleViewFrame,
+        render_resolution: int,
+    ) -> list[torch.Tensor]:
+        del current_frame, render_resolution
+        return [
+            current_renderer.adv_noise.reshape(1, 1, 1, 1).expand(
+                1,
+                3,
+                2,
+                2,
+            )
+        ]
+
+    monkeypatch.setattr(
+        optimization,
+        "get_attack_loss",
+        lambda logits, clean_ids: logits.mean(),
+    )
+    monkeypatch.setattr(
+        optimization,
+        "autocast",
+        lambda **kwargs: nullcontext(),
+    )
+    optimizer = AttackOptimizer(
+        cfg=FakeOptimizationConfig(
+            alpha_action=123.0,
+            alpha_feature=456.0,
+        ),
+        model=model,
+        renderer=renderer,
+        feature_objective="siglip_patch",
+        view_sampler=fake_view_sampler,
+        render_resolution=2,
+    )
+
+    sample = optimizer.compute_objective_parameter_gradients(frame)
+
+    assert sample is not None
+    np.testing.assert_allclose(sample.action_loss, 0.2, rtol=2e-3)
+    np.testing.assert_allclose(sample.feature_loss, -0.04, rtol=2e-3)
+    # 返回的是未乘 alpha 的独立梯度：d(0.2)/dp=1，
+    # d(-p²)/dp=-2p=-0.4。
+    torch.testing.assert_close(
+        sample.action_gradient,
+        torch.tensor([1.0]),
+        rtol=2e-3,
+        atol=2e-3,
+    )
+    torch.testing.assert_close(
+        sample.feature_gradient,
+        torch.tensor([-0.4]),
+        rtol=2e-3,
+        atol=2e-3,
+    )
+    assert renderer.adv_noise.grad is None
+    torch.testing.assert_close(
+        renderer.adv_noise.detach(),
+        torch.tensor([0.2]),
+    )
