@@ -7,8 +7,9 @@
 > 在 OpenVLA / LIBERO Spatial task 0 上，K=128 的低维谱参数化能否以接近
 > Geometry Vertex 基线的源模型攻击效果，获得更好的 OpenVLA-OFT 迁移效果？
 
-本轮不实现谱基筛选、SigLIP 专用 loss、跨模型联合训练、EoT、TAAO 或自然性
-正则。它们只有在 MVP 显示谱空间值得继续研究后再加入。
+第一轮不实现谱基筛选、SigLIP 专用 loss、跨模型联合训练、EoT、TAAO 或自然性
+正则。低频谱 MVP 显示源模型效果值得继续、但迁移 no-go 后，本文后半部分开始
+单独验证 Shared-SigLIP objective；其余能力仍不在当前范围。
 
 ## 公平比较
 
@@ -269,9 +270,61 @@ observation。因此三组同为 100% 不是纹理未激活或错误走入 nvdif
 源 OpenVLA 上的攻击效果，同时得到更连续的纹理结构；仅使用最低 128 个非恒定
 模态和 OpenVLA 专用 action/last-hidden loss，尚未产生可观测的 OFT 迁移优势。
 
+## Shared-SigLIP objective MVP
+
+第一轮迁移 no-go 后，下一版保持 Spectral K=128、状态划分、action loss、优化器
+和 Surface Delta 预算不变，只把 feature objective 从 OpenVLA 最后一层 hidden
+切换为源/目标模型共享的 SigLIP patch features：
+
+```text
+clean RGB                         adversarial RGB
+    │                                   │
+    ├─ SigLIP normalization             ├─ SigLIP normalization
+    │                                   │
+    ▼                                   ▼
+checkpoint 定位的 SigLIP featurizer（second-to-last patch features）
+    │                                   │
+    └────────── negative MSE ────────────┘
+                         │
+                         ▼
+            texture / spectral coefficients gradient
+```
+
+CLI 使用：
+
+```text
+feature_objective=last_hidden  # 默认，完整保留历史行为
+feature_objective=siglip_patch # 新共享视觉目标
+```
+
+审计 checkpoint 时确认，模型原生 6 通道顺序是 DINOv2→SigLIP；历史攻击代码
+手工拼接为 SigLIP→DINOv2。已有 Geometry/Spectral 源实验在相同历史路径下训练，
+其相对比较仍然公平。为避免改写已有基线，`last_hidden` 和 action forward 继续
+保留历史顺序；`siglip_patch` 不走 6 通道拼接，而是根据
+`config.timm_model_ids` 找到唯一 SigLIP 分支，并只接收正确归一化的三通道输入。
+
+干净 SigLIP features 在 Training Frame Collection 阶段以
+`[batch, patches, feature_dim]` 保存并 detach；对抗 features 在每轮优化时保持
+到渲染纹理的梯度。两者 shape 不一致、模型没有唯一 SigLIP 分支或输入不是三通道
+时直接失败，禁止静默回退到 last hidden。
+
+GPU smoke 使用与第一轮相同的最小配置，只新增：
+
+```bash
+--feature_objective siglip_patch \
+--alpha_action 1.0 \
+--alpha_feature 10.0 \
+--local_log_dir /tmp/tex3d-openvla-siglip-smoke \
+--run_id_note spectral-k128-siglip-smoke
+```
+
+该 smoke 首先检查 feature loss 的量级、谱系数梯度和 Surface Step；在看到真实
+数值前，不直接沿用 5000 轮正式训练，也不调整 alpha，以免同时改变 feature
+来源与 loss 权重。
+
 ## 当前验证状态
 
-- CPU 数值与回归测试：57 passed、1 skipped；
+- CPU 数值与回归测试：59 passed；
 - 真实 Akita mesh + K=128 basis 的 CPU 加载：
   `coefficients=(128, 3)`、384 参数、零 Surface Delta；
 - GPU spectral smoke：已通过，梯度、曲面归一化更新、bake、产物保存与
@@ -282,5 +335,6 @@ observation。因此三组同为 100% 不是纹理未激活或错误走入 nvdif
   fork 后 action head import 与单状态 GPU smoke 均已通过；
 - OFT 10-state 迁移 pilot：Clean、Geometry Vertex 与 Spectral K=128 均为
   100%，未达到迁移 go/no-go；
-- 40-state confirmation：按预先阈值暂不执行，下一步应先改进共享视觉特征目标
-  或谱方向选择。
+- Shared-SigLIP objective：强类型接口、分支定位、三通道校验、Training Frame
+  clean feature 与纹理梯度 CPU 测试已通过，GPU smoke 待执行；
+- 40-state confirmation：按预先阈值暂不执行。

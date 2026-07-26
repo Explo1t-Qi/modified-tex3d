@@ -40,8 +40,10 @@ from libero.libero import benchmark
 from libero_utils import get_libero_env, save_rollout_video
 from openvla_attack.artifacts import AttackArtifactStore
 from openvla_attack.configuration import (
+    FeatureObjectiveKind,
     GenerateConfig,
     TextureParameterizationKind,
+    resolve_feature_objective,
     resolve_texture_parameterization,
 )
 from openvla_attack.evaluation import (
@@ -79,6 +81,9 @@ def eval_libero(cfg: GenerateConfig) -> None:
     set_seed_everywhere(cfg.seed)
     texture_parameterization: TextureParameterizationKind = (
         resolve_texture_parameterization(cfg.texture_parameterization)
+    )
+    feature_objective: FeatureObjectiveKind = resolve_feature_objective(
+        cfg.feature_objective
     )
     # 1. 解析配置
     if cfg.object_name not in OBJECT_ASSETS:
@@ -159,6 +164,12 @@ def eval_libero(cfg: GenerateConfig) -> None:
             f"parameters={texture_parameter_count:,}, "
             f"epsilon={cfg.attack_epsilon:.6f}"
         )
+        print(
+            "[INFO] Attack objective: "
+            f"action_weight={cfg.alpha_action:.6f}, "
+            f"feature={feature_objective}, "
+            f"feature_weight={cfg.alpha_feature:.6f}"
+        )
     total_episodes: int = 0
     total_successes: int = 0
     video_resolution: int = 512
@@ -183,6 +194,7 @@ def eval_libero(cfg: GenerateConfig) -> None:
             artifact_store=artifact_store,
             runtime_assets=runtime_assets,
             search_keywords=search_kw,
+            feature_objective=feature_objective,
         )
 
     try:

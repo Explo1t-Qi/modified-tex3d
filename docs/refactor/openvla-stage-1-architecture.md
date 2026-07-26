@@ -50,6 +50,7 @@
 | `compositing.py` | `render_and_composite`, `build_single_view_samples` | NHWC/NCHW 转换、mask 合成和单视图构造 |
 | `frame_collection.py` | `TrainingFrameCollector.collect` | 环境推进、clean forward、抓取窗口和光照校准 |
 | `objective.py` | `get_attack_loss` | action token 选择与当前 untargeted token 目标 |
+| `vision_features.py` | `extract_siglip_patch_features` | 按 checkpoint 配置定位共享 SigLIP 分支并校验 feature shape |
 | `optimization.py` | `AttackOptimizer.optimize` | frame batch、view loss、反向传播、SignSGD、日志和 callback 调度 |
 | `training.py` | `AttackTrainer.train` | 采帧、优化、live rollout 与终态产物的 task 级数据流 |
 | `evaluation.py` | `LiberoEpisodeRunner.run` | 单 episode 状态机、MuJoCo 策略图像、动作后处理和环境关闭 |

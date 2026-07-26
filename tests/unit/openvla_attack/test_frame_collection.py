@@ -12,6 +12,7 @@ from typing import Any, Optional
 
 import numpy as np
 import torch
+import torch.nn as nn
 from PIL import Image
 
 
@@ -85,6 +86,36 @@ class FakeModel:
     def __init__(self) -> None:
         self.generate_calls: list[dict[str, Any]] = []
         self.forward_calls: list[dict[str, Any]] = []
+        self.siglip_input_shapes: list[tuple[int, ...]] = []
+        self.config = SimpleNamespace(
+            timm_model_ids=[
+                "vit_large_patch14_reg4_dinov2.lvd142m",
+                "vit_so400m_patch14_siglip_224",
+            ]
+        )
+
+        class FakeSigLIP(nn.Module):
+            def __init__(self, owner: "FakeModel") -> None:
+                super().__init__()
+                self.owner = owner
+
+            def forward(
+                self,
+                pixel_values: torch.Tensor,
+            ) -> torch.Tensor:
+                self.owner.siglip_input_shapes.append(
+                    tuple(pixel_values.shape)
+                )
+                return (
+                    pixel_values.float()
+                    .mean(dim=(2, 3))
+                    .unsqueeze(1)
+                )
+
+        self.vision_backbone = SimpleNamespace(
+            featurizer=nn.Identity(),
+            fused_featurizer=FakeSigLIP(self),
+        )
 
     def generate(self, **kwargs: Any) -> torch.Tensor:
         self.generate_calls.append(kwargs)
@@ -221,6 +252,7 @@ def test_collector_builds_typed_frame_calibrates_and_closes_environment(
         processor=processor,
         renderer=renderer,
         search_keywords=(("akita", "bowl"),),
+        feature_objective="siglip_patch",
         render_resolution=2,
     )
 
@@ -246,6 +278,9 @@ def test_collector_builds_typed_frame_calibrates_and_closes_environment(
     )
     assert frame["executed_action"] is None
     assert frame["clean_hidden"].shape == (1, 4, 3)
+    assert frame["clean_siglip_features"] is not None
+    assert frame["clean_siglip_features"].shape == (1, 1, 3)
+    assert model.siglip_input_shapes == [(1, 3, 2, 2)]
     assert frame["siglip_mean"].shape == (1, 3, 1, 1)
     assert frame["dino_std"].shape == (1, 3, 1, 1)
     assert frame["model_input_size"] == 2

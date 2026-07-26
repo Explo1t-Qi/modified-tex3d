@@ -82,6 +82,36 @@ class FakeOptimizationModel:
         return SimpleNamespace(logits=logits, hidden_states=[hidden])
 
 
+class FakeSharedSigLIPFeaturizer(nn.Module):
+    """把三通道均值作为一个 patch，并保留输入梯度。"""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.input_shapes: list[tuple[int, ...]] = []
+
+    def forward(self, pixel_values: torch.Tensor) -> torch.Tensor:
+        self.input_shapes.append(tuple(pixel_values.shape))
+        # 转成 float32，避免 CPU bfloat16 MSE 的版本差异；cast 仍保留梯度。
+        return pixel_values.float().mean(dim=(2, 3)).unsqueeze(1)
+
+
+class FakeSharedFeatureModel(FakeOptimizationModel):
+    """同时提供历史 VLA forward 与独立 SigLIP 分支。"""
+
+    def __init__(self) -> None:
+        self.siglip = FakeSharedSigLIPFeaturizer()
+        self.config = SimpleNamespace(
+            timm_model_ids=[
+                "vit_large_patch14_reg4_dinov2.lvd142m",
+                "vit_so400m_patch14_siglip_224",
+            ]
+        )
+        self.vision_backbone = SimpleNamespace(
+            featurizer=nn.Identity(),
+            fused_featurizer=self.siglip,
+        )
+
+
 class FakeSurfaceOptimizationRenderer:
     """使用真实 Geometry adapter 覆盖 surface-normalized optimizer 分支。"""
 
@@ -128,6 +158,7 @@ def _training_frame() -> TrainingFrame:
         "clean_action": np.zeros(7, dtype=np.float32),
         "executed_action": None,
         "clean_hidden": torch.zeros((1, 1, 1), dtype=torch.float32),
+        "clean_siglip_features": None,
         "siglip_mean": zeros,
         "siglip_std": ones,
         "dino_mean": zeros,
@@ -220,6 +251,7 @@ def test_optimizer_uses_view_sampler_updates_texture_logs_and_schedules_callback
         cfg=FakeOptimizationConfig(),
         model=FakeOptimizationModel(),
         renderer=renderer,
+        feature_objective="last_hidden",
         view_sampler=fake_view_sampler,
         frame_batch_sampler=fake_frame_batch_sampler,
         render_resolution=2,
@@ -282,6 +314,7 @@ def test_optimizer_uses_surface_normalized_update_for_new_adapter(
         cfg=FakeOptimizationConfig(attack_surface_step=0.02),
         model=FakeOptimizationModel(),
         renderer=renderer,
+        feature_objective="last_hidden",
         view_sampler=surface_view_sampler,
         render_resolution=2,
     )
@@ -296,3 +329,66 @@ def test_optimizer_uses_surface_normalized_update_for_new_adapter(
     gradient_log = gradient_log_path.read_text()
     assert "surface_normalized" in gradient_log
     assert "2.000000e-02" in gradient_log
+
+
+def test_siglip_objective_uses_three_channel_shared_features_and_backpropagates(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    renderer = FakeOptimizationRenderer()
+    model = FakeSharedFeatureModel()
+    frame = _training_frame()
+    frame["clean_siglip_features"] = torch.zeros(
+        (1, 1, 3),
+        dtype=torch.float32,
+    )
+
+    def fake_view_sampler(
+        current_renderer: FakeOptimizationRenderer,
+        current_frame: SingleViewFrame,
+        render_resolution: int,
+    ) -> list[torch.Tensor]:
+        del current_frame, render_resolution
+        image = current_renderer.adv_noise.reshape(
+            1,
+            1,
+            1,
+            1,
+        ).expand(1, 3, 2, 2)
+        return [image]
+
+    monkeypatch.setattr(
+        optimization,
+        "get_attack_loss",
+        lambda logits, clean_ids: logits.mean(),
+    )
+    monkeypatch.setattr(
+        optimization,
+        "autocast",
+        lambda **kwargs: nullcontext(),
+    )
+
+    optimizer = AttackOptimizer(
+        cfg=FakeOptimizationConfig(
+            alpha_action=0.0,
+            alpha_feature=1.0,
+        ),
+        model=model,
+        renderer=renderer,
+        feature_objective="siglip_patch",
+        view_sampler=fake_view_sampler,
+        render_resolution=2,
+    )
+    losses = optimizer.optimize(
+        frames=[frame],
+        num_iters=1,
+        gradient_log_path=tmp_path / "siglip-gradient.txt",
+    )
+
+    # 负 MSE 的梯度下降会增大 feature 距离，因此参数从 0.2 增至 0.3。
+    np.testing.assert_allclose(losses, [-0.04], rtol=2e-3)
+    torch.testing.assert_close(
+        renderer.adv_noise.detach(),
+        torch.tensor([0.3]),
+    )
+    assert model.siglip.input_shapes == [(1, 3, 2, 2)]

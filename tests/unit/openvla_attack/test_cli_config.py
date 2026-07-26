@@ -7,6 +7,7 @@ from draccus.parsers import decoding
 
 from openvla.experiments.robot.libero.openvla_attack.configuration import (
     GenerateConfig,
+    resolve_feature_objective,
     resolve_texture_parameterization,
 )
 
@@ -27,3 +28,20 @@ def test_draccus_decodes_spectral_parameterization_from_cli_string() -> None:
 def test_runtime_boundary_rejects_unknown_parameterization() -> None:
     with pytest.raises(ValueError, match="未知纹理参数化"):
         resolve_texture_parameterization("frequency_magic")
+
+
+def test_draccus_decodes_and_runtime_narrows_siglip_objective() -> None:
+    config = decoding.decode(
+        GenerateConfig,
+        {"feature_objective": "siglip_patch"},
+    )
+
+    assert config.feature_objective == "siglip_patch"
+    assert resolve_feature_objective(
+        config.feature_objective
+    ) == "siglip_patch"
+
+
+def test_runtime_boundary_rejects_unknown_feature_objective() -> None:
+    with pytest.raises(ValueError, match="未知 feature objective"):
+        resolve_feature_objective("target_model_magic")

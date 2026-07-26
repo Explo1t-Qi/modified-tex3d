@@ -48,11 +48,16 @@ from .action_codec import (
     OpenVLAActionModel,
     decode_action_from_generated_ids,
 )
+from .configuration import FeatureObjectiveKind
 from .scene import (
     SearchKeywords,
     compute_render_mvp,
     find_target_body_pose,
     render_background_without_target,
+)
+from .vision_features import (
+    SigLIPFeatureModel,
+    extract_siglip_patch_features,
 )
 
 
@@ -73,7 +78,11 @@ class FrameCollectionConfig(Protocol):
     unnorm_key: Optional[str]
 
 
-class TrainingModel(OpenVLAActionModel, Protocol):
+class TrainingModel(
+    OpenVLAActionModel,
+    SigLIPFeatureModel,
+    Protocol,
+):
     """采集 clean token/action/feature 所需的 OpenVLA 模型 interface。"""
 
     device: torch.device
@@ -125,6 +134,9 @@ class TrainingFrame(TypedDict):
     - ``prompt_ids``：整数 token，``[1, prompt_sequence_length]``。
     - ``clean_hidden``：模型最后一层 hidden state，
       ``[1, generated_sequence_length, hidden_size]``。
+    - ``clean_siglip_features``：共享 SigLIP 模式下的干净 patch features，
+      ``[1, num_patches, siglip_feature_dim]``；默认 last-hidden 模式为
+      ``None``。
     - 四个 mean/std：float32 ``[1, 3, 1, 1]``。
 
     NumPy action 字段 shape 均为 ``[action_dim]``。只有策略驱动采帧时
@@ -140,6 +152,7 @@ class TrainingFrame(TypedDict):
     clean_action: FloatingArray
     executed_action: Optional[FloatingArray]
     clean_hidden: torch.Tensor
+    clean_siglip_features: Optional[torch.Tensor]
     siglip_mean: torch.Tensor
     siglip_std: torch.Tensor
     dino_mean: torch.Tensor
@@ -184,6 +197,7 @@ class TrainingFrameCollector:
         processor: TrainingProcessor,
         renderer: LightingCalibrator,
         search_keywords: SearchKeywords,
+        feature_objective: FeatureObjectiveKind,
         render_resolution: int = 256,
     ) -> None:
         self._cfg: FrameCollectionConfig = cfg
@@ -191,6 +205,7 @@ class TrainingFrameCollector:
         self._processor: TrainingProcessor = processor
         self._renderer: LightingCalibrator = renderer
         self._search_keywords: SearchKeywords = search_keywords
+        self._feature_objective: FeatureObjectiveKind = feature_objective
         self._render_resolution: int = render_resolution
         self._model_input_size: int = get_image_resize_size(cfg)
 
@@ -324,8 +339,9 @@ class TrainingFrameCollector:
                     mode="bilinear",
                     align_corners=False,
                 )
-                # clean_pixel_values: bfloat16 [1, 6, H, W]，前三通道为
-                # SigLIP，后三通道为 DINOv2。
+                # clean_pixel_values: bfloat16 [1, 6, H, W]。保留历史
+                # SigLIP→DINOv2 拼接顺序，只用于复现 action/last_hidden
+                # 基线；共享 SigLIP feature 由下方独立分支正确提取。
                 clean_pixel_values: torch.Tensor = torch.cat(
                     (
                         (clean_resized - self._siglip_mean)
@@ -343,6 +359,20 @@ class TrainingFrameCollector:
                 clean_hidden: torch.Tensor = clean_forward.hidden_states[
                     -1
                 ].detach()
+                clean_siglip_features: Optional[torch.Tensor] = None
+                if self._feature_objective == "siglip_patch":
+                    # 共享目标直接进入 checkpoint 配置标识的 SigLIP 分支，不走
+                    # 历史 6 通道手工拼接，避免 DINO/SigLIP 顺序错误。
+                    normalized_clean_siglip: torch.Tensor = (
+                        (clean_resized - self._siglip_mean)
+                        / self._siglip_std
+                    ).to(torch.bfloat16)
+                    clean_siglip_features = (
+                        extract_siglip_patch_features(
+                            self._model,
+                            normalized_clean_siglip,
+                        ).detach()
+                    )
                 clean_action: FloatingArray = (
                     decode_action_from_generated_ids(
                         self._model,
@@ -370,6 +400,7 @@ class TrainingFrameCollector:
             "clean_action": clean_action,
             "executed_action": executed_action,
             "clean_hidden": clean_hidden,
+            "clean_siglip_features": clean_siglip_features,
             "siglip_mean": self._siglip_mean,
             "siglip_std": self._siglip_std,
             "dino_mean": self._dino_mean,

@@ -183,6 +183,7 @@ def test_trainer_collects_optimizes_and_reuses_episode_runner_for_live_test(
         artifact_store=artifact_store,
         runtime_assets=runtime_assets,
         search_keywords=[["akita", "bowl"]],
+        feature_objective="last_hidden",
         render_resolution=32,
     )
     fallback_state = object()

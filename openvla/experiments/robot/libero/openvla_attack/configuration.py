@@ -14,8 +14,15 @@ TextureParameterizationKind: TypeAlias = Literal[
     "geometry_vertex",
     "spectral",
 ]
+FeatureObjectiveKind: TypeAlias = Literal[
+    "last_hidden",
+    "siglip_patch",
+]
 SUPPORTED_TEXTURE_PARAMETERIZATIONS: frozenset[str] = frozenset(
     {"legacy_vertex", "geometry_vertex", "spectral"}
+)
+SUPPORTED_FEATURE_OBJECTIVES: frozenset[str] = frozenset(
+    {"last_hidden", "siglip_patch"}
 )
 
 
@@ -34,6 +41,16 @@ def resolve_texture_parameterization(
             f"{sorted(SUPPORTED_TEXTURE_PARAMETERIZATIONS)}"
         )
     return cast(TextureParameterizationKind, raw_value)
+
+
+def resolve_feature_objective(raw_value: str) -> FeatureObjectiveKind:
+    """把 Draccus 字符串收窄为内部 feature objective 类型。"""
+    if raw_value not in SUPPORTED_FEATURE_OBJECTIVES:
+        raise ValueError(
+            f"未知 feature objective {raw_value!r}；可选值为 "
+            f"{sorted(SUPPORTED_FEATURE_OBJECTIVES)}"
+        )
+    return cast(FeatureObjectiveKind, raw_value)
 
 
 @dataclass
@@ -82,6 +99,9 @@ class GenerateConfig:
     train_frames_per_state: int = 1
     alpha_action: float = 1.0
     alpha_feature: float = 10.0
+    # 保持 last_hidden 为默认值以复现现有行为；siglip_patch 直接攻击共享的
+    # SigLIP patch features。Draccus 不支持 Literal，入口负责校验和收窄。
+    feature_objective: str = "last_hidden"
     frame_collect_with_policy: bool = False
     collect_grasp_frames: bool = False
     grasp_pre_frames: int = 40

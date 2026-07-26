@@ -27,12 +27,14 @@ from .artifacts import (
     AttackArtifactStore,
     LiveSnapshotPaths,
 )
+from .configuration import FeatureObjectiveKind
 from .evaluation import LiberoEpisodeRunner, RolloutConfig, RolloutResult
 from .frame_collection import (
     FrameCollectionConfig,
     LightingCalibrator,
     TrainingFrame,
     TrainingFrameCollector,
+    TrainingModel,
     TrainingProcessor,
 )
 from .optimization import (
@@ -60,18 +62,8 @@ class AttackTrainingConfig(
     save_attack_artifacts: bool
 
 
-class AttackTrainingModel(Protocol):
+class AttackTrainingModel(TrainingModel, Protocol):
     """采帧、优化和 live rollout 共同需要的 OpenVLA 模型 interface。"""
-
-    device: torch.device
-
-    def generate(self, **kwargs: Any) -> torch.Tensor:
-        """返回 token IDs，shape ``[batch_size, sequence_length]``。"""
-        ...
-
-    def __call__(self, **kwargs: Any) -> Any:
-        """执行 OpenVLA forward。"""
-        ...
 
 
 class AttackTrainingRenderer(
@@ -101,6 +93,7 @@ class AttackTrainer:
         artifact_store: AttackArtifactStore,
         runtime_assets: RuntimeAssetTransaction,
         search_keywords: SearchKeywords,
+        feature_objective: FeatureObjectiveKind,
         render_resolution: int = DEFAULT_RENDER_RESOLUTION,
     ) -> None:
         self._cfg: AttackTrainingConfig = cfg
@@ -110,12 +103,14 @@ class AttackTrainer:
         self._artifact_store: AttackArtifactStore = artifact_store
         self._runtime_assets: RuntimeAssetTransaction = runtime_assets
         self._search_keywords: SearchKeywords = search_keywords
+        self._feature_objective: FeatureObjectiveKind = feature_objective
         self._render_resolution: int = render_resolution
 
         self._optimizer: AttackOptimizer = AttackOptimizer(
             cfg=cfg,
             model=model,
             renderer=renderer,
+            feature_objective=feature_objective,
             render_resolution=render_resolution,
         )
         self._live_episode_runner: LiberoEpisodeRunner = (
@@ -166,6 +161,7 @@ class AttackTrainer:
             processor=self._processor,
             renderer=self._renderer,
             search_keywords=self._search_keywords,
+            feature_objective=self._feature_objective,
             render_resolution=self._render_resolution,
         )
         frame_pool: list[TrainingFrame] = frame_collector.collect(

@@ -29,9 +29,14 @@ from .compositing import (
     SingleViewFrame,
     build_single_view_samples,
 )
+from .configuration import FeatureObjectiveKind
 from .frame_collection import TrainingFrame
 from .objective import get_attack_loss
 from .texture_parameterization import SurfaceStepStats
+from .vision_features import (
+    SigLIPFeatureModel,
+    extract_siglip_patch_features,
+)
 
 
 class OptimizationConfig(Protocol):
@@ -46,7 +51,7 @@ class OptimizationConfig(Protocol):
     live_test_every_n_iters: int
 
 
-class OptimizationModel(Protocol):
+class OptimizationModel(SigLIPFeatureModel, Protocol):
     """攻击优化所需的最小 OpenVLA 前向 interface。"""
 
     device: torch.device
@@ -158,6 +163,7 @@ class AttackOptimizer:
         cfg: OptimizationConfig,
         model: OptimizationModel,
         renderer: OptimizationRenderer,
+        feature_objective: FeatureObjectiveKind,
         view_sampler: ViewSampler = build_single_view_samples,
         frame_batch_sampler: FrameBatchSampler = (
             sample_uniform_frame_batch
@@ -167,6 +173,7 @@ class AttackOptimizer:
         self._cfg: OptimizationConfig = cfg
         self._model: OptimizationModel = model
         self._renderer: OptimizationRenderer = renderer
+        self._feature_objective: FeatureObjectiveKind = feature_objective
         self._view_sampler: ViewSampler = view_sampler
         self._frame_batch_sampler: FrameBatchSampler = (
             frame_batch_sampler
@@ -208,8 +215,9 @@ class AttackOptimizer:
                 align_corners=False,
             )
             # pixel_values: float/bfloat16 NCHW
-            # [1, 6, model_height, model_width]，前三通道为 SigLIP，后三通道
-            # 为 DINOv2。
+            # [1, 6, model_height, model_width]。这里故意保留历史
+            # SigLIP→DINOv2 拼接顺序，使 last_hidden/action 基线行为不变；
+            # 新 siglip_patch 目标不复用这条路径。
             pixel_values: torch.Tensor = torch.cat(
                 (
                     (resized_image - frame["siglip_mean"])
@@ -236,9 +244,10 @@ class AttackOptimizer:
                 )
             )
             feature_losses.append(
-                -F.mse_loss(
-                    outputs.hidden_states[-1],
-                    frame["clean_hidden"],
+                self._compute_feature_loss(
+                    frame=frame,
+                    resized_image=resized_image,
+                    model_outputs=outputs,
                 )
             )
 
@@ -247,6 +256,58 @@ class AttackOptimizer:
         mean_action_loss: torch.Tensor = torch.stack(action_losses).mean()
         mean_feature_loss: torch.Tensor = torch.stack(feature_losses).mean()
         return mean_action_loss, mean_feature_loss
+
+    def _compute_feature_loss(
+        self,
+        *,
+        frame: TrainingFrame,
+        resized_image: torch.Tensor,
+        model_outputs: Any,
+    ) -> torch.Tensor:
+        """计算当前配置指定的负特征距离。
+
+        optimizer 执行梯度下降；使用负 MSE 会主动增大对抗图像与干净图像的
+        feature 距离。``last_hidden`` 完整保留历史行为。``siglip_patch`` 只
+        读取正确归一化的三通道 SigLIP 输入，并直接调用共享视觉分支。
+        """
+        if self._feature_objective == "last_hidden":
+            return -F.mse_loss(
+                model_outputs.hidden_states[-1],
+                frame["clean_hidden"],
+            )
+
+        clean_siglip_features: Optional[torch.Tensor] = frame[
+            "clean_siglip_features"
+        ]
+        if clean_siglip_features is None:
+            raise RuntimeError(
+                "siglip_patch objective 缺少 clean_siglip_features；"
+                "请使用相同 feature objective 重新采集训练帧"
+            )
+        normalized_adversarial_siglip: torch.Tensor = (
+            (resized_image - frame["siglip_mean"])
+            / frame["siglip_std"]
+        ).to(torch.bfloat16)
+        with autocast(dtype=torch.bfloat16):
+            adversarial_siglip_features: torch.Tensor = (
+                extract_siglip_patch_features(
+                    self._model,
+                    normalized_adversarial_siglip,
+                )
+            )
+        if (
+            adversarial_siglip_features.shape
+            != clean_siglip_features.shape
+        ):
+            raise RuntimeError(
+                "干净/对抗 SigLIP feature shape 不一致："
+                f"{tuple(clean_siglip_features.shape)} != "
+                f"{tuple(adversarial_siglip_features.shape)}"
+            )
+        return -F.mse_loss(
+            adversarial_siglip_features,
+            clean_siglip_features,
+        )
 
     def optimize(
         self,

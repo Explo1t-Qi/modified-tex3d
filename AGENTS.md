@@ -25,6 +25,9 @@
   policy 的 MuJoCo observation，禁止在目标模型侧再次做 PNG→顶点→PNG。
 - 默认攻击状态划分为 train 0–9、held-out eval 10–49；实验日志必须保留原始
   state ID。谱基、视频、模型权重和攻击纹理等实验产物不进入 Git。
+- OpenVLA checkpoint 的视觉分支顺序必须从 `timm_model_ids` 等模型配置读取，
+  禁止仅凭 `featurizer` / `fused_featurizer` 属性名猜测 DINOv2 与 SigLIP。
+  历史 6 通道顺序只为复现实验保留；新共享特征代码必须走显式模型分支。
 
 ## 代码规范
 
