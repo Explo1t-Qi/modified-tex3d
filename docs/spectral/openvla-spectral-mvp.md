@@ -160,10 +160,37 @@ surface_step=2/255
 ```
 
 建议先做 10 个 held-out states（`eval_init_state_ids=10-19`）的 pilot。若谱方法
-在源 OpenVLA 上相对 Geometry Vertex 的攻击失败数差距不超过 1 个 episode，
-再在 OpenVLA-OFT 上比较迁移；Spectral 至少比 Geometry Vertex 多造成 2 个
-失败 episode，才进入 40-state confirmation。10-state 阈值只是 go/no-go，
-不是统计显著性结论。
+造成的失败 episode 数至多比 Geometry Vertex 少 1 个，则认为源模型攻击效果
+没有明显退化，并在 OpenVLA-OFT 上比较迁移；Spectral 至少比 Geometry Vertex
+多造成 2 个目标模型失败 episode，才进入 40-state confirmation。10-state
+阈值只是 go/no-go，不是统计显著性结论。
+
+### 10-state 源模型 pilot 结果
+
+2026-07-26 已使用完全相同的训练状态 0–9、held-out 状态 10–19、seed、loss、
+5000 次迭代和曲面更新预算完成 Geometry Vertex 与 Spectral K=128 对照：
+
+| 参数化 | 可学习参数 | OpenVLA 任务成功 | 失败 states |
+|---|---:|---:|---|
+| Geometry Vertex | 63,789 | 9/10（90%） | 10 |
+| Spectral K=128 | 384 | 7/10（70%） | 10、14、17 |
+
+这里记录的是机器人任务成功率，数值越低表示攻击影响越强。Spectral 在共同失败
+的 state 10 之外额外造成 state 14、17 失败，因此通过源模型 go/no-go：
+参数减少约 166 倍（99.4%）的同时，没有牺牲源模型攻击效果。
+
+两组 loss history 和 gradient log 均有 5000 条有限记录，没有 NaN/Inf：
+
+- Geometry Vertex total loss 从 `1.834667` 降至 `1.140203`；
+- Spectral total loss 从 `1.834667` 降至 `1.244859`；
+- 两组最大 Surface Delta 均为 `0.5019608`，符合 `128/255` 上界；
+- Geometry Vertex 最终参数 shape 为 `[21263, 3]`；
+- Spectral 最终系数 shape 为 `[128, 3]`，384 个系数均非零。
+
+UV 纹理视觉检查显示，Geometry Vertex 主要出现细碎局部彩色噪点；Spectral
+主要形成连续的大尺度色彩变化，符合低频曲面谱参数化预期。该 pilot 只有 10 个
+held-out states，只用于推进迁移验证，不作为统计显著性结论。两次运行结束后
+LIBERO XML 与原始纹理均已恢复为 Git clean 状态。
 
 ## OpenVLA-OFT 直接迁移评估
 
@@ -172,8 +199,11 @@ surface_step=2/255
 ```bash
 CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES=<gpu-id> \
 MUJOCO_GL=egl PYOPENGL_PLATFORM=egl \
-TOKENIZERS_PARALLELISM=false PYTHONNOUSERSITE=1 PYTHONDONTWRITEBYTECODE=1 \
-<oft-python> \
+TOKENIZERS_PARALLELISM=false NUMBA_DISABLE_JIT=1 \
+MPLCONFIGDIR=/tmp/tex3d-oft-matplotlib \
+PYTHONNOUSERSITE=1 PYTHONDONTWRITEBYTECODE=1 \
+PYTHONPATH="/home/xiaomengqi/src/github/paper_code/openvla-oft:$PWD/openvla-oft" \
+/home/xiaomengqi/miniconda3/envs/tex3d-oft/bin/python \
 openvla-oft/experiments/robot/libero/attack_oft.py \
   --pretrained_checkpoint /data/huangsimin/openvla-7b-oft-finetuned-libero-spatial \
   --task_suite_name libero_spatial \
@@ -198,11 +228,13 @@ direct adapter 会：
   composite；
 - 在日志中记录原始 State ID。
 
-当前 `tex3d-openvla` conda 环境缺少 OFT 的
-`prismatic.models.action_heads`，因此 `<oft-python>` 尚不能填写为该环境。
-仓库原有 Dockerfile 会安装 OpenVLA-OFT action/proprio/diffusion 组件；在运行
-目标模型 smoke 前，需要确认可用 OFT 容器或 conda 环境。这是运行环境缺口，
-不是谱参数化的数据流缺口。
+服务器现有 `/home/xiaomengqi/miniconda3/envs/tex3d-oft` 环境。该环境需要把
+本地 OFT fork 放在 `PYTHONPATH` 最前：
+`/home/xiaomengqi/src/github/paper_code/openvla-oft`。加入该路径后，
+`prismatic.models.action_heads`、LIBERO 和 nvdiffrast 的 CPU import 已通过。
+Robosuite 位于只读 site-packages，入口需设置 `NUMBA_DISABLE_JIT=1`，避免 Numba
+尝试建立不可用的函数缓存；上述环境组合的真实 `attack_oft.py --help` 已通过，
+GPU 迁移流程仍需 smoke 验收。
 
 ## 当前验证状态
 
@@ -211,5 +243,8 @@ direct adapter 会：
   `coefficients=(128, 3)`、384 参数、零 Surface Delta；
 - GPU spectral smoke：已通过，梯度、曲面归一化更新、bake、产物保存与
   held-out rollout 均正常；
-- OFT direct Active Texture adapter：CPU 测试通过；目标运行环境待确认；
-- OpenVLA/OFT 正式实验：尚未执行。
+- OpenVLA 10-state pilot：Geometry Vertex 任务成功率 90%，Spectral K=128
+  为 70%，通过源模型 go/no-go；
+- OFT direct Active Texture adapter：CPU 测试通过；`tex3d-oft` 加本地 OFT
+  fork 后 action head import 已通过，GPU smoke 待执行；
+- OpenVLA 40-state confirmation 与 OFT 迁移实验：尚未执行。
