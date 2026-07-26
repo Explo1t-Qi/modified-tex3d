@@ -245,6 +245,30 @@ GPU smoke：
 
 单个 State 10 的 100% 只表示工程链路通过，不表示谱纹理没有迁移效果。
 
+### 10-state OFT 迁移 pilot 结果
+
+2026-07-26 在与源模型相同的 held-out states 10–19 上依次完成 Clean、
+Geometry Vertex bake PNG 和 Spectral K=128 bake PNG 的直接迁移评估：
+
+| OFT 条件 | 任务成功 | 失败 states |
+|---|---:|---|
+| Clean | 10/10（100%） | 无 |
+| Geometry Vertex | 10/10（100%） | 无 |
+| Spectral K=128 | 10/10（100%） | 无 |
+
+三组共生成 30 个非空 rollout MP4，运行后 XML 与真实纹理均恢复，LIBERO 资产
+保持 Git clean。对 State 10 的首帧进行视觉核查时，Geometry Vertex 的细碎
+彩色扰动与 Spectral 的大尺度绿/蓝/橙色变化均清晰出现在 MuJoCo observation
+中；direct evaluation 分支的 `renderer=None`，policy 输入直接来自该
+observation。因此三组同为 100% 不是纹理未激活或错误走入 nvdiffrast composite
+导致的假阴性。
+
+该结果未达到预先约定的迁移 go/no-go（Spectral 至少比 Geometry Vertex 多造成
+2 个 OFT 失败 episode），所以不直接进入 40-state confirmation，也不声明迁移
+能力得到提升。当前 MVP 只支持以下结论：谱方法以约 1/166 的参数量保持并提升了
+源 OpenVLA 上的攻击效果，同时得到更连续的纹理结构；仅使用最低 128 个非恒定
+模态和 OpenVLA 专用 action/last-hidden loss，尚未产生可观测的 OFT 迁移优势。
+
 ## 当前验证状态
 
 - CPU 数值与回归测试：57 passed、1 skipped；
@@ -256,4 +280,7 @@ GPU smoke：
   为 70%，通过源模型 go/no-go；
 - OFT direct Active Texture adapter：CPU 测试通过；`tex3d-oft` 加本地 OFT
   fork 后 action head import 与单状态 GPU smoke 均已通过；
-- OpenVLA 40-state confirmation 与 OFT 迁移实验：尚未执行。
+- OFT 10-state 迁移 pilot：Clean、Geometry Vertex 与 Spectral K=128 均为
+  100%，未达到迁移 go/no-go；
+- 40-state confirmation：按预先阈值暂不执行，下一步应先改进共享视觉特征目标
+  或谱方向选择。
