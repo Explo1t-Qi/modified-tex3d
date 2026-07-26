@@ -233,8 +233,17 @@ direct adapter 会：
 `/home/xiaomengqi/src/github/paper_code/openvla-oft`。加入该路径后，
 `prismatic.models.action_heads`、LIBERO 和 nvdiffrast 的 CPU import 已通过。
 Robosuite 位于只读 site-packages，入口需设置 `NUMBA_DISABLE_JIT=1`，避免 Numba
-尝试建立不可用的函数缓存；上述环境组合的真实 `attack_oft.py --help` 已通过，
-GPU 迁移流程仍需 smoke 验收。
+尝试建立不可用的函数缓存；上述环境组合的真实 `attack_oft.py --help` 已通过。
+
+2026-07-26 使用 Spectral K=128 的 bake PNG 在 OFT State 10 上完成单 episode
+GPU smoke：
+
+- direct Active Texture、OFT L1 action head、proprioception 和双相机输入流程
+  正常结束；
+- State 10 成功，rollout MP4 与评估日志正常生成；
+- 退出后 XML 与真实纹理均恢复，相关 LIBERO 资产保持 Git clean。
+
+单个 State 10 的 100% 只表示工程链路通过，不表示谱纹理没有迁移效果。
 
 ## 当前验证状态
 
@@ -246,5 +255,5 @@ GPU 迁移流程仍需 smoke 验收。
 - OpenVLA 10-state pilot：Geometry Vertex 任务成功率 90%，Spectral K=128
   为 70%，通过源模型 go/no-go；
 - OFT direct Active Texture adapter：CPU 测试通过；`tex3d-oft` 加本地 OFT
-  fork 后 action head import 已通过，GPU smoke 待执行；
+  fork 后 action head import 与单状态 GPU smoke 均已通过；
 - OpenVLA 40-state confirmation 与 OFT 迁移实验：尚未执行。
