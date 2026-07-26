@@ -408,6 +408,40 @@ Shared-SigLIP 纹理在相同 L∞ 上界下具有更低的平均扰动和约一
 `0.0256`，接近正交，进一步说明共享 feature objective 找到了不同的低频解。
 这些纹理自然性指标是同一 atlas 上的相对诊断，不替代表面感知指标或用户研究。
 
+### Shared-SigLIP 10-state OFT 迁移结果
+
+2026-07-26 将上述 Shared-SigLIP bake PNG 通过同一个 direct Active Texture
+adapter 迁移到 OpenVLA-OFT，在 held-out states 10–19 上得到：
+
+| OFT 条件 | 任务成功 | 失败 states |
+|---|---:|---|
+| Clean | 10/10（100%） | 无 |
+| Geometry Vertex | 10/10（100%） | 无 |
+| Spectral K=128 + last hidden | 10/10（100%） | 无 |
+| Spectral K=128 + Shared SigLIP | 10/10（100%） | 无 |
+
+新纹理在源 OpenVLA 上使 State 10、13 失败，但相同两个状态在 OFT 上都成功；
+全部 10 个 OFT rollout 也均成功。因此该版本没有达到“至少产生两个 OFT 失败”
+的迁移门槛，不能声称迁移性得到提升。
+
+源攻击偏弱可能是迁移失败的一个因素：Shared-SigLIP 只使源模型 2/10 失败，
+而且其 UV 扰动 MAE 比上一版更低。但它不能单独解释当前结果，因为更强的
+last-hidden 谱纹理已经使源模型 3/10 失败，迁移到 OFT 后仍为 0/10 失败。
+当前证据更符合两个因素共同存在：
+
+1. 源攻击没有形成足够大的跨状态决策裕量，二值成功率中的少量失败可能接近
+   OpenVLA 自身的决策边界；
+2. 增大源 OpenVLA 的 SigLIP patch MSE 不保证改变 OFT 的动作。两者虽然共享
+   SigLIP 架构，但图像预处理、特征消费方式、动作头和时序决策路径不同；同时
+   action loss 仍是 OpenVLA 专用目标。
+
+此外，Shared-SigLIP 纹理在第 78 轮已经首次触及 L∞ 边界，后续 4900 余轮主要
+在约束边界上改变方向；仅增加训练轮数不太可能解决迁移问题。下一轮若继续，
+应先把“源攻击强度”和“跨模型目标有效性”拆开验证：在相同预算下提高 K 或加入
+中频模态，使源模型攻击至少恢复到 70% 或更低成功率；同时记录纹理对 OFT
+SigLIP feature 与动作输出的影响。若源攻击增强后 OFT 仍为 100%，即可更有力地
+排除“只是纹理不够强”，转而开发跨模型联合 feature/action objective。
+
 ## 当前验证状态
 
 - CPU 数值与回归测试：59 passed；
@@ -425,5 +459,7 @@ Shared-SigLIP 纹理在相同 L∞ 上界下具有更低的平均扰动和约一
   clean feature 与纹理梯度 CPU 测试已通过；真实 GPU smoke 的损失、梯度、
   曲面约束、artifact 与 held-out rollout 均已通过；
 - Shared-SigLIP 10-state 源模型 pilot：任务成功率 80%，相较上一版 Spectral
-  K=128 的 70% 只少造成一个失败，通过源模型门槛，等待 OFT 直接迁移；
+  K=128 的 70% 只少造成一个失败，通过源模型门槛；
+- Shared-SigLIP 10-state OFT 迁移：任务成功率 100%，未产生目标模型失败，
+  迁移 go/no-go 未通过；
 - 40-state confirmation：按预先阈值暂不执行。
