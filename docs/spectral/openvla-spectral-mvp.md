@@ -368,6 +368,46 @@ alpha_feature=4.0
 上一轮 `0.1/1.0` 的日志阅读习惯对齐。该平衡只由一个训练状态的首步梯度确定，
 后续仍需通过完整 loss/gradient 轨迹和 held-out 成功率验证。
 
+### Shared-SigLIP 10-state 源模型 pilot
+
+2026-07-26 已使用训练 states 0–9、held-out states 10–19、Spectral K=128、
+5000 轮和上述平衡权重完成正式源模型 pilot：
+
+| Feature objective | OpenVLA 任务成功 | 失败 states |
+|---|---:|---|
+| Last hidden | 7/10（70%） | 10、14、17 |
+| Shared SigLIP | 8/10（80%） | 10、13 |
+
+任务成功率越低代表攻击越强。Shared SigLIP 比上一版少造成一个失败，刚好满足
+预先约定的“源模型失败数至多减少 1 个”门槛，因此可以进入 OFT 直接迁移。两组
+共同使 State 10 失败；其余失败状态不同，说明新 objective 改变了攻击方向，
+不能只用总失败数判断两张纹理等价。
+
+5000 条 Shared-SigLIP 记录连续且全部有限：
+
+- total loss 从 `0.180549` 降至 `0.151075`；
+- action loss 从 `20.705266` 到 `20.545033`；
+- SigLIP feature loss 从 `-0.066260` 到 `-0.135937`，即干净/对抗 patch
+  feature 距离增大约 2.05 倍；
+- 梯度范数范围为 `[4.454987, 20.44186]`；
+- 第 78 轮首次触及 `128/255` 边界，最终 Max Surface Delta 为
+  `0.5019608`，所有曲面步长均未实质越过 `2/255`；
+- 最终 coefficients shape 为 `[128, 3]`，384 个参数全部非零且有限。
+
+在同一个 4096×4096 UV atlas 上，将保存纹理与原图做八位通道差：
+
+| 指标 | Last hidden | Shared SigLIP |
+|---|---:|---:|
+| 扰动 MAE | 4.986 | 3.035 |
+| 扰动 RMSE | 13.865 | 9.247 |
+| 相邻像素扰动差（TV proxy） | 0.1007 | 0.0532 |
+| 最大通道差 | 128 | 128 |
+
+Shared-SigLIP 纹理在相同 L∞ 上界下具有更低的平均扰动和约一半的 UV
+高频变化，视觉上仍是连续的大尺度色彩过渡。两版最终谱系数的余弦相似度仅
+`0.0256`，接近正交，进一步说明共享 feature objective 找到了不同的低频解。
+这些纹理自然性指标是同一 atlas 上的相对诊断，不替代表面感知指标或用户研究。
+
 ## 当前验证状态
 
 - CPU 数值与回归测试：59 passed；
@@ -384,4 +424,6 @@ alpha_feature=4.0
 - Shared-SigLIP objective：强类型接口、分支定位、三通道校验、Training Frame
   clean feature 与纹理梯度 CPU 测试已通过；真实 GPU smoke 的损失、梯度、
   曲面约束、artifact 与 held-out rollout 均已通过；
+- Shared-SigLIP 10-state 源模型 pilot：任务成功率 80%，相较上一版 Spectral
+  K=128 的 70% 只少造成一个失败，通过源模型门槛，等待 OFT 直接迁移；
 - 40-state confirmation：按预先阈值暂不执行。
