@@ -322,6 +322,26 @@ GPU smoke 使用与第一轮相同的最小配置，只新增：
 数值前，不直接沿用 5000 轮正式训练，也不调整 alpha，以免同时改变 feature
 来源与 loss 权重。
 
+2026-07-26 已在真实 OpenVLA checkpoint 上完成该 smoke：
+
+- action loss 为 `21.916494`，SigLIP feature loss 为 `-0.076172`，
+  `alpha_action=1`、`alpha_feature=10` 时 total loss 为 `21.154776`，三者
+  满足预期的加权关系且均为有限值；
+- 谱系数梯度范数为 `7.280559e+01`，保存的 coefficients shape 为
+  `[128, 3]`，384 个参数全部非零且有限；
+- `Actual Surface Step = 7.843137e-03`、`Max Surface Delta =
+  7.843137e-03`，均为 `2/255`，没有越过 `128/255` 上界；
+- UV 与原始 4096×4096 纹理相比，八位图最大通道差为 2，artifact UV 与最终
+  active texture 完全一致；
+- held-out State 1 rollout 成功结束。单次任务成功率 100% 只证明流程可运行，
+  不用于判断攻击强弱。
+
+同状态的上一版 last-hidden smoke 具有相同 action loss `21.916494`，说明该次
+对照没有意外改变采帧或 action 路径。其 feature loss 为 `-0.215820`，绝对值约
+为本次 SigLIP feature loss 的 2.83 倍。该比例只能用于 loss 数值尺度的初步
+判断，不能代替两个目标关于谱系数的梯度范数和梯度方向对照；正式选择
+`alpha_feature` 前先做 action-only 与 SigLIP-only 单步梯度标定。
+
 ## 当前验证状态
 
 - CPU 数值与回归测试：59 passed；
@@ -336,5 +356,6 @@ GPU smoke 使用与第一轮相同的最小配置，只新增：
 - OFT 10-state 迁移 pilot：Clean、Geometry Vertex 与 Spectral K=128 均为
   100%，未达到迁移 go/no-go；
 - Shared-SigLIP objective：强类型接口、分支定位、三通道校验、Training Frame
-  clean feature 与纹理梯度 CPU 测试已通过，GPU smoke 待执行；
+  clean feature 与纹理梯度 CPU 测试已通过；真实 GPU smoke 的损失、梯度、
+  曲面约束、artifact 与 held-out rollout 均已通过；
 - 40-state confirmation：按预先阈值暂不执行。
