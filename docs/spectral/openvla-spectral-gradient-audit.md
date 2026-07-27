@@ -311,6 +311,21 @@ state 0 上使用既有 `alpha_action=0.1, alpha_feature=4.0` 时：
 三种参数化的首状态加权比例都接近1，因此后续训练继续共享 `0.1/4.0`，不为
 每种 basis 单独调权。这样实验只改变谱空间，不同时改变优化目标。
 
+### 非连续 basis GPU smoke
+
+2026-07-27 已使用 Feature stable-score K=128 artifact 完成一次真实纹理更新、
+bake、Active Texture 激活和 State 1 rollout：
+
+- total/action/feature loss 分别为
+  `1.886962 / 21.916494 / -0.076172`，均为有限值；
+- 谱系数梯度 norm 为 `10.53578`；
+- Actual Surface Step 与 Max Surface Delta 都为
+  `0.007843138`，等于 `2/255`；
+- 保存系数 shape 为 `[128,3]`，384 个值全部非零且有限；
+- `Ep0_UV_Map.png` 与最终 `task_0_adv_texture_*.png` 逐像素相同；
+- 相对原始 UV 的最大八位通道差为2，符合单步曲面更新后的量化预期；
+- State 1 rollout 成功，完整流程正常结束；单次成功率不用于评价攻击效果。
+
 ## 第一轮决策
 
 读取审计结果后只比较两个候选：
@@ -334,5 +349,6 @@ state 0 上使用既有 `alpha_action=0.1, alpha_feature=4.0` 时：
 - 真实 OpenVLA states 0–9 梯度审计：完成，数据流与数值检查通过；
 - Feature stable-score K=128 artifact：已生成并通过 provenance、正交性和
   特征方程残差校验；
-- 下一步：先运行该非连续 artifact 的一轮 GPU smoke，再分别执行连续 K=256
-  与 Feature stable-score K=128 的同预算源 OpenVLA 训练对照。
+- Feature stable-score K=128 GPU smoke：通过；
+- 下一步：分别执行连续 K=256 与 Feature stable-score K=128 的同预算源
+  OpenVLA 训练对照。
