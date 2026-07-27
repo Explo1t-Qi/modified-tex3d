@@ -96,10 +96,17 @@ K=512 的 total/Feature loss 更优，但 Action loss 和 held-out 任务失败�
 | Geometry Vertex + last hidden | 100% | 无 |
 | Spectral K=128 + last hidden | 100% | 无 |
 | Spectral K=128 + Shared SigLIP | 100% | 无 |
+| Spectral K=256 + Shared SigLIP | 100% | 无 |
 
 全部纹理均已确认出现在目标 policy 实际读取的 MuJoCo observation 中，因此
 100% 不是纹理未激活或评估错误导致的假阴性。第一版谱方法和 Shared-SigLIP
 目标均未达到预定迁移门槛，当前不能声称迁移性优于 Geometry Vertex。
+
+其中 K=256 是当前 Shared-SigLIP 连续谱基中源攻击最强的版本：它在源
+OpenVLA 上使 states 10、13、15 失败，但同一张纹理迁移到 OFT 后，这三个
+states 和其余七个 states 全部成功。10个目标 rollout MP4 均非空，评估后
+LIBERO 资产恢复正常。这个对照削弱了“迁移为零只是因为 K=128 源攻击太弱”
+的解释，更直接指向源/目标模型之间的代理目标和决策路径差异。
 
 ### 4. 跨任务/物体工程验证
 
@@ -145,7 +152,8 @@ Feature stable-score 选出的128个模态中，79个来自最低128维，49个�
 
 ### 没有得到的研究结论
 
-1. Shared-SigLIP 谱纹理没有在 OpenVLA-OFT 上造成任务失败；
+1. Shared-SigLIP K=128 和当前源攻击最强的 K=256 谱纹理均未在
+   OpenVLA-OFT 上造成任务失败；
 2. 增大 K 没有单调提高源攻击，K=512 反而弱于 K=256；
 3. 当前没有证据证明谱方法提高了跨 VLA 模型迁移性；
 4. 尚未在 π0 或更多任务上进行迁移确认。
@@ -159,8 +167,9 @@ Feature stable-score 选出的128个模态中，79个来自最低128维，49个�
 
 下一阶段应从“继续增加 K”转向解释并解决对抗性与迁移性的脱节，优先回答：
 
-1. **源攻击强度问题**：当前 held-out 源模型最多只有3/10失败，是否没有形成
-   足够大的决策裕量，导致任何迁移扰动都被目标模型吸收；
+1. **源攻击强度问题**：当前 held-out 源模型最多只有3/10失败，可能仍未形成
+   足够大的决策裕量；但 K=256 源失败增加后 OFT 仍为0/10失败，说明它不能
+   作为唯一解释；
 2. **代理目标问题**：为什么更大的 SigLIP feature distance 没有转化为更差的
    Action 和任务成功率；
 3. **优化约束问题**：高频局部峰值是否通过全局 Surface L∞ 步长归一化和边界
@@ -184,6 +193,9 @@ Feature stable-score 选出的128个模态中，79个来自最低128维，49个�
 - Spatial K=256：
   `experiments/logs/spectral-source-comparison/`
   `spectral-k256-siglip-states0-9-EVAL-libero_spatial-2026_07_27-08_39_16.txt`
+- Spatial K=256 → OFT：
+  `experiments/logs/spectral-k256-siglip-oft-transfer/`
+  `spectral-k256-siglip-oft-transfer-EVAL-libero_spatial-2026_07_27-16_59_25.txt`
 - Spatial K=512：
   `experiments/logs/spectral-source-comparison/`
   `spectral-k512-siglip-states0-9-EVAL-libero_spatial-2026_07_27-12_17_48.txt`

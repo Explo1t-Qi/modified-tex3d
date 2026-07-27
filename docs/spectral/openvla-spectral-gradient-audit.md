@@ -429,8 +429,10 @@ K=512 的 UV TV proxy 比 K=256 高约27%，新增256个模态占最终 M-正交
   特征方程残差校验；
 - Feature stable-score K=128 GPU smoke：通过；
 - 连续 K=256 正式源实验：完成，OpenVLA 任务成功率为70%；
+- 连续 K=256 OFT 直接迁移：完成，任务成功率为100%，没有目标模型失败；
 - 连续 K=512 正式源实验：完成，OpenVLA 任务成功率为90%，未优于 K=256；
 - LIBERO-Object Task 0 连续 K=512：完成，OpenVLA 任务成功率为80%；
 - Feature stable-score K=128：工程 smoke 已通过，正式5000轮源实验尚未执行；
-- 下一阶段：诊断源攻击强度、代理目标和跨模型迁移之间的脱节，再决定是否运行
-  纯 Feature 选基或改为 Action/Feature 联合选基。
+- 下一阶段：K=256 源攻击增强后仍未迁移，应优先诊断代理目标和跨模型决策
+  路径之间的脱节，再决定是否运行纯 Feature 选基或改为 Action/Feature
+  联合选基。

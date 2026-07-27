@@ -419,6 +419,7 @@ adapter 迁移到 OpenVLA-OFT，在 held-out states 10–19 上得到：
 | Geometry Vertex | 10/10（100%） | 无 |
 | Spectral K=128 + last hidden | 10/10（100%） | 无 |
 | Spectral K=128 + Shared SigLIP | 10/10（100%） | 无 |
+| Spectral K=256 + Shared SigLIP | 10/10（100%） | 无 |
 
 新纹理在源 OpenVLA 上使 State 10、13 失败，但相同两个状态在 OFT 上都成功；
 全部 10 个 OFT rollout 也均成功。因此该版本没有达到“至少产生两个 OFT 失败”
@@ -435,12 +436,17 @@ last-hidden 谱纹理已经使源模型 3/10 失败，迁移到 OFT 后仍为 0/
    SigLIP 架构，但图像预处理、特征消费方式、动作头和时序决策路径不同；同时
    action loss 仍是 OpenVLA 专用目标。
 
-此外，Shared-SigLIP 纹理在第 78 轮已经首次触及 L∞ 边界，后续 4900 余轮主要
-在约束边界上改变方向；仅增加训练轮数不太可能解决迁移问题。下一轮若继续，
-应先把“源攻击强度”和“跨模型目标有效性”拆开验证：在相同预算下提高 K 或加入
-中频模态，使源模型攻击至少恢复到 70% 或更低成功率；同时记录纹理对 OFT
-SigLIP feature 与动作输出的影响。若源攻击增强后 OFT 仍为 100%，即可更有力地
-排除“只是纹理不够强”，转而开发跨模型联合 feature/action objective。
+2026-07-27 又将同设置下源攻击更强的连续 K=256 纹理直接迁移到 OFT。该纹理
+在源 OpenVLA 上使 states 10、13、15 失败，任务成功率为70%；在 OFT 的同一
+states 10–19 上仍为 10/10 成功。10个 rollout MP4 均非空，输入纹理 SHA-256
+为 `853c1b304dfb5ea71c1aa955b3e8e85a2c3400b732b3054340833a88b564d843`，
+运行结束后 LIBERO 资产保持 clean。因此“源攻击恢复到70%后目标是否仍为100%”
+已经得到肯定答案，源攻击偏弱不能单独解释迁移失败。
+
+此外，Shared-SigLIP K=128 纹理在第78轮已经首次触及 L∞ 边界，后续4900余轮
+主要在约束边界上改变方向；仅增加训练轮数不太可能解决迁移问题。下一轮应同时
+记录纹理对源/OFT SigLIP feature 和动作输出的影响，优先诊断共享 Feature
+距离为何没有传递到目标动作，再决定是否开发跨模型联合 objective。
 
 ## 当前验证状态
 
@@ -462,6 +468,8 @@ SigLIP feature 与动作输出的影响。若源攻击增强后 OFT 仍为 100%�
   K=128 的 70% 只少造成一个失败，通过源模型门槛；
 - Shared-SigLIP 10-state OFT 迁移：任务成功率 100%，未产生目标模型失败，
   迁移 go/no-go 未通过；
+- Shared-SigLIP K=256 源实验任务成功率为70%，同纹理迁移到 OFT 后任务
+  成功率仍为100%；10个 rollout 和资产恢复检查通过；
 - source-only K=512 候选谱基梯度审计：已完成；连续 K=256/K=512 和
   LIBERO-Object K=512 后续实验也已完成，结果见
   `docs/spectral/openvla-spectral-gradient-audit.md`；
