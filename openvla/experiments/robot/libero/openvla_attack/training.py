@@ -12,6 +12,11 @@
 
 本 module 不遍历 benchmark task，也不统计最终成功率；这些仍属于
 ``attack_openvla.py`` 的实验编排职责。
+
+编排关系为：
+
+``attack_openvla.py → AttackTrainer
+→ TrainingFrameCollector / AttackOptimizer / live-test / AttackArtifactStore``。
 """
 
 from __future__ import annotations
@@ -158,7 +163,11 @@ class AttackTrainer:
         initial_states: Optional[Sequence[Any]] = None,
         initial_state_ids: Optional[Sequence[int]] = None,
     ) -> list[float]:
-        """采集训练帧、优化纹理并保存 task 级 Attack Artifact。"""
+        """采集训练帧、优化纹理并保存 task 级 Attack Artifact。
+
+        返回的 ``loss_history`` 长度等于实际执行的优化轮数；正常完成时为
+        ``num_iters``，若 live-test 触发提前停止则可能更短。
+        """
         print(
             f"[ATTACK] Training Ep {task_id} | "
             f"{self._cfg.num_frames_to_attack}-Frame Optimization..."
@@ -226,7 +235,10 @@ class AttackTrainer:
         )
 
         def run_live_test(iteration: int) -> bool:
-            """保存/激活当前纹理并运行一次共享的 episode 状态机。"""
+            """保存/激活当前纹理并运行一次共享的 episode 状态机。
+
+            ``live_test_enabled=False`` 时 optimizer 不会调用该闭包。
+            """
             snapshot_paths: LiveSnapshotPaths = (
                 self._artifact_store.save_live_snapshot(
                     episode_index=task_id,

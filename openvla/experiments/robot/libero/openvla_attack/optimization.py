@@ -9,6 +9,11 @@ SignSGD 参数更新、梯度日志和 live-test 调度。调用方只需提供�
 ``build_single_view_samples``，负责未来 EoT/多视角生成。``FrameBatchSampler``
 是独立的 trajectory-aware seam，默认仍执行随机等权采样。这里只预留替换点，
 不实现论文中缺失的 latent dynamics、criticality scoring 或多视图算法。
+
+优化路径为：
+
+``TrainingFrame 池 → FrameBatchSampler → 构造对抗视图 → OpenVLA forward
+→ action/feature loss → 加权 total loss → backward → 纹理参数更新``。
 """
 
 from __future__ import annotations

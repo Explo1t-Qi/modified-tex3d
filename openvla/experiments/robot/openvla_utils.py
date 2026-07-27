@@ -106,7 +106,8 @@ def get_vla(cfg):
     vla = AutoModelForVision2Seq.from_pretrained(
         cfg.pretrained_checkpoint,
         # attn_implementation="flash_attention_2",
-        attn_implementation="eager", 
+        # eager attention 与当前 OpenVLA 生成路径兼容，并允许获取所需梯度。
+        attn_implementation="eager",
         torch_dtype=torch.bfloat16,
         load_in_8bit=cfg.load_in_8bit,
         load_in_4bit=cfg.load_in_4bit,
@@ -126,6 +127,7 @@ def get_vla(cfg):
     if os.path.isfile(dataset_statistics_path):
         with open(dataset_statistics_path, "r") as f:
             norm_stats = json.load(f)
+        # unnorm_key 必须与 checkpoint 的数据集统计量一致。
         vla.norm_stats = norm_stats
     else:
         print(
@@ -228,9 +230,15 @@ def get_vla_action(vla, processor, base_vla_name, obs, task_label, unnorm_key, c
         prompt = f"In: What action should the robot take to {task_label.lower()}?\nOut:"
 
     # Process inputs.
+    # processor 把 RGB 图像和任务文本转换为模型所需张量。
     inputs = processor(prompt, image).to(DEVICE, dtype=torch.bfloat16)
     inputs = ensure_trailing_empty_token(inputs)
 
     # Get action.
-    action = vla.predict_action(**inputs, unnorm_key=unnorm_key, do_sample=False)
+    action = vla.predict_action(
+        **inputs,
+        unnorm_key=unnorm_key,
+        do_sample=False,
+    )
+    # [dx, dy, dz, droll, dpitch, dyaw, gripper]
     return action

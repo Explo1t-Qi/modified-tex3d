@@ -37,6 +37,10 @@ class RuntimeAssetTransaction:
 
     正确调用顺序为 ``begin -> activate/restore -> close``。``close`` 是幂等的，
     会恢复干净资源、删除 backup，并撤销本事务安装的进程 handler。
+
+    本类只管理 ``clean asset ↔ active adversarial asset`` 的共享文件副作用和
+    生命周期；它不保存实验产物，也不支持多个进程并发修改同一物体资产。这与
+    :class:`AttackArtifactStore` 的长期产物管理职责不同。
     """
 
     def __init__(
@@ -75,6 +79,7 @@ class RuntimeAssetTransaction:
 
         相对真实纹理路径继续按重构前行为，以当前工作目录为基准解析。XML
         不存在时在创建任何 backup 前抛出 :class:`FileNotFoundError`。
+        这是事务的正式工厂入口，调用方不应直接构造实例。
         """
         resolved_xml_path: Path = Path(xml_path)
         if not resolved_xml_path.exists():
@@ -276,7 +281,7 @@ class RuntimeAssetTransaction:
         context: str,
         remove_backups: bool,
     ) -> None:
-        """从 clean backup 恢复共享资源。
+        """从 clean backup 恢复共享资源，但不一定结束事务。
 
         ``remove_backups=False`` 用于 task 之间的恢复，backup 保留给后续 task；
         ``True`` 只应在最终清理时使用。

@@ -4,6 +4,8 @@
 为 nvdiffrast 使用的 model-view-projection（MVP）矩阵。本模块集中这些知识，
 使调用方不必重复理解 MuJoCo 命名接口、四元数顺序、相机外参和背景渲染时的
 临时 alpha 修改。
+
+它是 renderer 与 MuJoCo 场景之间的几何适配层。
 """
 
 from __future__ import annotations
@@ -81,6 +83,7 @@ def find_target_body_pose(
     ``search_keywords`` 中每个内层序列表示一次“全部包含”的名称匹配，外层顺序
     表示回退优先级。例如 ``(("akita", "bowl"), ("bowl",))`` 会优先寻找同时
     包含前两个词的 body，找不到时再放宽到 ``"bowl"``。
+    返回的 model matrix 把物体局部坐标映射到 MuJoCo 世界坐标。
 
     未找到目标时沿用原实现：返回 ``body_id=-1``，并使用 z=0.85 的单位矩阵
     作为占位姿态。调用方必须根据 ``body_id`` 决定是否真正进行前景渲染。
@@ -99,6 +102,7 @@ def find_target_body_pose(
                     body_id,
                     "body",
                 )
+                # 排除可视化辅助 body 和 site 对应的名称。
                 if body_name is None or "vis" in body_name or "site" in body_name:
                     continue
                 if all(keyword in body_name for keyword in keyword_group):
@@ -137,7 +141,7 @@ def find_target_body_pose(
             body_quaternion[3],
             body_quaternion[0],
         ]
-    )
+    )  # scipy 接收 [x, y, z, w]，MuJoCo 提供 [w, x, y, z]。
 
     model_matrix_numpy: np.ndarray = np.eye(4, dtype=np.float32)
     model_matrix_numpy[:3, :3] = rotation.as_matrix().astype(np.float32)
@@ -162,6 +166,7 @@ def compute_render_mvp(
         resolution: ``(width, height)``；当前实验使用正方形分辨率。
         projection_flip_x: 投影矩阵 x 轴方向，保留原实现默认值 ``-1``。
         projection_flip_y: 投影矩阵 y 轴方向，保留原实现默认值 ``-1``。
+            两个 flip 参数用于匹配 MuJoCo 图像与 nvdiffrast 的坐标约定。
 
     Returns:
         与 ``model_matrix`` 同 device 的 ``float32`` MVP tensor，
@@ -188,6 +193,7 @@ def compute_render_mvp(
         dtype=np.float32,
     ).reshape(3, 3)
 
+    # 相机旋转矩阵正交，因此它的逆等于转置。
     view_rotation: np.ndarray = camera_rotation.T
     view_matrix_numpy: np.ndarray = np.eye(4, dtype=np.float32)
     view_matrix_numpy[:3, :3] = view_rotation
@@ -222,6 +228,7 @@ def compute_render_mvp(
     view_matrix: Tensor = torch.from_numpy(view_matrix_numpy).to(
         model_matrix.device
     )
+    # float32 [4, 4]：物体局部坐标 → 世界 → 相机 → 裁剪空间。
     return projection_matrix @ view_matrix @ model_matrix
 
 

@@ -22,14 +22,15 @@ ACTION_TOKEN_END: Final[int] = 32_000
 NUM_ACTION_BINS: Final[int] = ACTION_TOKEN_END - ACTION_TOKEN_START
 
 
-def get_attack_loss(logits: Tensor, clean_labels: Tensor) -> Tensor:
+def get_attack_loss(logits: Tensor, clean_generated_token_ids: Tensor) -> Tensor:
     """计算把干净动作推向对称 action bin 的交叉熵损失。
 
     Args:
         logits: 模型未归一化输出，形状为
             ``[batch_size, model_sequence_length, vocab_size]``，浮点类型。
-            ``vocab_size`` 必须至少覆盖 ``ACTION_TOKEN_END``。
-        clean_labels: 干净图像对应的 token 标签，形状为
+            ``vocab_size`` 是 OpenVLA 总词表大小，必须至少覆盖
+            ``ACTION_TOKEN_END``。
+        clean_generated_token_ids: 干净图像对应的完整生成序列，形状为
             ``[batch_size, label_sequence_length]``，整数类型。非 action token
             以及值为 ``-100`` 的忽略位置不会参与损失。
 
@@ -46,14 +47,19 @@ def get_attack_loss(logits: Tensor, clean_labels: Tensor) -> Tensor:
     """
     # 某些生成路径会在标签前保留额外模型输出。此处从尾部对齐 token 序列。
     aligned_logits: Tensor = logits
-    if aligned_logits.shape[1] > clean_labels.shape[1]:
-        aligned_logits = aligned_logits[:, -clean_labels.shape[1] :, :]
+    if aligned_logits.shape[1] > clean_generated_token_ids.shape[1]:
+        aligned_logits = aligned_logits[
+            :, -clean_generated_token_ids.shape[1] :, :
+        ]
 
+    # 自回归模型中位置 t 的 logits 预测位置 t+1 的 token。
     # causal shift 后：
     # shifted_logits: [batch_size, sequence_length - 1, vocab_size]
     # shifted_labels: [batch_size, sequence_length - 1]
     shifted_logits: Tensor = aligned_logits[:, :-1, :].contiguous()
-    shifted_labels: Tensor = clean_labels[:, 1:].contiguous().to(logits.device)
+    shifted_labels: Tensor = (
+        clean_generated_token_ids[:, 1:].contiguous().to(logits.device)
+    )
 
     # action_mask: [batch_size, sequence_length - 1]，True 表示该标签是动作 token。
     action_mask: Tensor = (
@@ -72,8 +78,12 @@ def get_attack_loss(logits: Tensor, clean_labels: Tensor) -> Tensor:
 
     # 只保留 action 子词表，避免普通语言 token 参与这项分类损失。
     # action_logits: [num_action_tokens, 256]
-    action_logits: Tensor = valid_logits[:, ACTION_TOKEN_START:ACTION_TOKEN_END]
-    clean_action_bins: Tensor = valid_labels - ACTION_TOKEN_START
-    opposite_action_bins: Tensor = NUM_ACTION_BINS - 1 - clean_action_bins
+    action_logits: Tensor = valid_logits[
+        :, ACTION_TOKEN_START:ACTION_TOKEN_END
+    ]
+    clean_token_classes: Tensor = valid_labels - ACTION_TOKEN_START
+    target_token_classes: Tensor = (
+        NUM_ACTION_BINS - 1 - clean_token_classes
+    )
 
-    return F.cross_entropy(action_logits, opposite_action_bins)
+    return F.cross_entropy(action_logits, target_token_classes)

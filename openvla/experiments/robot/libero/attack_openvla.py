@@ -146,6 +146,7 @@ def eval_libero(cfg: GenerateConfig) -> None:
     if cfg.use_wandb:
         wandb.init(project=cfg.wandb_project, entity=cfg.wandb_entity, name=run_id)
 
+    # 2.1 创建共享资产事务，确保异常退出时也能恢复 XML 和真实纹理。
     runtime_assets: RuntimeAssetTransaction = (
         RuntimeAssetTransaction.begin(
             xml_path=xml_path,
@@ -155,6 +156,7 @@ def eval_libero(cfg: GenerateConfig) -> None:
         )
     )
 
+    # 2.2 加载 LIBERO benchmark，并确定本次需要遍历的 task。
     benchmark_dict: dict[str, Any] = benchmark.get_benchmark_dict()
     task_suite_obj: Any = benchmark_dict[task_suite_name]()
     target_tasks: Iterable[int] = (
@@ -163,6 +165,7 @@ def eval_libero(cfg: GenerateConfig) -> None:
         else range(task_suite_obj.n_tasks)
     )
 
+    # 2.3 加载策略模型及其输入 processor。
     model: AttackTrainingModel = get_model(cfg)
     processor: Optional[TrainingProcessor] = (
         get_processor(cfg)
@@ -170,6 +173,7 @@ def eval_libero(cfg: GenerateConfig) -> None:
         else None
     )
 
+    # 2.4 攻击模式下创建可微 renderer；clean 评估不需要该对象。
     renderer: Optional[DifferentiableRenderer] = None
     if cfg.enable_attack:
         print("[INFO] Initializing DifferentiableRenderer...")
@@ -225,6 +229,7 @@ def eval_libero(cfg: GenerateConfig) -> None:
             feature_objective=feature_objective,
         )
 
+    # 每个 task 都遵循“恢复干净资产→训练纹理→激活纹理→评估”的生命周期。
     try:
         task_id: int
         for task_id in tqdm.tqdm(target_tasks, desc="Tasks"):
@@ -313,6 +318,7 @@ def eval_libero(cfg: GenerateConfig) -> None:
                 )
                 dummy_env.close()
 
+                # 3. 在 train 内采集训练帧；4. 使用这些帧优化对抗纹理。
                 attack_trainer.train(
                     task=task,
                     task_description=train_task_desc,
@@ -331,6 +337,7 @@ def eval_libero(cfg: GenerateConfig) -> None:
                     )
                     continue
 
+                # 5.1 保存长期保留的最终攻击纹理。
                 trained_tex_path: Path = artifact_store.save_trained_texture(
                     task_id=task_id,
                     timestamp=DATE_TIME,
@@ -341,6 +348,7 @@ def eval_libero(cfg: GenerateConfig) -> None:
                     f"{trained_tex_path}"
                 )
 
+                # 5.2 将最终纹理激活到 MuJoCo 运行资产。
                 mirrored_real_texture = runtime_assets.activate_texture(
                     trained_tex_path,
                     mirror_real_texture=True,
@@ -361,6 +369,7 @@ def eval_libero(cfg: GenerateConfig) -> None:
                 range(n_eval),
                 desc=f"Task {task_id} Episodes",
             ):
+                # 6. 在 held-out initial state 上评估训练后的纹理。
                 rollout_result: RolloutResult = episode_runner.run(
                     task=task,
                     initial_state=state_partition.eval_states[episode_index],

@@ -3,6 +3,11 @@
 OpenVLA 的生成结果仍是语言模型词表中的 token ID。本模块集中处理 token ID、
 离散 action bin、归一化动作以及数据集尺度动作之间的转换，使训练和 rollout
 不需要重复了解这些编码细节。
+
+整体数据流为：
+
+``RGB + prompt → processor → model inputs → OpenVLA → action tokens
+→ action codec → env.step``。
 """
 
 from __future__ import annotations
@@ -30,8 +35,9 @@ class _RequiredActionNormalizationStats(TypedDict):
 class ActionNormalizationStats(_RequiredActionNormalizationStats, total=False):
     """一个数据集 action space 的归一化统计量。
 
-    ``q01``、``q99`` 和 ``mask`` 的形状均为 ``[action_dim]``。``mask`` 缺省
-    时表示所有动作维度都需要反归一化。
+    ``q01``、``q99`` 和 ``mask`` 的形状均为 ``[action_dim]``。``mask``
+    缺省时表示所有动作维度都需要反归一化。父类将 ``q01``、``q99`` 声明为
+    必填字段；当前类的 ``total=False`` 只使新增的 ``mask`` 成为可选字段。
     """
 
     mask: BooleanArray
@@ -83,6 +89,7 @@ def decode_action_from_generated_ids(
         ``bin_index = vocab_size - token_id - 1``。越界结果会截断到有效的
         ``bin_centers`` 范围；此规则与重构前实现完全一致。
     """
+    # LIBERO 当前是 7 维动作，但 codec 仍从 checkpoint 读取实际维数。
     action_dim: int = model.get_action_dim(unnorm_key)
 
     # predicted_token_ids: [action_dim]。detach/cpu 明确切断生成图并移回 CPU，
@@ -100,8 +107,11 @@ def decode_action_from_generated_ids(
     )
 
     # normalized_actions: [action_dim]，各维度处于 OpenVLA 的 [-1, 1] 尺度。
-    normalized_actions: FloatingArray = model.bin_centers[discretized_action_bins]
+    normalized_actions: FloatingArray = model.bin_centers[
+        discretized_action_bins
+    ]
 
+    # 不同数据集的机器人工作尺度不同，必须使用 unnorm_key 选择对应统计量。
     action_stats: ActionNormalizationStats = model.get_action_stats(unnorm_key)
     action_low: FloatingArray = np.asarray(action_stats["q01"])
     action_high: FloatingArray = np.asarray(action_stats["q99"])

@@ -3,6 +3,14 @@
 本模块只描述“一个可攻击物体在哪里、如何在 MuJoCo 中找到它、属于哪个任务”。
 它不加载 mesh 或 texture，也不创建 LIBERO 环境。把资产元数据集中后，实验入口
 不再同时承担路径拼接、对象到任务映射和 XML 元数据解析三种职责。
+
+各字段的数据流为：
+
+- ``xml`` → ``parse_mesh_scale`` / ``RuntimeAssetTransaction``；
+- ``mesh`` → ``DifferentiableRenderer``；
+- ``texture`` → ``DifferentiableRenderer`` / ``RuntimeAssetTransaction``；
+- ``search`` → frame collector / episode runner，用于定位 MuJoCo body；
+- ``task_suite`` / ``task_id`` → LIBERO benchmark。
 """
 
 from __future__ import annotations

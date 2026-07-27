@@ -4,6 +4,9 @@
 
 最终验收：2026-07-24，已完成
 
+逐文件、按真实数据流展开的中文讲解见
+[`openvla-stage-1-walkthrough.md`](openvla-stage-1-walkthrough.md)。
+
 ## 1. 范围与决策
 
 本轮只重构 OpenVLA 的 LIBERO 鲁棒性评估入口：

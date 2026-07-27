@@ -74,7 +74,7 @@ class LiveSnapshotPaths:
 
 
 class AttackArtifactStore:
-    """管理一次 OpenVLA 攻击运行的目录与文件格式。
+    """管理一次 OpenVLA 攻击运行中需要长期保留的目录与文件格式。
 
     :meth:`prepare` 是 run 级 interface，其余保存方法是 task/iteration 级
     interface。实现内部统一保留历史文件名，因此调用方不需要了解

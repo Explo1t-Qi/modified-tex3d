@@ -23,6 +23,7 @@ class ForegroundRenderer(Protocol):
         self,
         mvp: Tensor,
         resolution: ImageResolution,
+        *,
         model_rot: Optional[Tensor] = None,
     ) -> tuple[Tensor, Tensor]:
         """返回 NHWC 前景 RGB 和 NHWC 单通道可见性 mask。"""
@@ -91,6 +92,9 @@ def render_and_composite(
     model_rotation: Optional[Tensor] = None,
 ) -> Tensor:
     """渲染当前物体姿态，并把对抗前景覆盖到相机背景。
+
+    该函数封装 ``renderer.render()`` 和 ``composite_foreground()``；调用方只需
+    提供当前视角及两种背景，不需要理解 renderer 返回的 NHWC 格式。
 
     Args:
         renderer: 满足 :class:`ForegroundRenderer` interface 的可微 renderer。

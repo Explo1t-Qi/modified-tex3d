@@ -6,6 +6,11 @@
 
 ``DifferentiableRenderer`` 的构造会创建 CUDA rasterizer context；只有实例化
 需要可用 GPU，导入类定义和阅读类型信息不需要 GPU。
+
+主要数据流为：
+
+``OBJ + 原始 PNG → 几何/UV/原始纹理 → Surface Delta
+→ MVP + nvdiffrast → 对抗前景与 mask → MuJoCo 背景合成 → OpenVLA``。
 """
 
 from __future__ import annotations
@@ -13,7 +18,14 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal, Optional, Sequence, TypeAlias, overload
+from typing import (
+    Any,
+    Literal,
+    Optional,
+    Sequence,
+    TypeAlias,
+    overload,
+)
 
 import numpy as np
 import nvdiffrast.torch as dr
@@ -717,10 +729,12 @@ class DifferentiableRenderer(nn.Module):
             mask 形状为 ``[1, H, W, 1]``。
         """
         # pos/position_homogeneous: [num_vertices, 3/4]。
+        # position: [num_vertices, 3]，把对齐偏移应用到 renderer 顶点。
         position: Tensor = self.pos + self.pos_offset
         position_homogeneous: Tensor = torch.cat(
             [position, torch.ones_like(position[..., :1])], dim=-1
         )
+        # position_clip: [num_vertices, 4]，顶点经过 MVP 后的裁剪空间坐标。
         position_clip: Tensor = torch.matmul(position_homogeneous, mvp.t())
 
         # raster: [1, H, W, 4]，最后一维包含插值坐标和 triangle id。
@@ -845,7 +859,10 @@ class DifferentiableRenderer(nn.Module):
             adversarial_base * calibration_scale + calibration_bias, 0.0, 1.0
         )
 
-        visibility_mask: Tensor = (raster[..., 3] > 0).float().unsqueeze(-1)
+        # visibility_mask: float32 [1, H, W, 1]，三角形覆盖区域为 1。
+        visibility_mask: Tensor = (
+            (raster[..., 3] > 0).float().unsqueeze(-1)
+        )
         if return_clean:
             return adversarial_lit, clean_lit, visibility_mask
         return adversarial_lit, visibility_mask

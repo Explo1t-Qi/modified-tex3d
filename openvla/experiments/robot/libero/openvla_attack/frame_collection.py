@@ -145,15 +145,19 @@ class TrainingFrame(TypedDict):
     ``executed_action`` 才非 ``None``。
     """
 
-    bg_tensor: torch.Tensor
+    bg_tensor: torch.Tensor  # float32 [1, 3, H, W]，原始相机画面
+    # float32 [1, 3, H, W]，移除目标物体后的合成背景，避免前景重影。
     bg_tensor_no_obj: Optional[torch.Tensor]
-    mvp: Optional[torch.Tensor]
-    model_rot: torch.Tensor
+    mvp: Optional[torch.Tensor]  # float32 [4, 4]，mesh 到相机裁剪空间
+    model_rot: torch.Tensor  # float32 [3, 3]，用于旋转法线并计算光照
+    # int64 [1, prompt_length + action_dim]
     clean_output_ids: torch.Tensor
-    prompt_ids: torch.Tensor
-    clean_action: FloatingArray
+    prompt_ids: torch.Tensor  # int64 [1, prompt_length]
+    clean_action: FloatingArray  # float [action_dim]
     executed_action: Optional[FloatingArray]
+    # [1, sequence_length, hidden_dim]，last-hidden objective 的干净参照。
     clean_hidden: torch.Tensor
+    # [1, num_patches, feature_dim]，SigLIP objective 的干净参照。
     clean_siglip_features: Optional[torch.Tensor]
     initial_state_id: int
     collection_step_index: int
@@ -337,7 +341,7 @@ class TrainingFrameCollector:
                     max_new_tokens=7,
                     do_sample=False,
                     pad_token_id=self._processor.tokenizer.pad_token_id,
-                )
+                )  # int64 [1, prompt_sequence_length + action_dim]
                 clean_resized: torch.Tensor = F.interpolate(
                     background,
                     size=(self._model_input_size, self._model_input_size),
@@ -455,7 +459,10 @@ class TrainingFrameCollector:
 
             grasp_detected: bool = False
             post_grasp_count: int = 0
-
+            # 三种帧采集策略：
+            # A. 默认固定帧：不运行策略，每个 state 保存固定数量的初始帧；
+            # B. 策略驱动：等待稳定后，用 clean action 推进并持续采帧；
+            # C. 抓取窗口：用 deque 保留抓取发生前后的局部轨迹。
             for step_index in range(loop_limit):
                 frame: TrainingFrame
                 frame, calibration_count = self._build_frame(
