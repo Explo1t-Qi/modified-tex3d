@@ -326,6 +326,39 @@ bake、Active Texture 激活和 State 1 rollout：
 - 相对原始 UV 的最大八位通道差为2，符合单步曲面更新后的量化预期；
 - State 1 rollout 成功，完整流程正常结束；单次成功率不用于评价攻击效果。
 
+## 并行跨任务验证：LIBERO-Object Task 0
+
+Spatial K=256 正式训练运行期间，可在另一张 GPU 上使用 Alphabet Soup 开展连续
+K=512 跨任务验证。两条实验分别修改 Akita Bowl 与 Alphabet Soup 的独立
+XML/纹理资产，并使用独立日志目录，不存在 `RuntimeAssetTransaction` 文件冲突。
+
+该实验回答“连续 K=512 谱参数化能否扩展到另一物体、任务和 checkpoint”，不能
+与 Spatial K=256 的成功率直接比较并归因于 K。若要严格判断 K=256/K=512，
+仍需在同一任务、相同 states 和相同 checkpoint 上补充对照。
+
+Object task 0 使用：
+
+```text
+checkpoint=/data/huangsimin/openvla/openvla-7b-finetuned-libero-object
+unnorm_key=libero_object
+object_name=alphabet_soup
+mesh=stable_hope_objects/alphabet_soup/textured.obj
+```
+
+2026-07-27 已生成
+`experiments/spectral_basis/alphabet_soup_k512.npz`：
+
+- geometry vertices: 6,932；faces: 13,859；
+- mesh 只有1个连通分量，513个含常数模态的特征值中只有1个零模态；
+- 512个非恒定谱基全部有限；
+- 最大 M-正交误差为 `2.63e-15`；
+- 最大特征方程残差为 `1.02e-11`；
+- mesh array SHA-256 为
+  `26f3bfd3b7a16c2714b9b1d315815b4116ecdb00ac161d2005d03bdae7a2ac1e`。
+
+正式训练前先组合运行“单状态独立梯度审计 + 一次纹理更新 + bake/rollout”
+smoke，以同时检查 Object checkpoint 的目标比例和 Alphabet Soup 的 UV 路径。
+
 ## 第一轮决策
 
 读取审计结果后只比较两个候选：
