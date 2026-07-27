@@ -13,6 +13,11 @@
 
 ## 当前谱参数化目标
 
+- 第一版谱参数化、Shared-SigLIP 目标、OpenVLA→OpenVLA-OFT 迁移评估、
+  source-only 梯度审计及连续 K=128/256/512 对照均已完成；统一结论见
+  `docs/spectral/openvla-spectral-phase-1-results.md`。
+- 第一阶段验证了工程可行性和源模型攻击能力，但尚未得到迁移提升。后续优先
+  诊断源攻击强度、代理目标、训练视角覆盖和曲面更新约束，不盲目继续增加 K。
 - OpenVLA 第一版使用 LIBERO Spatial task 0 / `akita_black_bowl`，从 K=128
   个非恒定低频谱基开始；实现和命令见
   `docs/spectral/openvla-spectral-mvp.md`。

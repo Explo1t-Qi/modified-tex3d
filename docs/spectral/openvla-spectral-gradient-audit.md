@@ -391,6 +391,31 @@ Action 的累计能量为 `47.78%/80.38%`，对 Feature 为 `60.70%/80.37%`；
 成功率达到 70% 或更低，才进入 OFT 直接迁移。OFT 侧额外记录 feature/action
 变化只能作为诊断，不反向参与本轮选基。
 
+## 连续 K 对照结果
+
+2026-07-27 已在完全相同的 Spatial Task 0、训练 states 0–9、held-out
+states 10–19、5000轮优化、Shared-SigLIP objective 和 Surface Delta 预算下
+完成连续 K=256 与 K=512 对照：
+
+| 连续谱空间 | 参数量 | OpenVLA 任务成功率 | 失败 states |
+|---|---:|---:|---|
+| K=128 | 384 | 80% | 10、13 |
+| K=256 | 768 | 70% | 10、13、15 |
+| K=512 | 1,536 | 90% | 13 |
+
+攻击效果不随 K 单调增强。K=512 的最终 total loss 低于 K=256，Feature
+distance 更大，但最后100轮 Action loss 更高，held-out 任务攻击也更弱。
+K=512 的 UV TV proxy 比 K=256 高约27%，新增256个模态占最终 M-正交曲面扰动能量
+约39.4%。这说明新增模态形成了不同且更高频的训练代理解，而不是对 K=256
+低频解的少量补充。
+
+因此当前不继续盲目增加连续 K。Feature stable-score K=128 仍可作为“共享特征
+稳定方向能否提高参数效率”的独立假设测试，但不能因其 Feature 排名更高就预设
+任务攻击或迁移一定更强。后续选基需要考虑 Action 与 Feature 的联合有效性。
+
+完整阶段结果和汇报表见
+`docs/spectral/openvla-spectral-phase-1-results.md`。
+
 ## 当前状态
 
 - 纯统计、shape/有限值校验、CSV/NPZ/JSON 序列化：CPU 测试通过；
@@ -403,5 +428,9 @@ Action 的累计能量为 `47.78%/80.38%`，对 Feature 为 `60.70%/80.37%`；
 - Feature stable-score K=128 artifact：已生成并通过 provenance、正交性和
   特征方程残差校验；
 - Feature stable-score K=128 GPU smoke：通过；
-- 下一步：分别执行连续 K=256 与 Feature stable-score K=128 的同预算源
-  OpenVLA 训练对照。
+- 连续 K=256 正式源实验：完成，OpenVLA 任务成功率为70%；
+- 连续 K=512 正式源实验：完成，OpenVLA 任务成功率为90%，未优于 K=256；
+- LIBERO-Object Task 0 连续 K=512：完成，OpenVLA 任务成功率为80%；
+- Feature stable-score K=128：工程 smoke 已通过，正式5000轮源实验尚未执行；
+- 下一阶段：诊断源攻击强度、代理目标和跨模型迁移之间的脱节，再决定是否运行
+  纯 Feature 选基或改为 Action/Feature 联合选基。
