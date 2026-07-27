@@ -52,6 +52,7 @@
 | `objective.py` | `get_attack_loss` | action token 选择与当前 untargeted token 目标 |
 | `vision_features.py` | `extract_siglip_patch_features` | 按 checkpoint 配置定位共享 SigLIP 分支并校验 feature shape |
 | `spectral_gradient_audit.py` | `SpectralGradientAuditor` / `summarize_spectral_gradients` | 从源模型训练帧采集逐模态独立目标梯度并输出跨状态稳定性与曲面归一化排名 |
+| `spectral_basis_selection.py` | `build_gradient_selected_spectral_basis` | 校验候选谱基与 source-only 审计的一致性，按稳定性排名生成带完整 provenance 的非连续谱基产物 |
 | `optimization.py` | `AttackOptimizer.optimize` | frame batch、view loss、反向传播、SignSGD、日志和 callback 调度 |
 | `training.py` | `AttackTrainer.train` | 采帧、优化、live rollout 与终态产物的 task 级数据流 |
 | `evaluation.py` | `LiberoEpisodeRunner.run` | 单 episode 状态机、MuJoCo 策略图像、动作后处理和环境关闭 |

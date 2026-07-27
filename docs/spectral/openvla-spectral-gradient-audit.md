@@ -258,6 +258,59 @@ Smoke 通过后，正式 source-only 审计只需把以下字段替换为：
 只有4.24个百分点，而且牺牲了一部分 Action 能量。因此当前结果只支持“值得做
 训练对照”，尚不能证明梯度选基优于连续低频。
 
+## Feature stable-score K=128 产物
+
+非连续谱基由以下确定性命令生成：
+
+```bash
+cd /data/xiaomengqi/src/tex3d
+
+PYTHONDONTWRITEBYTECODE=1 \
+/home/xiaomengqi/miniconda3/envs/tex3d-openvla/bin/python \
+scripts/select_openvla_spectral_basis.py \
+  --candidate-basis experiments/spectral_basis/akita_black_bowl_k512.npz \
+  --audit experiments/logs/spectral-gradient-audit-k512/attack_artifacts/spectral-audit-k512-states0-9-EVAL-libero_spatial-2026_07_27-08_16_39/Ep0_Spectral_Gradient_Audit.npz \
+  --objective feature \
+  --top-k 128 \
+  --expected-state-ids 0-9 \
+  --output experiments/spectral_basis/akita_black_bowl_k128_feature_stable_states0-9.npz
+```
+
+生成器会验证 audit eigenvalues、basis L∞、梯度 shape、排名 permutation 和
+source state IDs，并在输出 metadata 中保存：
+
+- K=512 候选谱基和正式审计 NPZ 的 SHA-256；
+- 完整128个源模态索引及对应 stable scores；
+- source states 0–9；
+- `selection_rank_descending` 列顺序和 source-only 方法名。
+
+2026-07-27 的产物检查结果：
+
+- basis shape 为 `[21263,128]`，所有数值有限；
+- 最大 M-正交误差为 `2.38e-15`；
+- 最大特征方程残差为 `7.36e-12`；
+- 文件约 41 MiB，可由现有 renderer 原样加载；
+- eigenvalues 因 basis 按 stable-score 排名排列而不再单调递增，这是显式设计，
+  每列的原低频索引由 metadata 恢复。
+
+连续 K=256 不需要生成新文件：使用同一个
+`akita_black_bowl_k512.npz` 并设置 `spectral_basis_count=256` 即可，确保其
+前128列仍与历史连续 K=128 基线完全一致。
+
+### Shared objective 权重复核
+
+正式审计已经给出零扰动处的独立目标梯度，无需再额外运行标定 forward。在
+state 0 上使用既有 `alpha_action=0.1, alpha_feature=4.0` 时：
+
+| 参数化 | Action 梯度 norm | Feature 梯度 norm | 加权 Feature/Action |
+|---|---:|---:|---:|
+| 连续 K=128 | 66.3740 | 1.6021 | 0.9655 |
+| 连续 K=256 | 80.0628 | 2.1321 | 1.0652 |
+| Feature stable K=128 | 63.1571 | 1.6941 | 1.0729 |
+
+三种参数化的首状态加权比例都接近1，因此后续训练继续共享 `0.1/4.0`，不为
+每种 basis 单独调权。这样实验只改变谱空间，不同时改变优化目标。
+
 ## 第一轮决策
 
 读取审计结果后只比较两个候选：
@@ -279,5 +332,7 @@ Smoke 通过后，正式 source-only 审计只需把以下字段替换为：
 - K=512 候选 basis：已生成并通过几何、正交性、残差与低频一致性校验；
 - 真实 OpenVLA state 0 单样本 smoke：通过；
 - 真实 OpenVLA states 0–9 梯度审计：完成，数据流与数值检查通过；
-- 下一步：生成连续 K=256 与 Feature stable-score K=128 两个训练 artifact，
-  分别执行相同预算的源 OpenVLA 训练对照。
+- Feature stable-score K=128 artifact：已生成并通过 provenance、正交性和
+  特征方程残差校验；
+- 下一步：先运行该非连续 artifact 的一轮 GPU smoke，再分别执行连续 K=256
+  与 Feature stable-score K=128 的同预算源 OpenVLA 训练对照。

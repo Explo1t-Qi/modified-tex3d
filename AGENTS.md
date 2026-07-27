@@ -31,6 +31,8 @@
 - 谱基选择的第一轮审计严格使用源 OpenVLA 训练 states；目标 OFT 梯度只能
   作为迁移诊断，不能进入 source-only 排名。逐模态 raw gradient 必须同时报告
   跨状态方向一致性与 Surface L∞ 幅值归一化，禁止直接按单帧梯度绝对值选基。
+- 非连续谱基产物必须记录候选谱基和审计文件 SHA-256、source state IDs、
+  选择分数及完整源模态索引；禁止只保存重排后的 basis 而丢失选基 provenance。
 
 ## 代码规范
 
