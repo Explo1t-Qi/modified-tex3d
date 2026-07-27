@@ -359,6 +359,26 @@ mesh=stable_hope_objects/alphabet_soup/textured.obj
 正式训练前先组合运行“单状态独立梯度审计 + 一次纹理更新 + bake/rollout”
 smoke，以同时检查 Object checkpoint 的目标比例和 Alphabet Soup 的 UV 路径。
 
+2026-07-27 组合 smoke 已通过：
+
+- state 0 的 Action/Feature 独立梯度 shape 均为 `[512,3]`，512个模态全部
+  非零且有限；
+- Action/Feature 梯度 norm 为 `0.239911 / 0.006362`；
+- 使用 `alpha_action=0.1, alpha_feature=4.0` 后，两项加权 norm 为
+  `0.023991 / 0.025447`，Feature/Action 比为 `1.0607`；
+- 两项梯度方向 cosine 为 `-0.1148`，存在轻微冲突，但组合梯度未发生严重
+  抵消，审计计算的组合 norm 为 `0.032909`；
+- 一次真实更新记录的梯度 norm 为 `0.033186`，Actual Surface Step 与
+  Max Surface Delta 均为 `2/255`；
+- 保存系数 shape 为 `[512,3]`，1536个参数全部非零且有限；
+- 2048×2048 UV 与最终激活纹理逐像素一致，相对原图最大八位通道差为2；
+- State 1 rollout 成功，完整 bake、资产激活和恢复流程正常。
+
+Object 的零扰动梯度比例与 Spatial 标定接近，因此正式跨任务实验继续固定
+`0.1/4.0`，不引入 task-specific 调权。单状态的连续低频 K=128/256 对
+Action 的累计能量为 `47.78%/80.38%`，对 Feature 为 `60.70%/80.37%`；
+该数值只作局部诊断，不替代5000轮训练结果。
+
 ## 第一轮决策
 
 读取审计结果后只比较两个候选：
