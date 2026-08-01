@@ -477,6 +477,18 @@ def test_dual_view_siglip_uses_primary_action_and_two_feature_views(
         renderer.adv_noise.detach(),
         torch.tensor([0.3]),
     )
+    log_lines = (tmp_path / "dual-view-gradient.txt").read_text().splitlines()
+    header_fields = [field.strip() for field in log_lines[0].split("|")]
+    value_fields = [field.strip() for field in log_lines[1].split("|")]
+    assert header_fields[-2:] == [
+        "Primary Feature Loss",
+        "Wrist Feature Loss",
+    ]
+    np.testing.assert_allclose(
+        [float(value_fields[-2]), float(value_fields[-1])],
+        [-0.04, -0.01],
+        rtol=4e-3,
+    )
 
 
 def test_objective_gradient_audit_returns_unweighted_independent_gradients(

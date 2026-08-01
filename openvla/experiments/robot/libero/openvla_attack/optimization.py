@@ -32,6 +32,7 @@ from torch.cuda.amp import autocast
 from .compositing import (
     ForegroundRenderer,
     MultiInstanceViewFrame,
+    SharedTextureViewName,
     SingleViewFrame,
     build_multi_instance_view_sample,
     build_single_view_samples,
@@ -117,6 +118,22 @@ class WeightedTrainingFrame:
 
     frame: TrainingFrame
     weight: float
+
+
+@dataclass(frozen=True)
+class FrameObjectiveLosses:
+    """一个训练帧的模型目标及可选分视角诊断。
+
+    ``action`` 与 ``feature`` 是实际进入总目标的标量 tensor。双视角模式额外
+    保留主视角/腕部各自的 Feature loss，供梯度日志持久化；该诊断字典不会
+    再次参与 loss 聚合或反向传播。
+    """
+
+    action: torch.Tensor
+    feature: torch.Tensor
+    feature_by_view: Optional[
+        dict[SharedTextureViewName, torch.Tensor]
+    ] = None
 
 
 class FrameBatchSampler(Protocol):
@@ -217,7 +234,7 @@ class AttackOptimizer:
         self,
         frame: TrainingFrame,
         adversarial_views: Sequence[torch.Tensor],
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+    ) -> FrameObjectiveLosses:
         """计算一个 frame 上所有视图的平均 action/feature loss。"""
         action_losses: list[torch.Tensor] = []
         feature_losses: list[torch.Tensor] = []
@@ -275,7 +292,10 @@ class AttackOptimizer:
         # 这一约束，否则 stack 会明确报错而不是产生无意义的零 loss。
         mean_action_loss: torch.Tensor = torch.stack(action_losses).mean()
         mean_feature_loss: torch.Tensor = torch.stack(feature_losses).mean()
-        return mean_action_loss, mean_feature_loss
+        return FrameObjectiveLosses(
+            action=mean_action_loss,
+            feature=mean_feature_loss,
+        )
 
     def _compute_feature_loss(
         self,
@@ -346,7 +366,7 @@ class AttackOptimizer:
     def _compute_dual_view_losses(
         self,
         frame: TrainingFrame,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+    ) -> FrameObjectiveLosses:
         """Action仅用主视角，Feature在主视角与腕部等权平均。
 
         每个相机视角先把所有共享纹理 body 实例合成为一张 RGB。腕部图像不会
@@ -404,13 +424,16 @@ class AttackOptimizer:
             primary_outputs.logits,
             frame["clean_output_ids"],
         )
-        feature_loss_by_name: dict[str, torch.Tensor] = {}
-        for view_name in ("primary", "wrist"):
-            feature_loss_by_name[view_name] = (
+        feature_loss_by_name: dict[
+            SharedTextureViewName, torch.Tensor
+        ] = {}
+        feature_view_name: SharedTextureViewName
+        for feature_view_name in ("primary", "wrist"):
+            feature_loss_by_name[feature_view_name] = (
                 self._compute_siglip_feature_loss(
                     frame=frame,
-                    resized_image=resized_by_name[view_name],
-                    clean_siglip_features=view_by_name[view_name][
+                    resized_image=resized_by_name[feature_view_name],
+                    clean_siglip_features=view_by_name[feature_view_name][
                         "clean_siglip_features"
                     ],
                 )
@@ -442,13 +465,17 @@ class AttackOptimizer:
                 f"wrist:{feature_loss_by_name['wrist'].detach().item():.6f}"
             )
             self._dual_view_diagnostics_logged = True
-        return action_loss, feature_loss
+        return FrameObjectiveLosses(
+            action=action_loss,
+            feature=feature_loss,
+            feature_by_view=feature_loss_by_name,
+        )
 
     def _compute_frame_losses(
         self,
         frame: TrainingFrame,
         frame_mvp: torch.Tensor,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+    ) -> FrameObjectiveLosses:
         """按 feature view mode 分派，集中保持两个梯度入口行为一致。"""
         if self._feature_view_mode == "primary_wrist":
             return self._compute_dual_view_losses(frame)
@@ -478,9 +505,7 @@ class AttackOptimizer:
         frame_mvp: Optional[torch.Tensor] = frame["mvp"]
         if frame_mvp is None:
             return None
-        action_loss: torch.Tensor
-        feature_loss: torch.Tensor
-        action_loss, feature_loss = self._compute_frame_losses(
+        frame_losses: FrameObjectiveLosses = self._compute_frame_losses(
             frame,
             frame_mvp,
         )
@@ -512,16 +537,16 @@ class AttackOptimizer:
             return resolved_gradient.detach()
 
         action_gradient: torch.Tensor = objective_gradient(
-            action_loss,
+            frame_losses.action,
             retain_graph=True,
         )
         feature_gradient: torch.Tensor = objective_gradient(
-            feature_loss,
+            frame_losses.feature,
             retain_graph=False,
         )
         return ObjectiveParameterGradients(
-            action_loss=float(action_loss.detach().item()),
-            feature_loss=float(feature_loss.detach().item()),
+            action_loss=float(frame_losses.action.detach().item()),
+            feature_loss=float(frame_losses.feature.detach().item()),
             action_gradient=action_gradient,
             feature_gradient=feature_gradient,
         )
@@ -564,10 +589,13 @@ class AttackOptimizer:
         )
         loss_history: list[float] = []
         resolved_log_path = Path(gradient_log_path)
-        resolved_log_path.write_text(
+        log_header: str = (
             "Iter | Total Loss | Action Loss | Feature Loss | Grad Norm | "
-            "Update Rule | Actual Surface Step | Max Surface Delta\n"
+            "Update Rule | Actual Surface Step | Max Surface Delta"
         )
+        if self._feature_view_mode == "primary_wrist":
+            log_header += " | Primary Feature Loss | Wrist Feature Loss"
+        resolved_log_path.write_text(log_header + "\n")
 
         iterator = tqdm.tqdm(
             range(num_iters),
@@ -582,6 +610,8 @@ class AttackOptimizer:
             average_total_loss: float = 0.0
             average_action_loss: float = 0.0
             average_feature_loss: float = 0.0
+            average_primary_feature_loss: float = 0.0
+            average_wrist_feature_loss: float = 0.0
             valid_frame_count: int = 0
 
             selected_frames: Sequence[WeightedTrainingFrame] = (
@@ -603,27 +633,36 @@ class AttackOptimizer:
                     selected_frame.weight,
                     device=self._model.device,
                 )
-                action_loss: torch.Tensor
-                feature_loss: torch.Tensor
-                action_loss, feature_loss = self._compute_frame_losses(
-                    frame,
-                    frame_mvp,
+                frame_losses: FrameObjectiveLosses = (
+                    self._compute_frame_losses(
+                        frame,
+                        frame_mvp,
+                    )
                 )
                 frame_loss: torch.Tensor = frame_weight * (
-                    self._cfg.alpha_action * action_loss
-                    + self._cfg.alpha_feature * feature_loss
+                    self._cfg.alpha_action * frame_losses.action
+                    + self._cfg.alpha_feature * frame_losses.feature
                 )
                 frame_loss.backward()
 
                 average_total_loss += frame_loss.item()
-                average_action_loss += action_loss.item()
-                average_feature_loss += feature_loss.item()
+                average_action_loss += frame_losses.action.item()
+                average_feature_loss += frame_losses.feature.item()
+                if frame_losses.feature_by_view is not None:
+                    average_primary_feature_loss += (
+                        frame_losses.feature_by_view["primary"].item()
+                    )
+                    average_wrist_feature_loss += (
+                        frame_losses.feature_by_view["wrist"].item()
+                    )
                 valid_frame_count += 1
 
             if valid_frame_count > 0:
                 average_total_loss /= valid_frame_count
                 average_action_loss /= valid_frame_count
                 average_feature_loss /= valid_frame_count
+                average_primary_feature_loss /= valid_frame_count
+                average_wrist_feature_loss /= valid_frame_count
             loss_history.append(average_total_loss)
 
             gradient: Optional[torch.Tensor] = texture_parameter.grad
@@ -665,7 +704,7 @@ class AttackOptimizer:
                     max_surface_delta = step_stats.max_abs_delta
 
             with resolved_log_path.open("a") as log_file:
-                log_file.write(
+                log_line: str = (
                     f"{iteration_index:02d} | "
                     f"{average_total_loss:.6f} | "
                     f"{average_action_loss:.6f} | "
@@ -673,8 +712,14 @@ class AttackOptimizer:
                     f"{gradient_norm:.6e} | "
                     f"{update_rule} | "
                     f"{actual_surface_step:.6e} | "
-                    f"{max_surface_delta:.6e}\n"
+                    f"{max_surface_delta:.6e}"
                 )
+                if self._feature_view_mode == "primary_wrist":
+                    log_line += (
+                        f" | {average_primary_feature_loss:.6f}"
+                        f" | {average_wrist_feature_loss:.6f}"
+                    )
+                log_file.write(log_line + "\n")
             iterator.set_postfix(
                 act=f"{average_action_loss:.4f}",
                 feat=f"{average_feature_loss:.4f}",

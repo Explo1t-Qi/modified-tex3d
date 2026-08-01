@@ -52,6 +52,9 @@ CLI 新增 `feature_view_mode`：
 
 这行用于确认两个视角均已进入真实模型前向。独立单元测试另外验证 Action 只
 调用一次、SigLIP 调用两次，以及多个实例对共享纹理参数的梯度会累加。
+双视角 gradient log 还会在历史字段后追加
+`Primary Feature Loss | Wrist Feature Loss`，使正式训练完成后仍能分别分析两个
+相机的优化趋势，而不只保留二者均值。
 
 ## GPU smoke
 
@@ -126,8 +129,23 @@ Smoke 通过后，运行一个且仅一个 K=256 候选。相较上面的命令�
 `direct_active_texture_evaluation=True` 路径，在相同 states 10–19 上评估；OFT
 至少出现2/10失败才认为得到第一份非零迁移信号。
 
-## 当前状态
+## 2026-08-01 GPU smoke 结果
 
-截至2026-08-01，CLI、双相机采帧、多实例背景构造、共享 SigLIP loss 和训练
-编排已经实现；完整无 GPU 测试为 `93 passed, 1 skipped`。真实 GPU smoke 与
-正式5000轮实验尚待运行，当前不能提前报告机制有效。
+真实 OpenVLA 单步流程已经通过：
+
+- total/action/双视角平均 Feature loss 为
+  `1.824497 / 21.897314 / -0.091309`，均为有限值；
+- K=256 系数梯度 norm 为 `11.49894`；保存参数 shape 为 `[256,3]`，768个
+  数值全部非零且有限；
+- Actual Surface Step 与 Max Surface Delta 均为 `0.007843138`，等于
+  `2/255`，未超出 `128/255` 总预算；
+- 最终激活 PNG 与 `Ep0_UV_Map.png` 的 SHA-256 同为
+  `2e01de108a6307d591fd0001bf7e3a5b3c0159d9fb71b930ec6f2c62e8ac3eb0`；
+- 相对原始 UV 的最大八位通道差为2，符合一次曲面更新的量化预期；
+- State 1 rollout 正常结束且视频非空。单次任务成功仅验证工程流程，不用于
+  评价攻击效果；
+- 运行结束后 Akita Bowl XML 和原始纹理在 LIBERO 仓库中保持 clean。
+
+首次 smoke 的分视角 loss 只输出到交互终端，没有进入原 gradient log。随后仅
+补充了上述两个持久化日志列，未改变 loss 聚合或反向传播；对应单元测试已覆盖。
+正式5000轮实验尚待运行，当前仍不能提前报告该机制改善了迁移性。
