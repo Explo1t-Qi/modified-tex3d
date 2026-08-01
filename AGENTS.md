@@ -18,6 +18,10 @@
   `docs/spectral/openvla-spectral-phase-1-results.md`。
 - 第一阶段验证了工程可行性和源模型攻击能力，但尚未得到迁移提升。后续优先
   诊断源攻击强度、代理目标、训练视角覆盖和曲面更新约束，不盲目继续增加 K。
+- 当前第二阶段先运行 OFT clean/adv 固定状态响应诊断，比较真实 policy 输入、
+  SigLIP patch feature 和动作 chunk；实现、命令及判读见
+  `docs/spectral/oft-transfer-response-diagnostic.md`。在该证据出来前不扩展为完整
+  消融框架。
 - OpenVLA 第一版使用 LIBERO Spatial task 0 / `akita_black_bowl`，从 K=128
   个非恒定低频谱基开始；实现和命令见
   `docs/spectral/openvla-spectral-mvp.md`。
@@ -61,6 +65,10 @@
 - Spatial checkpoint：`/data/huangsimin/openvla-7b-finetuned-libero-spatial`。
 - Object checkpoint：
   `/data/huangsimin/openvla/openvla-7b-finetuned-libero-object`。
+- OpenVLA-OFT Spatial checkpoint：
+  `/data/xiaomengqi/checkpoints/openvla-7b-oft-finetuned-libero-spatial/`。
+  OFT 原有加载器会在 checkpoint 目录内备份/同步配置，诊断命令必须使用当前
+  用户可写的这份副本，不要使用 `/data/huangsimin/` 下的只读权重。
 - 默认验证不得占用 GPU，使用 `CUDA_VISIBLE_DEVICES=''` 和
   `PYTHONDONTWRITEBYTECODE=1`。无 GPU 测试入口为：
 

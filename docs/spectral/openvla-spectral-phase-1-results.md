@@ -184,12 +184,27 @@ Feature stable-score 选出的128个模态中，79个来自最低128维，49个�
 视角采样、谱基选择还是曲面更新规则。这样可以避免再次只把某个代理损失优化得
 更好，却没有提升真实攻击和迁移效果。
 
+2026-08-01 已实现第一条最小纵切：先在 OFT 上对源 OpenVLA 失败 states
+10、13、15 和成功 states 11、16 做固定状态 clean/adv 成对响应诊断，不重复
+训练，也不执行新 rollout。运行命令、输出字段和决策规则见
+`docs/spectral/oft-transfer-response-diagnostic.md`。只有目标模型结果仍有歧义时，
+才补同状态的 OpenVLA 源响应入口。
+
+该诊断已经完成：OFT 双视角 SigLIP feature 相对 L2 平均变化16.28%，完整动作
+chunk 平均仅变化2.95%，40个夹爪输出无符号翻转。源失败 states 10、13 的
+OFT 动作变化还低于源成功 state 11，说明迁移失败的主要矛盾不是纹理未进入共享
+视觉编码器，而是当前 Shared-SigLIP MSE 没有找到跨模型共同的决策敏感方向。
+下一步先审计 source/target 在谱系数空间的 feature/action 梯度方向一致性，再决定
+是否实现小规模跨模型联合 objective；暂不继续增加 K。
+
 ## 结果索引
 
 - 实现、基线和迁移流程：
   `docs/spectral/openvla-spectral-mvp.md`
 - 梯度审计和非连续选基：
   `docs/spectral/openvla-spectral-gradient-audit.md`
+- OFT 固定状态 Feature/Action 响应诊断：
+  `docs/spectral/oft-transfer-response-diagnostic.md`
 - Spatial K=256：
   `experiments/logs/spectral-source-comparison/`
   `spectral-k256-siglip-states0-9-EVAL-libero_spatial-2026_07_27-08_39_16.txt`

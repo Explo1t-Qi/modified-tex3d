@@ -450,7 +450,7 @@ states 10–19 上仍为 10/10 成功。10个 rollout MP4 均非空，输入纹�
 
 ## 当前验证状态
 
-- CPU 数值与回归测试：59 passed；
+- CPU 数值与回归测试：77 passed、1 skipped；
 - 真实 Akita mesh + K=128 basis 的 CPU 加载：
   `coefficients=(128, 3)`、384 参数、零 Surface Delta；
 - GPU spectral smoke：已通过，梯度、曲面归一化更新、bake、产物保存与
@@ -475,4 +475,7 @@ states 10–19 上仍为 10/10 成功。10个 rollout MP4 均非空，输入纹�
   `docs/spectral/openvla-spectral-gradient-audit.md`；
 - 第一阶段的统一汇报表、阶段结论和下一阶段问题见
   `docs/spectral/openvla-spectral-phase-1-results.md`；
+- 第二阶段的首个 OFT 固定状态 Feature/Action 响应诊断已完成：双视角 SigLIP
+  相对 L2 平均变化16.28%，Action chunk 仅2.95%，夹爪0/40翻转；运行命令、
+  完整结果与判读见 `docs/spectral/oft-transfer-response-diagnostic.md`；
 - 40-state confirmation：按预先阈值暂不执行。

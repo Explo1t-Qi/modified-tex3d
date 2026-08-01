@@ -18,6 +18,7 @@ OFT_LIBERO_DIR = (
 sys.path.insert(0, str(OFT_LIBERO_DIR))
 
 from transfer_evaluation import (  # noqa: E402
+    TemporaryTextureActivation,
     activate_texture_in_xml,
     parse_eval_state_ids,
     validate_active_texture,
@@ -84,3 +85,31 @@ def test_rejects_out_of_range_eval_state() -> None:
             total_states=50,
             maximum_count=10,
         )
+
+
+def test_temporary_activation_restores_xml_after_exception(
+    tmp_path: Path,
+) -> None:
+    xml_path = tmp_path / "object.xml"
+    clean_xml = (
+        '<mujoco><asset><texture name="tex-object" file="clean.png"/>'
+        '<material name="mat-object" texuniform="true"/>'
+        "</asset></mujoco>"
+    )
+    xml_path.write_text(clean_xml, encoding="utf-8")
+    texture_path = tmp_path / "attack.png"
+    Image.fromarray(np.zeros((1, 1, 3), dtype=np.uint8)).save(texture_path)
+
+    with pytest.raises(RuntimeError, match="probe"):
+        with TemporaryTextureActivation(xml_path) as transaction:
+            transaction.activate(
+                object_name="object",
+                active_texture_path=texture_path,
+            )
+            assert str(texture_path.resolve()) in xml_path.read_text(
+                encoding="utf-8"
+            )
+            raise RuntimeError("probe")
+
+    assert xml_path.read_text(encoding="utf-8") == clean_xml
+    assert not (tmp_path / ".object.xml.tex3d-diagnostic-backup").exists()

@@ -9,9 +9,11 @@ nvdiffrast 合成图替换 MuJoCo policy observation。本模块维护这两个�
 from __future__ import annotations
 
 import hashlib
+import shutil
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from pathlib import Path
+from types import TracebackType
 from typing import Optional, TypeAlias
 
 from PIL import Image
@@ -28,6 +30,72 @@ class ActiveTextureInfo:
     width: int
     height: int
     sha256: str
+
+
+class TemporaryTextureActivation:
+    """在一个受控作用域内临时修改 LIBERO 物体 XML。
+
+    诊断需要先采集 clean observation，再让新建的 MuJoCo 环境读取攻击纹理。
+    本事务在激活前创建同目录备份，并在正常退出或 Python 异常退出时恢复 XML。
+    备份文件保留了进程被强制终止（例如 ``SIGKILL``）后的人工恢复路径。
+
+    注意：事务只负责 XML。调用方必须确保所有使用 clean XML 的环境已经关闭，
+    并在激活后重新创建环境，MuJoCo 才会加载新的纹理资源。
+    """
+
+    def __init__(self, xml_path: PathLike) -> None:
+        self.xml_path: Path = Path(xml_path).resolve()
+        self.backup_path: Path = self.xml_path.with_name(
+            f".{self.xml_path.name}.tex3d-diagnostic-backup"
+        )
+        self._entered: bool = False
+        self._closed: bool = False
+
+    def __enter__(self) -> "TemporaryTextureActivation":
+        if self._entered:
+            raise RuntimeError("TemporaryTextureActivation 不能重复进入")
+        if not self.xml_path.is_file():
+            raise FileNotFoundError(self.xml_path)
+        if self.backup_path.exists():
+            raise RuntimeError(
+                "发现未清理的 XML 诊断备份；请先确认并恢复："
+                f"{self.backup_path}"
+            )
+        shutil.copy2(self.xml_path, self.backup_path)
+        self._entered = True
+        return self
+
+    def activate(
+        self,
+        *,
+        object_name: str,
+        active_texture_path: PathLike,
+    ) -> None:
+        """激活攻击纹理；必须在 ``with`` 作用域内调用。"""
+        if not self._entered or self._closed:
+            raise RuntimeError("纹理事务尚未进入或已经关闭")
+        activate_texture_in_xml(
+            xml_path=self.xml_path,
+            object_name=object_name,
+            active_texture_path=active_texture_path,
+        )
+
+    def close(self) -> None:
+        """恢复原 XML；重复调用是安全的。"""
+        if self._closed:
+            return
+        if self._entered and self.backup_path.is_file():
+            shutil.copy2(self.backup_path, self.xml_path)
+            self.backup_path.unlink()
+        self._closed = True
+
+    def __exit__(
+        self,
+        exc_type: Optional[type[BaseException]],
+        exc_value: Optional[BaseException],
+        traceback: Optional[TracebackType],
+    ) -> None:
+        self.close()
 
 
 def validate_active_texture(texture_path: PathLike) -> ActiveTextureInfo:
