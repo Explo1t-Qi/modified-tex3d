@@ -197,6 +197,13 @@ OFT 动作变化还低于源成功 state 11，说明迁移失败的主要矛盾�
 下一步先审计 source/target 在谱系数空间的 feature/action 梯度方向一致性，再决定
 是否实现小规模跨模型联合 objective；暂不继续增加 K。
 
+2026-08-01 先完成了真实 policy 输入上的像素梯度审计，作为谱系数投影前的无
+renderer 混杂检查。物体区域跨模型 SigLIP/Action 梯度 cosine 均值为
+`0.529 / 0.138`；当前加权 source objective 对 target Action 只有 `0.158`；
+OFT 腕部/主视角 Action 梯度范数比平均为 `3.88`。这同时确认了“共享视觉方向
+存在”和“当前方向没有稳定进入共同决策边界”，并暴露了双视角覆盖不足。完整
+记录见 `docs/spectral/cross-model-pixel-gradient-audit.md`。
+
 ## 结果索引
 
 - 实现、基线和迁移流程：
@@ -205,6 +212,8 @@ OFT 动作变化还低于源成功 state 11，说明迁移失败的主要矛盾�
   `docs/spectral/openvla-spectral-gradient-audit.md`
 - OFT 固定状态 Feature/Action 响应诊断：
   `docs/spectral/oft-transfer-response-diagnostic.md`
+- OpenVLA→OFT 像素梯度方向审计：
+  `docs/spectral/cross-model-pixel-gradient-audit.md`
 - Spatial K=256：
   `experiments/logs/spectral-source-comparison/`
   `spectral-k256-siglip-states0-9-EVAL-libero_spatial-2026_07_27-08_39_16.txt`

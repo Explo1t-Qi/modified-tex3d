@@ -22,6 +22,13 @@
   SigLIP patch feature 和动作 chunk；实现、命令及判读见
   `docs/spectral/oft-transfer-response-diagnostic.md`。在该证据出来前不扩展为完整
   消融框架。
+- OpenVLA→OFT 五状态像素梯度审计已完成；模型专用前向分别维护，模型无关的
+  crop、artifact 和 cosine 统计位于 `scripts/vla_pixel_gradient_audit.py`。
+  结果确认共享 Feature 方向存在但 Action 方向弱，并发现 OFT 腕部 Action 梯度
+  更强；完整定义见 `docs/spectral/cross-model-pixel-gradient-audit.md`。
+- 下一步把已保存的像素梯度通过同一个 K=256 renderer Jacobian 投影到谱系数
+  空间。实现联合 objective 前必须先明确是 source-only transfer 还是
+  multi-model universal texture，禁止把目标模型梯度静默用于 source-only 选基。
 - OpenVLA 第一版使用 LIBERO Spatial task 0 / `akita_black_bowl`，从 K=128
   个非恒定低频谱基开始；实现和命令见
   `docs/spectral/openvla-spectral-mvp.md`。

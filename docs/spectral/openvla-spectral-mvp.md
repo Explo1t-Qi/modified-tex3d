@@ -450,7 +450,7 @@ states 10–19 上仍为 10/10 成功。10个 rollout MP4 均非空，输入纹�
 
 ## 当前验证状态
 
-- CPU 数值与回归测试：77 passed、1 skipped；
+- CPU 数值与回归测试：81 passed、1 skipped；
 - 真实 Akita mesh + K=128 basis 的 CPU 加载：
   `coefficients=(128, 3)`、384 参数、零 Surface Delta；
 - GPU spectral smoke：已通过，梯度、曲面归一化更新、bake、产物保存与

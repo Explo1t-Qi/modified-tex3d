@@ -418,6 +418,9 @@ def _pair_metrics(
             "wrist_siglip": list(clean_response.wrist_siglip.shape),
             "actions": list(clean_response.actions.shape),
         },
+        # 后续跨模型梯度审计需要用相同 proprio 条件复现 OFT action head。
+        # clean/adv state 已由上方距离指标验证完全相同，只保存一份即可。
+        "robot_state": clean_observation.robot_state.tolist(),
         "clean_first_action": clean_response.actions[0].tolist(),
         "adversarial_first_action": adversarial_response.actions[0].tolist(),
     }

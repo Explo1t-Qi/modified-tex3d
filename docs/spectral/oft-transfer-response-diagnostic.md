@@ -123,3 +123,7 @@ source/target 梯度方向审计，至少分别记录纹理系数空间中：
 
 如果共同 action-sensitive 梯度确实存在，再把它形成小规模联合 objective 并只跑
 Spatial task 0；如果几乎不存在，则说明需要换共享层或训练覆盖，而不是继续调 K。
+
+后续五状态像素梯度审计已完成：共享 SigLIP 方向存在，但跨模型 Action 方向弱，
+且 OFT 对腕部视角的 Action 梯度明显更强。完整定义、命令和结果见
+`docs/spectral/cross-model-pixel-gradient-audit.md`。
