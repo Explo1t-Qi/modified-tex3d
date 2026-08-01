@@ -132,7 +132,7 @@ objective 对 Target Action 也只有0.158。这解释了为什么 feature dista
 
 本诊断通过进入下一步：使用同一个 K=256 renderer Jacobian，把保存的
 source/target 主视角与 OFT 腕部像素梯度分别做 VJP，得到同一谱系数空间的逐模态
-Action/Feature 贡献。该步骤先做诊断和选基，不直接启动新一轮5000步训练。
+Action/Feature 贡献。该步骤先做诊断，不直接启动新一轮5000步训练。
 
 在形成联合 objective 前还必须明确威胁模型：
 
@@ -142,3 +142,68 @@ Action/Feature 贡献。该步骤先做诊断和选基，不直接启动新一�
   选择谱模态并联合优化，但实验中必须把参与训练的模型与真正 held-out 模型分开。
 
 两者对应不同研究命题，不能在实现时默默混用。
+
+## 快速机制验证路线（2026-08-01 决策）
+
+当前选择 source-only 的快速机制验证：新纹理仍只用 OpenVLA 的训练 states 和
+梯度优化。OFT 梯度只回答“OpenVLA 的方向经过同一物理纹理后，是否还与 OFT
+决策方向相容”，不进入 loss、谱基排名或任何训练配置。因此实现产物也显式记录
+`target_gradient_role=diagnostic_only_not_training_or_selection`。
+
+OFT 已经参与开发期诊断，所以后续 OFT rollout 适合验证“机制是否出现迁移信号”，
+但不能单独充当最终论文中的完全无偏 held-out 证据。若机制有效，方法与超参数
+冻结后再用未参与选择的新任务或第三个 VLA 模型做正式迁移评估。
+
+快速验证的首轮通过标准保持简单：
+
+- 参数量仍为 K=256，即768个可学习标量；
+- OpenVLA Spatial task0 held-out 攻击成功率不低于当前30%；
+- OFT 从当前0/10至少提升到2/10失败，先证明存在非零迁移信号；
+- 纹理继续满足相同 Surface L∞ 预算，且保持谱参数化的连续低频外观。
+
+## K=256 renderer VJP 实现
+
+`scripts/project_vla_pixel_gradients_to_spectral.py` 不再加载 OpenVLA/OFT，只读取
+上一节的像素梯度。对每个固定 state 重建 LIBERO 物体姿态及两台相机，计算：
+
+```text
+dL/dC = J_renderer(C)^T · dL/dRGB,  C shape = [256, 3]
+```
+
+主视角使用 `agentview`，腕部使用 `robot0_eye_in_hand`。两次 rasterization 的
+相机 Jacobian 不同，但输入参数都是同一个物理曲面上的 `[256,3]` 系数，因此
+OFT 双视角梯度可在系数空间直接相加。renderer 轮廓还会与真实 clean/adv 变化
+mask 比较；主要看 `observed_recall`，避免在可微物体错位时误读余弦。
+
+本轮使用已经训练好的 K=256 系数点和生成它的 K=512 候选谱基前256列：
+
+```bash
+CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES=<gpu-id> \
+TOKENIZERS_PARALLELISM=false NUMBA_DISABLE_JIT=1 \
+MPLCONFIGDIR=/tmp/tex3d-spectral-projection \
+PYTHONNOUSERSITE=1 PYTHONDONTWRITEBYTECODE=1 TF_CPP_MIN_LOG_LEVEL=3 \
+PYTHONPATH="$PWD/openvla:$PWD" \
+/home/xiaomengqi/miniconda3/envs/tex3d-openvla/bin/python \
+scripts/project_vla_pixel_gradients_to_spectral.py \
+  --source_path \
+    experiments/logs/cross-model-pixel-gradient-audit/source-states10-11-13-15-16.npz \
+  --target_path \
+    experiments/logs/cross-model-pixel-gradient-audit/target-states10-11-13-15-16.npz \
+  --response_report \
+    experiments/logs/spectral-k256-oft-response-diagnostic/oft_transfer_response.json \
+  --spectral_basis_path \
+    experiments/spectral_basis/akita_black_bowl_k512.npz \
+  --coefficients_path \
+    experiments/logs/spectral-source-comparison/attack_artifacts/spectral-k256-siglip-states0-9-EVAL-libero_spatial-2026_07_27-08_39_16/Ep0_Spectral_Coefficients.pt \
+  --source_action_weight 0.1 \
+  --source_feature_weight 4.0 \
+  --output_npz \
+    experiments/logs/cross-model-spectral-projection/k256-states10-11-13-15-16.npz \
+  --output_json \
+    experiments/logs/cross-model-spectral-projection/k256-states10-11-13-15-16.json
+```
+
+NPZ 保存六组 `[S=5,K=256,RGB=3]` VJP 及两视角 mask；JSON 汇总主视角和
+双视角系数余弦、腕部/主视角范数比，以及 source-only/target 的模态能量分布。
+当前服务器 CUDA driver 不可访问，故实现已通过 CPU 测试但该命令尚待 GPU
+运行。运行成功后先检查两视角 `observed_recall`，再解释系数梯度指标。

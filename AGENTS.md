@@ -26,9 +26,13 @@
   crop、artifact 和 cosine 统计位于 `scripts/vla_pixel_gradient_audit.py`。
   结果确认共享 Feature 方向存在但 Action 方向弱，并发现 OFT 腕部 Action 梯度
   更强；完整定义见 `docs/spectral/cross-model-pixel-gradient-audit.md`。
-- 下一步把已保存的像素梯度通过同一个 K=256 renderer Jacobian 投影到谱系数
-  空间。实现联合 objective 前必须先明确是 source-only transfer 还是
-  multi-model universal texture，禁止把目标模型梯度静默用于 source-only 选基。
+- 当前选择“优先快速验证机制”：训练仍是 source-only OpenVLA，OFT 梯度只作
+  诊断，不得进入 loss、谱基排名或训练配置。开发期间可用 OFT rollout 判断机制
+  是否出现迁移信号；方法冻结后，正式无偏迁移结论仍需使用未参与开发选择的新
+  任务或第三个 VLA 模型。
+- 已实现把保存的像素梯度通过同一个 K=256 renderer Jacobian 投影到谱系数空间；
+  主视角和腕部使用各自 MuJoCo 相机，但共享同一组物理谱系数。实现与 GPU 命令
+  见 `docs/spectral/cross-model-pixel-gradient-audit.md`。
 - OpenVLA 第一版使用 LIBERO Spatial task 0 / `akita_black_bowl`，从 K=128
   个非恒定低频谱基开始；实现和命令见
   `docs/spectral/openvla-spectral-mvp.md`。

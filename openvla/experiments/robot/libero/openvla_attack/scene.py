@@ -155,15 +155,18 @@ def compute_render_mvp(
     model_matrix: Tensor,
     resolution: ImageResolution = (256, 256),
     *,
+    camera_name: str = "agentview",
     projection_flip_x: float = -1.0,
     projection_flip_y: float = -1.0,
 ) -> Tensor:
-    """把 MuJoCo agentview 相机与物体姿态组合成 renderer 的 MVP。
+    """把指定 MuJoCo 相机与物体姿态组合成 renderer 的 MVP。
 
     Args:
         env: LIBERO 环境或直接暴露 ``sim`` 的 MuJoCo wrapper。
         model_matrix: ``float32`` tensor，shape ``[4, 4]``。
         resolution: ``(width, height)``；当前实验使用正方形分辨率。
+        camera_name: MuJoCo camera 名称。训练基线使用 ``agentview``；跨模型
+            诊断还会显式传入 ``robot0_eye_in_hand``。默认值保持历史行为。
         projection_flip_x: 投影矩阵 x 轴方向，保留原实现默认值 ``-1``。
         projection_flip_y: 投影矩阵 y 轴方向，保留原实现默认值 ``-1``。
             两个 flip 参数用于匹配 MuJoCo 图像与 nvdiffrast 的坐标约定。
@@ -177,11 +180,16 @@ def compute_render_mvp(
     height: int
     width, height = resolution
 
+    if not camera_name:
+        raise ValueError("camera_name 不能为空")
+
     camera_id: int = 0
     try:
-        camera_id = simulation.model.camera_name2id("agentview")
+        camera_id = simulation.model.camera_name2id(camera_name)
     except Exception:
-        print("[WARNING] Camera 'agentview' not found, using camera 0.")
+        print(
+            f"[WARNING] Camera {camera_name!r} not found, using camera 0."
+        )
 
     # cam_xpos: [3]；cam_xmat: 展平的 [3, 3] camera-to-world 旋转矩阵。
     camera_position: np.ndarray = np.asarray(

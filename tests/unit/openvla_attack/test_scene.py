@@ -16,6 +16,7 @@ LIBERO_EXPERIMENT_DIR = (
 sys.path.insert(0, str(LIBERO_EXPERIMENT_DIR))
 
 from openvla_attack.scene import (
+    compute_render_mvp,
     find_target_body_pose,
     render_background_without_target,
 )
@@ -28,10 +29,15 @@ class FakeMujocoModel:
     ngeom: int = 2
     geom_bodyid: np.ndarray = np.array([0, 2], dtype=np.int32)
     geom_rgba: np.ndarray = np.ones((2, 4), dtype=np.float32)
+    cam_fovy: np.ndarray = np.asarray([45.0, 60.0], dtype=np.float32)
 
     @staticmethod
     def body_id2name(body_id: int) -> str:
         return ("world", "robot0_base", "akita_black_bowl")[body_id]
+
+    @staticmethod
+    def camera_name2id(camera_name: str) -> int:
+        return {"agentview": 0, "robot0_eye_in_hand": 1}[camera_name]
 
 
 class FakeMujocoSimulation:
@@ -49,6 +55,14 @@ class FakeMujocoSimulation:
                 [[1.0, 0.0, 0.0, 0.0]] * 3,
                 dtype=np.float32,
             ),
+            cam_xpos=np.asarray(
+                [[0.0, 0.0, 0.0], [0.1, 0.2, 0.3]],
+                dtype=np.float32,
+            ),
+            cam_xmat=np.asarray(
+                [np.eye(3), np.eye(3)],
+                dtype=np.float32,
+            ).reshape(2, 9),
         )
         self.alpha_seen_during_render: float | None = None
 
@@ -94,3 +108,21 @@ def test_scene_finds_target_pose_and_restores_hidden_geometry() -> None:
     assert background is not None
     assert simulation.alpha_seen_during_render == 0.0
     assert simulation.model.geom_rgba[1, 3] == 1.0
+
+
+def test_compute_render_mvp_selects_requested_camera() -> None:
+    """腕部与主视角必须使用各自外参与 FOV，不能静默共用 agentview。"""
+    simulation = FakeMujocoSimulation()
+    env = SimpleNamespace(sim=simulation)
+    model_matrix = torch.eye(4, dtype=torch.float32)
+
+    primary_mvp = compute_render_mvp(env, model_matrix)
+    wrist_mvp = compute_render_mvp(
+        env,
+        model_matrix,
+        camera_name="robot0_eye_in_hand",
+    )
+
+    assert primary_mvp.shape == (4, 4)
+    assert wrist_mvp.shape == (4, 4)
+    assert not torch.allclose(primary_mvp, wrist_mvp)
