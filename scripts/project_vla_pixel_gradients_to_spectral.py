@@ -56,14 +56,16 @@ from openvla_attack.renderer import DifferentiableRenderer  # noqa: E402
 from openvla_attack.scene import (  # noqa: E402
     TargetBodyPose,
     compute_render_mvp,
-    find_target_body_pose,
+    find_target_body_poses,
 )
 from scripts.vla_pixel_gradient_audit import (  # noqa: E402
     PixelGradientArtifact,
     visible_perturbation_mask,
 )
 from scripts.vla_spectral_gradient_projection import (  # noqa: E402
+    RenderInstance,
     SpectralGradientProjectionArtifact,
+    project_scene_pixel_gradients,
     summarize_spectral_projection,
 )
 
@@ -171,71 +173,6 @@ def _require_camera(env: Any, camera_name: str) -> None:
         raise RuntimeError(f"MuJoCo camera ID 非法: {camera_name!r} -> {camera_id}")
 
 
-def _pixel_gradient_tensor(
-    gradient: FloatArray,
-    *,
-    device: torch.device,
-) -> torch.Tensor:
-    """float64 HWC ``[H,W,3]`` → renderer 同 device 的 float32 NHWC。"""
-    array: np.ndarray = np.asarray(gradient, dtype=np.float32)
-    if array.ndim != 3 or array.shape[2] != 3:
-        raise ValueError(f"像素梯度应为 [H,W,3]，实际 {array.shape}")
-    return torch.from_numpy(np.ascontiguousarray(array)).to(device).unsqueeze(0)
-
-
-def _project_view_gradients(
-    *,
-    renderer: DifferentiableRenderer,
-    mvp: torch.Tensor,
-    model_rotation: torch.Tensor,
-    pixel_gradients: Sequence[FloatArray],
-) -> tuple[list[FloatArray], BoolArray]:
-    """一次 rasterization 上计算多组 ``J^T @ pixel_gradient``。
-
-    ``pixel_gradients`` 每项为 ``[H,W,3]``；返回每项对应的 ``[K,3]`` 与
-    renderer visibility ``[H,W]``。各 VJP 共享完全相同的相机 Jacobian。
-    """
-    if not pixel_gradients:
-        raise ValueError("pixel_gradients 不能为空")
-    height, width, channels = pixel_gradients[0].shape
-    if channels != 3 or any(
-        gradient.shape != (height, width, 3) for gradient in pixel_gradients
-    ):
-        raise ValueError("同一视角的像素梯度必须共享 [H,W,3] shape")
-
-    rendered_rgb: torch.Tensor
-    visibility: torch.Tensor
-    rendered_rgb, visibility = renderer.render(
-        mvp,
-        resolution=(height, width),
-        model_rot=model_rotation,
-    )
-    parameter: torch.Tensor = renderer.get_texture_param()
-    coefficient_gradients: list[FloatArray] = []
-    for gradient_index, pixel_gradient in enumerate(pixel_gradients):
-        coefficient_gradient: torch.Tensor = torch.autograd.grad(
-            outputs=rendered_rgb,
-            inputs=parameter,
-            grad_outputs=_pixel_gradient_tensor(
-                pixel_gradient,
-                device=rendered_rgb.device,
-            ),
-            retain_graph=gradient_index < len(pixel_gradients) - 1,
-            create_graph=False,
-        )[0]
-        coefficient_gradients.append(
-            np.asarray(
-                coefficient_gradient.detach().double().cpu().numpy(),
-                dtype=np.float64,
-            )
-        )
-    visibility_mask: BoolArray = np.asarray(
-        visibility.detach().cpu().numpy()[0, ..., 0] > 0.5,
-        dtype=np.bool_,
-    )
-    return coefficient_gradients, visibility_mask
-
-
 def run_projection(cfg: ProjectionConfig) -> tuple[Path, Path]:
     """重建固定状态相机，运行两视角 VJP 并写入 NPZ/JSON。"""
     source: PixelGradientArtifact = PixelGradientArtifact.load(cfg.source_path)
@@ -310,6 +247,7 @@ def run_projection(cfg: ProjectionConfig) -> tuple[Path, Path]:
     target_wrist_action_coefficients: list[FloatArray] = []
     primary_renderer_masks: list[BoolArray] = []
     wrist_renderer_masks: list[BoolArray] = []
+    instance_names_by_state: list[list[str]] = []
 
     for sample_index, state_id in enumerate(state_ids):
         print(f"[INFO] Projecting state {state_id}")
@@ -325,29 +263,47 @@ def run_projection(cfg: ProjectionConfig) -> tuple[Path, Path]:
             del observation
             _require_camera(env, cfg.primary_camera_name)
             _require_camera(env, cfg.wrist_camera_name)
-            target_pose: TargetBodyPose = find_target_body_pose(
+            target_poses: tuple[TargetBodyPose, ...] = find_target_body_poses(
                 env,
                 object_spec["search"],
                 device,
             )
-            if target_pose.body_id < 0:
-                raise RuntimeError(f"state {state_id} 无法定位目标物体 body")
-            primary_mvp: torch.Tensor = compute_render_mvp(
-                env,
-                target_pose.model_matrix,
-                resolution=(input_width, input_height),
-                camera_name=cfg.primary_camera_name,
+            if not target_poses:
+                raise RuntimeError(f"state {state_id} 无法定位目标物体实例")
+            print(
+                "[INFO] Shared texture instances: "
+                f"{[pose.body_name for pose in target_poses]}"
             )
-            wrist_mvp: torch.Tensor = compute_render_mvp(
-                env,
-                target_pose.model_matrix,
-                resolution=(input_width, input_height),
-                camera_name=cfg.wrist_camera_name,
+            instance_names_by_state.append(
+                [str(pose.body_name) for pose in target_poses]
             )
-            primary_projected, primary_mask = _project_view_gradients(
+            primary_instances: tuple[RenderInstance, ...] = tuple(
+                RenderInstance(
+                    mvp=compute_render_mvp(
+                        env,
+                        pose.model_matrix,
+                        resolution=(input_width, input_height),
+                        camera_name=cfg.primary_camera_name,
+                    ),
+                    model_rotation=pose.model_matrix[:3, :3],
+                )
+                for pose in target_poses
+            )
+            wrist_instances: tuple[RenderInstance, ...] = tuple(
+                RenderInstance(
+                    mvp=compute_render_mvp(
+                        env,
+                        pose.model_matrix,
+                        resolution=(input_width, input_height),
+                        camera_name=cfg.wrist_camera_name,
+                    ),
+                    model_rotation=pose.model_matrix[:3, :3],
+                )
+                for pose in target_poses
+            )
+            primary_projected, primary_mask = project_scene_pixel_gradients(
                 renderer=renderer,
-                mvp=primary_mvp,
-                model_rotation=target_pose.model_matrix[:3, :3],
+                instances=primary_instances,
                 pixel_gradients=(
                     source.primary_feature_gradients[sample_index],
                     source.primary_action_gradients[sample_index],
@@ -355,10 +311,9 @@ def run_projection(cfg: ProjectionConfig) -> tuple[Path, Path]:
                     target.primary_action_gradients[sample_index],
                 ),
             )
-            wrist_projected, wrist_mask = _project_view_gradients(
+            wrist_projected, wrist_mask = project_scene_pixel_gradients(
                 renderer=renderer,
-                mvp=wrist_mvp,
-                model_rotation=target_pose.model_matrix[:3, :3],
+                instances=wrist_instances,
                 pixel_gradients=(
                     target.wrist_feature_gradients[sample_index],
                     target.wrist_action_gradients[sample_index],
@@ -409,6 +364,10 @@ def run_projection(cfg: ProjectionConfig) -> tuple[Path, Path]:
             "renderer_photometry": "default_uncalibrated_shared_jacobian",
             "primary_camera_name": cfg.primary_camera_name,
             "wrist_camera_name": cfg.wrist_camera_name,
+            "shared_texture_instance_policy": (
+                "all_bodies_in_first_matching_keyword_group"
+            ),
+            "shared_texture_instance_names_by_state": instance_names_by_state,
             "target_gradient_role": "diagnostic_only_not_training_or_selection",
         },
     )

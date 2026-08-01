@@ -43,6 +43,9 @@
   corner 拓扑严格映射，禁止用最近邻猜测。
 - 零 Surface Delta 必须保留原 UV。迁移评估直接激活 bake PNG 并使用目标
   policy 的 MuJoCo observation，禁止在目标模型侧再次做 PNG→顶点→PNG。
+- 一个纹理资产可能被场景中的多个物体实例共享。直接激活 PNG 会同时改变所有
+  实例，因此物理纹理对应的 renderer Jacobian 必须对第一个命中关键词组中的
+  全部 body 分别渲染并累加；不能只对语义目标 body 做 VJP。
 - 默认攻击状态划分为 train 0–9、held-out eval 10–49；实验日志必须保留原始
   state ID。谱基、视频、模型权重和攻击纹理等实验产物不进入 Git。
 - OpenVLA checkpoint 的视觉分支顺序必须从 `timm_model_ids` 等模型配置读取，

@@ -6,10 +6,13 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+import torch
 
 from scripts.vla_spectral_gradient_projection import (
+    RenderInstance,
     SpectralGradientProjectionArtifact,
     SpectralProjectionError,
+    project_scene_pixel_gradients,
     summarize_spectral_projection,
 )
 
@@ -98,3 +101,57 @@ def test_projection_rejects_zero_source_weights() -> None:
             source_action_weight=0.0,
             source_feature_weight=0.0,
         )
+
+
+class _FakeMultiInstanceRenderer:
+    """用 MVP 的平移标量模拟同一参数在多个物体实例中的重复出现。"""
+
+    def __init__(self) -> None:
+        self.coefficients = torch.nn.Parameter(
+            torch.asarray([[2.0, 3.0, 4.0]], dtype=torch.float32)
+        )
+
+    def get_texture_param(self) -> torch.Tensor:
+        return self.coefficients
+
+    def render(
+        self,
+        mvp: torch.Tensor,
+        resolution: tuple[int, int],
+        *,
+        model_rot: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        del model_rot
+        height, width = resolution
+        instance_scale: torch.Tensor = mvp[0, 3]
+        rgb: torch.Tensor = (
+            self.coefficients.view(1, 1, 1, 3)
+            .expand(1, height, width, 3)
+            * instance_scale
+        )
+        mask = torch.ones((1, height, width, 1), dtype=torch.float32)
+        return rgb, mask
+
+
+def test_scene_vjp_accumulates_every_shared_texture_instance() -> None:
+    """两个实例共享 C 时，dL/dC 必须是两个相机 Jacobian 的和。"""
+    renderer = _FakeMultiInstanceRenderer()
+    first_mvp = torch.eye(4, dtype=torch.float32)
+    first_mvp[0, 3] = 1.0
+    second_mvp = torch.eye(4, dtype=torch.float32)
+    second_mvp[0, 3] = 2.0
+    rotation = torch.eye(3, dtype=torch.float32)
+    pixel_gradient = np.ones((2, 2, 3), dtype=np.float64)
+
+    gradients, visibility = project_scene_pixel_gradients(
+        renderer=renderer,
+        instances=(
+            RenderInstance(first_mvp, rotation),
+            RenderInstance(second_mvp, rotation),
+        ),
+        pixel_gradients=(pixel_gradient,),
+    )
+
+    # 每实例4像素，Jacobian scale 分别为1和2，所以每通道梯度为4*(1+2)=12。
+    np.testing.assert_allclose(gradients[0], np.full((1, 3), 12.0))
+    assert visibility.all()

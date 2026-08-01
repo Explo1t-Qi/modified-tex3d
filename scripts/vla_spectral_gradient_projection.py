@@ -14,9 +14,10 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Mapping, Optional
+from typing import Any, Mapping, Optional, Protocol, Sequence
 
 import numpy as np
+import torch
 from numpy.typing import NDArray
 
 
@@ -27,6 +28,141 @@ BoolArray = NDArray[np.bool_]
 
 class SpectralProjectionError(RuntimeError):
     """谱系数梯度产物的 shape、状态或数值不满足约束。"""
+
+
+class SpectralVJPRenderer(Protocol):
+    """多实例 renderer VJP 所需的最小强类型接口。"""
+
+    def get_texture_param(self) -> torch.Tensor:
+        """返回共享纹理参数，shape ``[K,3]``。"""
+        ...
+
+    def render(
+        self,
+        mvp: torch.Tensor,
+        resolution: tuple[int, int],
+        *,
+        model_rot: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """返回 RGB ``[1,H,W,3]`` 与 visibility ``[1,H,W,1]``。"""
+        ...
+
+
+@dataclass(frozen=True)
+class RenderInstance:
+    """一个共享纹理物体实例的相机变换。
+
+    ``mvp`` shape 为 ``[4,4]``；``model_rotation`` shape 为 ``[3,3]``。
+    不同实例的变换不同，但 renderer 内的 ``[K,3]`` 参数是同一个 tensor。
+    """
+
+    mvp: torch.Tensor
+    model_rotation: torch.Tensor
+
+
+def _pixel_gradient_tensor(
+    gradient: FloatArray,
+    *,
+    device: torch.device,
+) -> torch.Tensor:
+    """float HWC ``[H,W,3]`` → renderer device 上的 float32 NHWC。"""
+    array: np.ndarray = np.asarray(gradient, dtype=np.float32)
+    if array.ndim != 3 or array.shape[2] != 3:
+        raise SpectralProjectionError(
+            f"像素梯度应为 [H,W,3]，实际 {array.shape}"
+        )
+    return torch.from_numpy(np.ascontiguousarray(array)).to(device).unsqueeze(0)
+
+
+def project_scene_pixel_gradients(
+    *,
+    renderer: SpectralVJPRenderer,
+    instances: Sequence[RenderInstance],
+    pixel_gradients: Sequence[FloatArray],
+) -> tuple[list[FloatArray], BoolArray]:
+    """把一个共享纹理资产的全部可见实例投影到同一参数空间。
+
+    对每个实例分别 rasterize，再把 RGB 对共享系数的 Jacobian 相加。若场景中
+    同一 PNG 被两个 bowl 引用，这正是直接激活 PNG 时的物理数据流；只渲染第一
+    个 body 会漏掉另一个 bowl 的 ``dL/dC``。
+
+    Args:
+        renderer: 所有实例共享同一 ``[K,3]`` 参数的可微 renderer。
+        instances: 各物体实例的 MVP 和世界旋转；不能为空。
+        pixel_gradients: 同一相机输入上的一组 ``[H,W,3]`` 梯度。
+
+    Returns:
+        每个像素梯度对应的 float64 ``[K,3]`` VJP，以及全部实例 visibility
+        的并集 bool ``[H,W]``。
+    """
+    if not instances:
+        raise SpectralProjectionError("render instances 不能为空")
+    if not pixel_gradients:
+        raise SpectralProjectionError("pixel_gradients 不能为空")
+    height, width, channels = pixel_gradients[0].shape
+    expected_pixel_shape: tuple[int, int, int] = (height, width, 3)
+    if channels != 3 or any(
+        gradient.shape != expected_pixel_shape for gradient in pixel_gradients
+    ):
+        raise SpectralProjectionError(
+            "同一视角的像素梯度必须共享 [H,W,3] shape"
+        )
+
+    rendered_images: list[torch.Tensor] = []
+    visibility_masks: list[torch.Tensor] = []
+    for instance in instances:
+        rendered_rgb: torch.Tensor
+        visibility: torch.Tensor
+        rendered_rgb, visibility = renderer.render(
+            instance.mvp,
+            resolution=(height, width),
+            model_rot=instance.model_rotation,
+        )
+        if rendered_rgb.shape != (1, height, width, 3):
+            raise SpectralProjectionError(
+                f"renderer RGB shape 非法: {tuple(rendered_rgb.shape)}"
+            )
+        if visibility.shape != (1, height, width, 1):
+            raise SpectralProjectionError(
+                f"renderer mask shape 非法: {tuple(visibility.shape)}"
+            )
+        rendered_images.append(rendered_rgb)
+        visibility_masks.append(visibility > 0.5)
+
+    # 同一个纹理参数在每个物体实例中重复出现，所以对 RGB 求和再做一次 VJP
+    # 等价于逐实例计算 J_i^T g 后求和；不会复制或平均共享系数梯度。
+    combined_rendered_rgb: torch.Tensor = torch.stack(
+        rendered_images,
+        dim=0,
+    ).sum(dim=0)
+    combined_visibility: torch.Tensor = torch.stack(
+        visibility_masks,
+        dim=0,
+    ).any(dim=0)
+    parameter: torch.Tensor = renderer.get_texture_param()
+    coefficient_gradients: list[FloatArray] = []
+    for gradient_index, pixel_gradient in enumerate(pixel_gradients):
+        coefficient_gradient: torch.Tensor = torch.autograd.grad(
+            outputs=combined_rendered_rgb,
+            inputs=parameter,
+            grad_outputs=_pixel_gradient_tensor(
+                pixel_gradient,
+                device=combined_rendered_rgb.device,
+            ),
+            retain_graph=gradient_index < len(pixel_gradients) - 1,
+            create_graph=False,
+        )[0]
+        coefficient_gradients.append(
+            np.asarray(
+                coefficient_gradient.detach().double().cpu().numpy(),
+                dtype=np.float64,
+            )
+        )
+    visibility_mask: BoolArray = np.asarray(
+        combined_visibility.detach().cpu().numpy()[0, ..., 0],
+        dtype=np.bool_,
+    )
+    return coefficient_gradients, visibility_mask
 
 
 @dataclass(frozen=True)

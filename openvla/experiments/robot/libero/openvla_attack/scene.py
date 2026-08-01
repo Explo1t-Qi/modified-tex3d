@@ -73,65 +73,21 @@ def _get_mujoco_name(model: Any, object_id: int, object_type: str) -> Optional[s
     return None
 
 
-def find_target_body_pose(
-    env: Any,
-    search_keywords: SearchKeywords,
+def _target_body_pose_from_id(
+    simulation: Any,
+    *,
+    body_id: int,
+    body_name: str,
     device: torch.device,
 ) -> TargetBodyPose:
-    """按关键词优先级定位目标 body，并读取其世界姿态。
-
-    ``search_keywords`` 中每个内层序列表示一次“全部包含”的名称匹配，外层顺序
-    表示回退优先级。例如 ``(("akita", "bowl"), ("bowl",))`` 会优先寻找同时
-    包含前两个词的 body，找不到时再放宽到 ``"bowl"``。
-    返回的 model matrix 把物体局部坐标映射到 MuJoCo 世界坐标。
-
-    未找到目标时沿用原实现：返回 ``body_id=-1``，并使用 z=0.85 的单位矩阵
-    作为占位姿态。调用方必须根据 ``body_id`` 决定是否真正进行前景渲染。
-    """
-    simulation: Any = _get_simulation(env)
-    target_body_id: int = -1
-    target_body_name: Optional[str] = None
-
-    keyword_group: Sequence[str]
-    for keyword_group in search_keywords:
-        if hasattr(simulation.model, "nbody"):
-            body_id: int
-            for body_id in range(simulation.model.nbody):
-                body_name: Optional[str] = _get_mujoco_name(
-                    simulation.model,
-                    body_id,
-                    "body",
-                )
-                # 排除可视化辅助 body 和 site 对应的名称。
-                if body_name is None or "vis" in body_name or "site" in body_name:
-                    continue
-                if all(keyword in body_name for keyword in keyword_group):
-                    target_body_id = body_id
-                    target_body_name = body_name
-                    break
-        if target_body_id != -1:
-            break
-
-    if target_body_id == -1:
-        print(
-            f"[WARNING] Could not find target body for {search_keywords}. "
-            "Using fallback matrix."
-        )
-        fallback_matrix: Tensor = torch.eye(
-            4,
-            dtype=torch.float32,
-            device=device,
-        )
-        fallback_matrix[2, 3] = 0.85
-        return TargetBodyPose(fallback_matrix, -1, None)
-
+    """把一个已匹配 MuJoCo body 转成 renderer 使用的世界姿态。"""
     # MuJoCo position: float array [3]；quaternion: [w, x, y, z]。
     body_position: np.ndarray = np.asarray(
-        simulation.data.body_xpos[target_body_id],
+        simulation.data.body_xpos[body_id],
         dtype=np.float32,
     )
     body_quaternion: np.ndarray = np.asarray(
-        simulation.data.body_xquat[target_body_id],
+        simulation.data.body_xquat[body_id],
         dtype=np.float32,
     )
     rotation: Rotation = Rotation.from_quat(
@@ -147,7 +103,83 @@ def find_target_body_pose(
     model_matrix_numpy[:3, :3] = rotation.as_matrix().astype(np.float32)
     model_matrix_numpy[:3, 3] = body_position
     model_matrix: Tensor = torch.from_numpy(model_matrix_numpy).to(device)
-    return TargetBodyPose(model_matrix, target_body_id, target_body_name)
+    return TargetBodyPose(model_matrix, body_id, body_name)
+
+
+def find_target_body_poses(
+    env: Any,
+    search_keywords: SearchKeywords,
+    device: torch.device,
+) -> tuple[TargetBodyPose, ...]:
+    """返回第一个命中关键词组匹配到的全部物体实例。
+
+    ``search_keywords`` 中每个内层序列表示一次“全部包含”的名称匹配，外层顺序
+    表示回退优先级。例如 ``(("akita", "bowl"), ("bowl",))`` 会优先寻找同时
+    包含前两个词的 body，找不到时再放宽到 ``"bowl"``。同一资产可能在场景中
+    出现多次并共享一个纹理文件；这些实例必须共用同一组纹理参数并累加图像
+    Jacobian，因此本函数不会在第一个 body 处提前停止。
+
+    返回 tuple 按 MuJoCo body ID 排序；没有任何匹配时返回空 tuple。
+    """
+    simulation: Any = _get_simulation(env)
+    keyword_group: Sequence[str]
+    for keyword_group in search_keywords:
+        matched: list[TargetBodyPose] = []
+        if hasattr(simulation.model, "nbody"):
+            body_id: int
+            for body_id in range(simulation.model.nbody):
+                body_name: Optional[str] = _get_mujoco_name(
+                    simulation.model,
+                    body_id,
+                    "body",
+                )
+                if body_name is None or "vis" in body_name or "site" in body_name:
+                    continue
+                if all(keyword in body_name for keyword in keyword_group):
+                    matched.append(
+                        _target_body_pose_from_id(
+                            simulation,
+                            body_id=body_id,
+                            body_name=body_name,
+                            device=device,
+                        )
+                    )
+        if matched:
+            return tuple(matched)
+    return ()
+
+
+def find_target_body_pose(
+    env: Any,
+    search_keywords: SearchKeywords,
+    device: torch.device,
+) -> TargetBodyPose:
+    """按关键词优先级返回第一个目标 body，保持历史单实例接口。
+
+    训练基线当前仍用第一个匹配实例。需要复现“一个纹理资产同时影响多个物体”
+    的诊断或训练路径，应调用 :func:`find_target_body_poses`。
+
+    未找到目标时沿用原实现：返回 ``body_id=-1``，并使用 z=0.85 的单位矩阵
+    作为占位姿态。调用方必须根据 ``body_id`` 决定是否真正进行前景渲染。
+    """
+    target_poses: tuple[TargetBodyPose, ...] = find_target_body_poses(
+        env,
+        search_keywords,
+        device,
+    )
+    if not target_poses:
+        print(
+            f"[WARNING] Could not find target body for {search_keywords}. "
+            "Using fallback matrix."
+        )
+        fallback_matrix: Tensor = torch.eye(
+            4,
+            dtype=torch.float32,
+            device=device,
+        )
+        fallback_matrix[2, 3] = 0.85
+        return TargetBodyPose(fallback_matrix, -1, None)
+    return target_poses[0]
 
 
 def compute_render_mvp(

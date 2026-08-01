@@ -207,3 +207,17 @@ NPZ 保存六组 `[S=5,K=256,RGB=3]` VJP 及两视角 mask；JSON 汇总主视�
 双视角系数余弦、腕部/主视角范数比，以及 source-only/target 的模态能量分布。
 当前服务器 CUDA driver 不可访问，故实现已通过 CPU 测试但该命令尚待 GPU
 运行。运行成功后先检查两视角 `observed_recall`，再解释系数梯度指标。
+
+### 首次投影发现的多实例问题
+
+首次 GPU 运行成功生成产物，但主视角 `observed_recall` 只有52.45%，而腕部为
+96.97%。叠图确认这不是 position offset 回归：Spatial task0 同时包含
+`akita_black_bowl_1` 和 `akita_black_bowl_2`，二者引用同一个纹理 PNG。直接
+激活攻击 PNG 会改变两个碗，而首次投影只对关键词搜索到的第一个 body 计算
+renderer Jacobian；主视角刚好同时看到两个碗，腕部主要只看到目标碗。
+
+因此首次 JSON 中的系数余弦不作为正式诊断结论。实现现已改为：选择第一个命中
+的关键词组，收集其中全部 body 实例；每个实例使用自己的 MVP/旋转进行
+rasterization，再把它们对同一 `[K,3]` 参数的 VJP 相加。CPU 回归测试明确验证
+两实例系数梯度等于两个 Jacobian 的和。上面的命令无需修改，重新运行会覆盖旧
+产物；验收时主视角 `observed_recall` 应由约52%恢复到接近完整覆盖。
