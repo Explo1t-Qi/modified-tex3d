@@ -33,6 +33,11 @@
 - 已实现把保存的像素梯度通过同一个 K=256 renderer Jacobian 投影到谱系数空间；
   主视角和腕部使用各自 MuJoCo 相机，但共享同一组物理谱系数。实现与 GPU 命令
   见 `docs/spectral/cross-model-pixel-gradient-audit.md`。
+- 多实例修正后的正式 VJP 结果为：主视角跨模型 Feature/Action cosine
+  `0.662 / 0.228`，当前 Source目标对 OFT主视角/双视角Action为
+  `0.281 / 0.133`；OFT腕部Action范数是主视角3.31倍且两视角方向近似正交。
+  下一条最小候选固定为 source-only dual-view Shared-SigLIP：Action仍只用
+  OpenVLA主视角，Feature覆盖主视角和腕部，不引入OFT梯度。
 - OpenVLA 第一版使用 LIBERO Spatial task 0 / `akita_black_bowl`，从 K=128
   个非恒定低频谱基开始；实现和命令见
   `docs/spectral/openvla-spectral-mvp.md`。
