@@ -18,11 +18,18 @@ FeatureObjectiveKind: TypeAlias = Literal[
     "last_hidden",
     "siglip_patch",
 ]
+FeatureViewModeKind: TypeAlias = Literal[
+    "primary",
+    "primary_wrist",
+]
 SUPPORTED_TEXTURE_PARAMETERIZATIONS: frozenset[str] = frozenset(
     {"legacy_vertex", "geometry_vertex", "spectral"}
 )
 SUPPORTED_FEATURE_OBJECTIVES: frozenset[str] = frozenset(
     {"last_hidden", "siglip_patch"}
+)
+SUPPORTED_FEATURE_VIEW_MODES: frozenset[str] = frozenset(
+    {"primary", "primary_wrist"}
 )
 
 
@@ -51,6 +58,16 @@ def resolve_feature_objective(raw_value: str) -> FeatureObjectiveKind:
             f"{sorted(SUPPORTED_FEATURE_OBJECTIVES)}"
         )
     return cast(FeatureObjectiveKind, raw_value)
+
+
+def resolve_feature_view_mode(raw_value: str) -> FeatureViewModeKind:
+    """把 CLI feature 视角字符串收窄为内部强类型。"""
+    if raw_value not in SUPPORTED_FEATURE_VIEW_MODES:
+        raise ValueError(
+            f"未知 feature view mode {raw_value!r}；可选值为 "
+            f"{sorted(SUPPORTED_FEATURE_VIEW_MODES)}"
+        )
+    return cast(FeatureViewModeKind, raw_value)
 
 
 @dataclass
@@ -102,6 +119,9 @@ class GenerateConfig:
     # 保持 last_hidden 为默认值以复现现有行为；siglip_patch 直接攻击共享的
     # SigLIP patch features。Draccus 不支持 Literal，入口负责校验和收窄。
     feature_objective: str = "last_hidden"
+    # primary 保留历史单视角行为；primary_wrist 仅扩展 Shared-SigLIP Feature
+    # loss，Action loss 仍只使用 OpenVLA 的主视角。
+    feature_view_mode: str = "primary"
     # Source-only 谱基梯度审计复用正常采帧与 loss 路径，但不更新纹理。
     # ``audit_only`` 启用时，入口在产物保存后跳过攻击训练和 held-out rollout。
     spectral_gradient_audit_enabled: bool = False

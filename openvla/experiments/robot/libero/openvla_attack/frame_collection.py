@@ -36,6 +36,7 @@ from libero_utils import (  # noqa: E402
     get_libero_dummy_action,
     get_libero_env,
     get_libero_image,
+    get_libero_wrist_image,
 )
 from robot_utils import (  # noqa: E402
     get_image_resize_size,
@@ -48,12 +49,16 @@ from .action_codec import (
     OpenVLAActionModel,
     decode_action_from_generated_ids,
 )
-from .configuration import FeatureObjectiveKind
+from .compositing import MultiInstanceViewFrame, TextureRenderInstance
+from .configuration import FeatureObjectiveKind, FeatureViewModeKind
 from .scene import (
     SearchKeywords,
+    TargetBodyPose,
     compute_render_mvp,
     find_target_body_pose,
+    find_target_body_poses,
     render_background_without_target,
+    render_background_without_targets,
 )
 from .vision_features import (
     SigLIPFeatureModel,
@@ -159,6 +164,8 @@ class TrainingFrame(TypedDict):
     clean_hidden: torch.Tensor
     # [1, num_patches, feature_dim]，SigLIP objective 的干净参照。
     clean_siglip_features: Optional[torch.Tensor]
+    # 双视角模式下依次保存 primary/wrist；默认单视角模式为空 tuple。
+    shared_texture_views: tuple[MultiInstanceViewFrame, ...]
     initial_state_id: int
     collection_step_index: int
     siglip_mean: torch.Tensor
@@ -206,6 +213,7 @@ class TrainingFrameCollector:
         renderer: LightingCalibrator,
         search_keywords: SearchKeywords,
         feature_objective: FeatureObjectiveKind,
+        feature_view_mode: FeatureViewModeKind = "primary",
         render_resolution: int = 256,
     ) -> None:
         self._cfg: FrameCollectionConfig = cfg
@@ -214,6 +222,14 @@ class TrainingFrameCollector:
         self._renderer: LightingCalibrator = renderer
         self._search_keywords: SearchKeywords = search_keywords
         self._feature_objective: FeatureObjectiveKind = feature_objective
+        self._feature_view_mode: FeatureViewModeKind = feature_view_mode
+        if (
+            feature_view_mode == "primary_wrist"
+            and feature_objective != "siglip_patch"
+        ):
+            raise ValueError(
+                "primary_wrist 只支持 feature_objective='siglip_patch'"
+            )
         self._render_resolution: int = render_resolution
         self._model_input_size: int = get_image_resize_size(cfg)
 
@@ -260,10 +276,33 @@ class TrainingFrameCollector:
             self._model.device,
         )
 
-        target_pose = find_target_body_pose(
-            env,
-            self._search_keywords,
-            self._model.device,
+        wrist_image: Optional[np.ndarray] = None
+        wrist_background: Optional[torch.Tensor] = None
+        if self._feature_view_mode == "primary_wrist":
+            wrist_image = get_libero_wrist_image(
+                observation,
+                self._render_resolution,
+            )
+            wrist_background = _rgb_numpy_to_nchw_tensor(
+                wrist_image,
+                self._model.device,
+            )
+
+        shared_target_poses: tuple[TargetBodyPose, ...] = ()
+        if self._feature_view_mode == "primary_wrist":
+            shared_target_poses = find_target_body_poses(
+                env,
+                self._search_keywords,
+                self._model.device,
+            )
+        target_pose: TargetBodyPose = (
+            shared_target_poses[0]
+            if shared_target_poses
+            else find_target_body_pose(
+                env,
+                self._search_keywords,
+                self._model.device,
+            )
         )
         mvp: Optional[torch.Tensor] = (
             compute_render_mvp(
@@ -282,6 +321,11 @@ class TrainingFrameCollector:
                 f"  [状态{state_index} 步{step_index}] "
                 f"目标 body: '{target_pose.body_name}'"
             )
+            if self._feature_view_mode == "primary_wrist":
+                print(
+                    f"  [状态{state_index} 步{step_index}] 共享纹理实例: "
+                    f"{[pose.body_name for pose in shared_target_poses]}"
+                )
         else:
             print(f"  [状态{state_index} 步{step_index}] 未找到目标 body")
 
@@ -302,6 +346,45 @@ class TrainingFrameCollector:
             if background_without_target_numpy is not None
             else None
         )
+
+        # 双视角训练必须移除所有共享 PNG 的物体实例，否则未被当前 renderer
+        # 覆盖的原碗会残留在背景中，形成 clean/adversarial 重影。
+        shared_primary_background_without: Optional[torch.Tensor] = None
+        shared_wrist_background_without: Optional[torch.Tensor] = None
+        if shared_target_poses:
+            shared_body_ids: tuple[int, ...] = tuple(
+                pose.body_id for pose in shared_target_poses
+            )
+            shared_primary_numpy: Optional[np.ndarray] = (
+                render_background_without_targets(
+                    env,
+                    shared_body_ids,
+                    self._render_resolution,
+                    camera_name="agentview",
+                )
+            )
+            shared_wrist_numpy: Optional[np.ndarray] = (
+                render_background_without_targets(
+                    env,
+                    shared_body_ids,
+                    self._render_resolution,
+                    camera_name="robot0_eye_in_hand",
+                )
+            )
+            if shared_primary_numpy is not None:
+                shared_primary_background_without = (
+                    _rgb_numpy_to_nchw_tensor(
+                        shared_primary_numpy.copy(),
+                        self._model.device,
+                    )
+                )
+            if shared_wrist_numpy is not None:
+                shared_wrist_background_without = (
+                    _rgb_numpy_to_nchw_tensor(
+                        shared_wrist_numpy.copy(),
+                        self._model.device,
+                    )
+                )
 
         if (
             mvp is not None
@@ -369,6 +452,7 @@ class TrainingFrameCollector:
                     -1
                 ].detach()
                 clean_siglip_features: Optional[torch.Tensor] = None
+                wrist_clean_siglip_features: Optional[torch.Tensor] = None
                 if self._feature_objective == "siglip_patch":
                     # 共享目标直接进入 checkpoint 配置标识的 SigLIP 分支，不走
                     # 历史 6 通道手工拼接，避免 DINO/SigLIP 顺序错误。
@@ -382,6 +466,30 @@ class TrainingFrameCollector:
                             normalized_clean_siglip,
                         ).detach()
                     )
+                    if self._feature_view_mode == "primary_wrist":
+                        if wrist_background is None:
+                            raise RuntimeError(
+                                "双视角采集缺少 wrist_background"
+                            )
+                        wrist_clean_resized: torch.Tensor = F.interpolate(
+                            wrist_background,
+                            size=(
+                                self._model_input_size,
+                                self._model_input_size,
+                            ),
+                            mode="bilinear",
+                            align_corners=False,
+                        )
+                        normalized_wrist_siglip: torch.Tensor = (
+                            (wrist_clean_resized - self._siglip_mean)
+                            / self._siglip_std
+                        ).to(torch.bfloat16)
+                        wrist_clean_siglip_features = (
+                            extract_siglip_patch_features(
+                                self._model,
+                                normalized_wrist_siglip,
+                            ).detach()
+                        )
                 clean_action: FloatingArray = (
                     decode_action_from_generated_ids(
                         self._model,
@@ -389,6 +497,51 @@ class TrainingFrameCollector:
                         self._cfg.unnorm_key,
                     )
                 )
+
+        shared_texture_views: tuple[MultiInstanceViewFrame, ...] = ()
+        if shared_target_poses:
+            if (
+                clean_siglip_features is None
+                or wrist_clean_siglip_features is None
+                or wrist_background is None
+            ):
+                raise RuntimeError("双视角 Shared-SigLIP 干净参照不完整")
+
+            def build_instances(camera_name: str) -> tuple[
+                TextureRenderInstance, ...
+            ]:
+                return tuple(
+                    {
+                        "mvp": compute_render_mvp(
+                            env,
+                            pose.model_matrix,
+                            resolution=(
+                                self._render_resolution,
+                                self._render_resolution,
+                            ),
+                            camera_name=camera_name,
+                        ),
+                        "model_rot": pose.model_matrix[:3, :3],
+                    }
+                    for pose in shared_target_poses
+                )
+
+            shared_texture_views = (
+                {
+                    "view_name": "primary",
+                    "bg_tensor": background,
+                    "bg_tensor_no_obj": shared_primary_background_without,
+                    "instances": build_instances("agentview"),
+                    "clean_siglip_features": clean_siglip_features,
+                },
+                {
+                    "view_name": "wrist",
+                    "bg_tensor": wrist_background,
+                    "bg_tensor_no_obj": shared_wrist_background_without,
+                    "instances": build_instances("robot0_eye_in_hand"),
+                    "clean_siglip_features": wrist_clean_siglip_features,
+                },
+            )
 
         executed_action: Optional[FloatingArray] = None
         if self._cfg.frame_collect_with_policy:
@@ -410,6 +563,7 @@ class TrainingFrameCollector:
             "executed_action": executed_action,
             "clean_hidden": clean_hidden,
             "clean_siglip_features": clean_siglip_features,
+            "shared_texture_views": shared_texture_views,
             "initial_state_id": initial_state_id,
             "collection_step_index": step_index,
             "siglip_mean": self._siglip_mean,

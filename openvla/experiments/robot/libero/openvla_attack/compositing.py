@@ -7,13 +7,14 @@ DifferentiableRenderer 输出 channel-last 的 RGB 与可见性 mask，而 OpenV
 
 from __future__ import annotations
 
-from typing import Optional, Protocol, TypeAlias, TypedDict
+from typing import Literal, Optional, Protocol, Sequence, TypeAlias, TypedDict
 
 import torch
 
 
 Tensor: TypeAlias = torch.Tensor
 ImageResolution: TypeAlias = tuple[int, int]
+SharedTextureViewName: TypeAlias = Literal["primary", "wrist"]
 
 
 class ForegroundRenderer(Protocol):
@@ -47,6 +48,28 @@ class SingleViewFrame(_RequiredSingleViewFrame, total=False):
 
     bg_tensor_no_obj: Optional[Tensor]
     model_rot: Optional[Tensor]
+
+
+class TextureRenderInstance(TypedDict):
+    """同一纹理资产的一个物体实例变换。"""
+
+    mvp: Tensor  # float32 [4, 4]
+    model_rot: Tensor  # float32 [3, 3]
+
+
+class MultiInstanceViewFrame(TypedDict):
+    """一个相机视角下的背景、全部共享纹理实例与干净 Feature。
+
+    背景为 float32 NCHW ``[1,3,H,W]``；``instances`` 中每个 body 使用各自
+    MVP/旋转，但 renderer 内的纹理参数完全共享。``clean_siglip_features`` 为
+    float/bfloat16 ``[1,num_patches,feature_dim]``。
+    """
+
+    view_name: SharedTextureViewName
+    bg_tensor: Tensor
+    bg_tensor_no_obj: Optional[Tensor]
+    instances: tuple[TextureRenderInstance, ...]
+    clean_siglip_features: Tensor
 
 
 def composite_foreground(
@@ -167,3 +190,41 @@ def build_single_view_samples(
         foreground_rgb, foreground_mask, composition_background
     )
     return [composited_rgb]
+
+
+def build_multi_instance_view_sample(
+    renderer: ForegroundRenderer,
+    frame: MultiInstanceViewFrame,
+    render_resolution: int,
+) -> Tensor:
+    """按最终 PNG 激活语义，把所有共享纹理实例合成到一个相机视角。
+
+    各实例依次覆盖去除全部实例后的背景。当前目标物体在本实验视角中不相互
+    重叠；若未来实例发生遮挡，应进一步接入 MuJoCo depth mask，而不能把 body
+    顺序误当成真实深度关系。
+    """
+    instances: Sequence[TextureRenderInstance] = frame["instances"]
+    if not instances:
+        raise ValueError(
+            f"{frame['view_name']!r} 视角没有共享纹理实例，无法合成"
+        )
+    background_without_targets: Optional[Tensor] = frame["bg_tensor_no_obj"]
+    composited_rgb: Tensor = (
+        background_without_targets
+        if background_without_targets is not None
+        else frame["bg_tensor"]
+    )
+    for instance in instances:
+        foreground_rgb: Tensor
+        foreground_mask: Tensor
+        foreground_rgb, foreground_mask = renderer.render(
+            instance["mvp"],
+            resolution=(render_resolution, render_resolution),
+            model_rot=instance["model_rot"],
+        )
+        composited_rgb = composite_foreground(
+            foreground_rgb,
+            foreground_mask,
+            composited_rgb,
+        )
+    return composited_rgb

@@ -281,6 +281,7 @@ def test_collector_builds_typed_frame_calibrates_and_closes_environment(
     assert frame["clean_hidden"].shape == (1, 4, 3)
     assert frame["clean_siglip_features"] is not None
     assert frame["clean_siglip_features"].shape == (1, 1, 3)
+    assert frame["shared_texture_views"] == ()
     assert frame["initial_state_id"] == 17
     assert frame["collection_step_index"] == 0
     assert model.siglip_input_shapes == [(1, 3, 2, 2)]
@@ -296,3 +297,127 @@ def test_collector_builds_typed_frame_calibrates_and_closes_environment(
     assert env.actions == [[0.0] * 7]
     assert env.forward_calls == 1
     assert env.closed is True
+
+
+def test_collector_builds_dual_views_with_all_shared_texture_instances(
+    monkeypatch,
+) -> None:
+    observation = {
+        "robot0_gripper_qpos": np.array([0.04, 0.04], dtype=np.float32),
+    }
+    env = FakeEnvironment(observation)
+    primary_image = np.full((2, 2, 3), 128, dtype=np.uint8)
+    wrist_image = np.full((2, 2, 3), 96, dtype=np.uint8)
+    first_pose = TargetBodyPose(torch.eye(4), 2, "akita_black_bowl_1_main")
+    second_matrix = torch.eye(4)
+    second_matrix[0, 3] = 1.0
+    second_pose = TargetBodyPose(
+        second_matrix,
+        3,
+        "akita_black_bowl_2_main",
+    )
+
+    monkeypatch.setattr(
+        frame_collection,
+        "get_libero_env",
+        lambda task, model_family, resolution: (env, "unused"),
+    )
+    monkeypatch.setattr(
+        frame_collection,
+        "get_libero_dummy_action",
+        lambda model_family: [0.0] * 7,
+    )
+    monkeypatch.setattr(
+        frame_collection,
+        "get_libero_image",
+        lambda current_observation, resolution: primary_image,
+    )
+    monkeypatch.setattr(
+        frame_collection,
+        "get_libero_wrist_image",
+        lambda current_observation, resolution: wrist_image,
+    )
+    monkeypatch.setattr(frame_collection, "get_image_resize_size", lambda cfg: 2)
+    monkeypatch.setattr(
+        frame_collection,
+        "find_target_body_poses",
+        lambda current_env, keywords, device: (first_pose, second_pose),
+    )
+    monkeypatch.setattr(
+        frame_collection,
+        "compute_render_mvp",
+        lambda current_env, model_matrix, resolution, camera_name="agentview": (
+            model_matrix.clone()
+            if camera_name == "agentview"
+            else model_matrix.clone() * 2.0
+        ),
+    )
+    monkeypatch.setattr(
+        frame_collection,
+        "render_background_without_target",
+        lambda current_env, body_id, resolution: np.zeros(
+            (2, 2, 3), dtype=np.uint8
+        ),
+    )
+    hidden_calls: list[tuple[tuple[int, ...], str]] = []
+
+    def fake_hide_all(
+        current_env: object,
+        body_ids: tuple[int, ...],
+        resolution: int,
+        *,
+        camera_name: str,
+    ) -> np.ndarray:
+        del current_env
+        assert body_ids == (2, 3)
+        hidden_calls.append((body_ids, camera_name))
+        value = 32 if camera_name == "agentview" else 16
+        return np.full((resolution, resolution, 3), value, dtype=np.uint8)
+
+    monkeypatch.setattr(
+        frame_collection,
+        "render_background_without_targets",
+        fake_hide_all,
+    )
+    monkeypatch.setattr(
+        frame_collection,
+        "decode_action_from_generated_ids",
+        lambda model, generated_ids, unnorm_key: np.zeros(7, dtype=np.float32),
+    )
+    monkeypatch.setattr(
+        frame_collection,
+        "autocast",
+        lambda **kwargs: nullcontext(),
+    )
+
+    model = FakeModel()
+    collector = TrainingFrameCollector(
+        cfg=FakeFrameCollectionConfig(),
+        model=model,
+        processor=FakeProcessor(),
+        renderer=FakeLightingRenderer(),
+        search_keywords=(("akita", "bowl"),),
+        feature_objective="siglip_patch",
+        feature_view_mode="primary_wrist",
+        render_resolution=2,
+    )
+    frames = collector.collect(
+        task=object(),
+        task_description="Pick up the bowl",
+        fallback_initial_state=object(),
+        initial_states=[object()],
+        initial_state_ids=[0],
+    )
+
+    assert len(frames) == 1
+    views = frames[0]["shared_texture_views"]
+    assert [view["view_name"] for view in views] == ["primary", "wrist"]
+    assert [len(view["instances"]) for view in views] == [2, 2]
+    assert hidden_calls == [
+        ((2, 3), "agentview"),
+        ((2, 3), "robot0_eye_in_hand"),
+    ]
+    assert model.siglip_input_shapes == [
+        (1, 3, 2, 2),
+        (1, 3, 2, 2),
+    ]

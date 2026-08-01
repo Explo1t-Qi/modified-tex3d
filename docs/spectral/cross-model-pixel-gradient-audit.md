@@ -278,3 +278,6 @@ K=256 谱子空间没有消灭跨模型共同方向：主视角 Feature/Action c
 该方案直接针对已证实的视角瓶颈，同时保持 source-only 威胁模型。OFT 已用于
 开发期诊断，因此若出现迁移提升，它是机制验证结果；方法冻结后仍需在新任务或
 第三个模型上补真正无偏的 held-out 证据。
+
+该纵切现已完成 CPU 侧实现；数据流、GPU smoke、正式命令与验收门槛见
+`docs/spectral/openvla-dual-view-siglip.md`。

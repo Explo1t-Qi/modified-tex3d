@@ -8,6 +8,7 @@ from draccus.parsers import decoding
 from openvla.experiments.robot.libero.openvla_attack.configuration import (
     GenerateConfig,
     resolve_feature_objective,
+    resolve_feature_view_mode,
     resolve_texture_parameterization,
 )
 
@@ -45,6 +46,21 @@ def test_draccus_decodes_and_runtime_narrows_siglip_objective() -> None:
 def test_runtime_boundary_rejects_unknown_feature_objective() -> None:
     with pytest.raises(ValueError, match="未知 feature objective"):
         resolve_feature_objective("target_model_magic")
+
+
+def test_draccus_decodes_and_runtime_narrows_dual_feature_views() -> None:
+    config = decoding.decode(
+        GenerateConfig,
+        {"feature_view_mode": "primary_wrist"},
+    )
+
+    assert config.feature_view_mode == "primary_wrist"
+    assert resolve_feature_view_mode(config.feature_view_mode) == "primary_wrist"
+
+
+def test_runtime_boundary_rejects_unknown_feature_view_mode() -> None:
+    with pytest.raises(ValueError, match="未知 feature view mode"):
+        resolve_feature_view_mode("target_model_views")
 
 
 def test_draccus_decodes_source_only_spectral_gradient_audit_fields() -> None:

@@ -272,23 +272,51 @@ def compute_render_mvp(
     return projection_matrix @ view_matrix @ model_matrix
 
 
-def render_background_without_target(
+def _body_ids_with_descendants(
+    simulation: Any,
+    root_body_ids: Sequence[int],
+) -> set[int]:
+    """返回指定根 body 及其递归子 body，兼容没有 parent 表的测试 fake。"""
+    body_ids: set[int] = {int(body_id) for body_id in root_body_ids}
+    if not hasattr(simulation.model, "body_parentid"):
+        return body_ids
+    changed: bool = True
+    while changed:
+        changed = False
+        for body_id, parent_id in enumerate(
+            np.asarray(simulation.model.body_parentid)
+        ):
+            if int(parent_id) in body_ids and body_id not in body_ids:
+                body_ids.add(body_id)
+                changed = True
+    return body_ids
+
+
+def render_background_without_targets(
     env: Any,
-    body_id: int,
+    body_ids: Sequence[int],
     resolution: int,
+    *,
+    camera_name: str = "agentview",
 ) -> Optional[np.ndarray]:
-    """临时隐藏目标 body，渲染不含目标物体的 RGB 背景。
+    """临时隐藏多个共享纹理实例，渲染指定相机的 RGB 背景。
 
     返回 ``uint8`` HWC array，shape
-    ``[resolution, resolution, 3]``。函数只修改属于 ``body_id`` 的 geom
-    alpha，并在 ``finally`` 中恢复，因此不会改变物理状态。没有关联 geom 时
-    返回 ``None``。
+    ``[resolution, resolution, 3]``。函数只修改属于 ``body_ids`` 及其子 body
+    的 geom alpha，并在 ``finally`` 中恢复，因此不会改变物理状态。没有关联
+    geom 时返回 ``None``。
     """
     simulation: Any = _get_simulation(env)
+    if not body_ids:
+        return None
+    hidden_body_ids: set[int] = _body_ids_with_descendants(
+        simulation,
+        body_ids,
+    )
     geometry_ids: list[int] = [
         geometry_id
         for geometry_id in range(simulation.model.ngeom)
-        if simulation.model.geom_bodyid[geometry_id] == body_id
+        if int(simulation.model.geom_bodyid[geometry_id]) in hidden_body_ids
     ]
     if not geometry_ids:
         return None
@@ -304,7 +332,7 @@ def render_background_without_target(
         background: np.ndarray = simulation.render(
             width=resolution,
             height=resolution,
-            camera_name="agentview",
+            camera_name=camera_name,
             mode="offscreen",
         )
         # 保留现有 LIBERO 相机方向转换：同时翻转垂直和水平轴。
@@ -316,3 +344,17 @@ def render_background_without_target(
         ):
             simulation.model.geom_rgba[geometry_id, 3] = original_alpha
     return background
+
+
+def render_background_without_target(
+    env: Any,
+    body_id: int,
+    resolution: int,
+) -> Optional[np.ndarray]:
+    """历史单实例 agentview wrapper；默认训练行为保持不变。"""
+    return render_background_without_targets(
+        env,
+        (body_id,),
+        resolution,
+        camera_name="agentview",
+    )

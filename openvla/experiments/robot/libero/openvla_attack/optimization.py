@@ -31,10 +31,12 @@ from torch.cuda.amp import autocast
 
 from .compositing import (
     ForegroundRenderer,
+    MultiInstanceViewFrame,
     SingleViewFrame,
+    build_multi_instance_view_sample,
     build_single_view_samples,
 )
-from .configuration import FeatureObjectiveKind
+from .configuration import FeatureObjectiveKind, FeatureViewModeKind
 from .frame_collection import TrainingFrame
 from .objective import get_attack_loss
 from .spectral_gradient_audit import ObjectiveParameterGradients
@@ -170,6 +172,7 @@ class AttackOptimizer:
         model: OptimizationModel,
         renderer: OptimizationRenderer,
         feature_objective: FeatureObjectiveKind,
+        feature_view_mode: FeatureViewModeKind = "primary",
         view_sampler: ViewSampler = build_single_view_samples,
         frame_batch_sampler: FrameBatchSampler = (
             sample_uniform_frame_batch
@@ -180,11 +183,22 @@ class AttackOptimizer:
         self._model: OptimizationModel = model
         self._renderer: OptimizationRenderer = renderer
         self._feature_objective: FeatureObjectiveKind = feature_objective
+        self._feature_view_mode: FeatureViewModeKind = feature_view_mode
+        if (
+            feature_view_mode == "primary_wrist"
+            and feature_objective != "siglip_patch"
+        ):
+            raise ValueError(
+                "primary_wrist 只支持 feature_objective='siglip_patch'"
+            )
         self._view_sampler: ViewSampler = view_sampler
         self._frame_batch_sampler: FrameBatchSampler = (
             frame_batch_sampler
         )
         self._render_resolution: int = render_resolution
+        # 双视角真实运行时只打印一次分视角诊断，既能确认 wrist 分支确实接入
+        # loss，又避免数千次优化迭代把日志淹没。该状态不参与任何数值计算。
+        self._dual_view_diagnostics_logged: bool = False
 
     @staticmethod
     def _as_single_view_frame(
@@ -290,6 +304,20 @@ class AttackOptimizer:
                 "siglip_patch objective 缺少 clean_siglip_features；"
                 "请使用相同 feature objective 重新采集训练帧"
             )
+        return self._compute_siglip_feature_loss(
+            frame=frame,
+            resized_image=resized_image,
+            clean_siglip_features=clean_siglip_features,
+        )
+
+    def _compute_siglip_feature_loss(
+        self,
+        *,
+        frame: TrainingFrame,
+        resized_image: torch.Tensor,
+        clean_siglip_features: torch.Tensor,
+    ) -> torch.Tensor:
+        """计算一个相机视角的 Shared-SigLIP 负 MSE。"""
         normalized_adversarial_siglip: torch.Tensor = (
             (resized_image - frame["siglip_mean"])
             / frame["siglip_std"]
@@ -315,6 +343,126 @@ class AttackOptimizer:
             clean_siglip_features,
         )
 
+    def _compute_dual_view_losses(
+        self,
+        frame: TrainingFrame,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Action仅用主视角，Feature在主视角与腕部等权平均。
+
+        每个相机视角先把所有共享纹理 body 实例合成为一张 RGB。腕部图像不会
+        进入 OpenVLA language/action forward，避免把单主视角策略强行当成腕部
+        动作模型；它只进入两模型共有的 SigLIP encoder。
+        """
+        views: tuple[MultiInstanceViewFrame, ...] = frame[
+            "shared_texture_views"
+        ]
+        view_by_name: dict[str, MultiInstanceViewFrame] = {
+            view["view_name"]: view for view in views
+        }
+        if set(view_by_name) != {"primary", "wrist"}:
+            raise RuntimeError(
+                "primary_wrist 模式要求且只允许 primary/wrist 两个视角"
+            )
+
+        resized_by_name: dict[str, torch.Tensor] = {}
+        for view_name in ("primary", "wrist"):
+            adversarial_image: torch.Tensor = (
+                build_multi_instance_view_sample(
+                    self._renderer,
+                    view_by_name[view_name],
+                    self._render_resolution,
+                )
+            )
+            resized_by_name[view_name] = F.interpolate(
+                adversarial_image,
+                size=(
+                    frame["model_input_size"],
+                    frame["model_input_size"],
+                ),
+                mode="bilinear",
+                align_corners=False,
+            )
+
+        primary_resized: torch.Tensor = resized_by_name["primary"]
+        primary_pixel_values: torch.Tensor = torch.cat(
+            (
+                (primary_resized - frame["siglip_mean"])
+                / frame["siglip_std"],
+                (primary_resized - frame["dino_mean"])
+                / frame["dino_std"],
+            ),
+            dim=1,
+        )
+        with autocast(dtype=torch.bfloat16):
+            primary_outputs: Any = self._model(
+                input_ids=frame["clean_output_ids"],
+                attention_mask=torch.ones_like(frame["clean_output_ids"]),
+                pixel_values=primary_pixel_values.to(torch.bfloat16),
+                output_hidden_states=True,
+            )
+        action_loss: torch.Tensor = get_attack_loss(
+            primary_outputs.logits,
+            frame["clean_output_ids"],
+        )
+        feature_loss_by_name: dict[str, torch.Tensor] = {}
+        for view_name in ("primary", "wrist"):
+            feature_loss_by_name[view_name] = (
+                self._compute_siglip_feature_loss(
+                    frame=frame,
+                    resized_image=resized_by_name[view_name],
+                    clean_siglip_features=view_by_name[view_name][
+                        "clean_siglip_features"
+                    ],
+                )
+            )
+        feature_loss: torch.Tensor = torch.stack(
+            tuple(feature_loss_by_name.values())
+        ).mean()
+
+        # 这是 GPU smoke 的运行时证据：两个相机都产生有限的 Feature loss，
+        # 同时明确 Action 仍只读取主视角。独立的反向传播路径由单元测试覆盖；
+        # 此处不额外调用 autograd，避免改变正式训练的梯度或显存占用。
+        all_losses: tuple[torch.Tensor, ...] = (
+            action_loss,
+            feature_loss_by_name["primary"],
+            feature_loss_by_name["wrist"],
+        )
+        if not all(bool(torch.isfinite(loss).item()) for loss in all_losses):
+            raise RuntimeError("双视角 Action/Feature loss 出现非有限值")
+        if not self._dual_view_diagnostics_logged:
+            primary_view: MultiInstanceViewFrame = view_by_name["primary"]
+            wrist_view: MultiInstanceViewFrame = view_by_name["wrist"]
+            print(
+                "[DUAL-VIEW] "
+                "action_scope=primary_only, "
+                f"instances=primary:{len(primary_view['instances'])}/"
+                f"wrist:{len(wrist_view['instances'])}, "
+                "feature_loss="
+                f"primary:{feature_loss_by_name['primary'].detach().item():.6f}/"
+                f"wrist:{feature_loss_by_name['wrist'].detach().item():.6f}"
+            )
+            self._dual_view_diagnostics_logged = True
+        return action_loss, feature_loss
+
+    def _compute_frame_losses(
+        self,
+        frame: TrainingFrame,
+        frame_mvp: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """按 feature view mode 分派，集中保持两个梯度入口行为一致。"""
+        if self._feature_view_mode == "primary_wrist":
+            return self._compute_dual_view_losses(frame)
+        view_frame: SingleViewFrame = self._as_single_view_frame(
+            frame,
+            frame_mvp,
+        )
+        adversarial_views: Sequence[torch.Tensor] = self._view_sampler(
+            self._renderer,
+            view_frame,
+            self._render_resolution,
+        )
+        return self._compute_view_losses(frame, adversarial_views)
+
     def compute_objective_parameter_gradients(
         self,
         frame: TrainingFrame,
@@ -330,20 +478,11 @@ class AttackOptimizer:
         frame_mvp: Optional[torch.Tensor] = frame["mvp"]
         if frame_mvp is None:
             return None
-        view_frame: SingleViewFrame = self._as_single_view_frame(
-            frame,
-            frame_mvp,
-        )
-        adversarial_views: Sequence[torch.Tensor] = self._view_sampler(
-            self._renderer,
-            view_frame,
-            self._render_resolution,
-        )
         action_loss: torch.Tensor
         feature_loss: torch.Tensor
-        action_loss, feature_loss = self._compute_view_losses(
+        action_loss, feature_loss = self._compute_frame_losses(
             frame,
-            adversarial_views,
+            frame_mvp,
         )
         texture_parameter: nn.Parameter = (
             self._renderer.get_texture_param()
@@ -464,22 +603,11 @@ class AttackOptimizer:
                     selected_frame.weight,
                     device=self._model.device,
                 )
-                view_frame: SingleViewFrame = self._as_single_view_frame(
-                    frame,
-                    frame_mvp,
-                )
-                adversarial_views: Sequence[torch.Tensor] = (
-                    self._view_sampler(
-                        self._renderer,
-                        view_frame,
-                        self._render_resolution,
-                    )
-                )
                 action_loss: torch.Tensor
                 feature_loss: torch.Tensor
-                action_loss, feature_loss = self._compute_view_losses(
+                action_loss, feature_loss = self._compute_frame_losses(
                     frame,
-                    adversarial_views,
+                    frame_mvp,
                 )
                 frame_loss: torch.Tensor = frame_weight * (
                     self._cfg.alpha_action * action_loss

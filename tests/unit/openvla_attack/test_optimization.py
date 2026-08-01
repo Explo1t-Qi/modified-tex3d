@@ -159,6 +159,7 @@ def _training_frame() -> TrainingFrame:
         "executed_action": None,
         "clean_hidden": torch.zeros((1, 1, 1), dtype=torch.float32),
         "clean_siglip_features": None,
+        "shared_texture_views": (),
         "initial_state_id": 0,
         "collection_step_index": 0,
         "siglip_mean": zeros,
@@ -394,6 +395,88 @@ def test_siglip_objective_uses_three_channel_shared_features_and_backpropagates(
         torch.tensor([0.3]),
     )
     assert model.siglip.input_shapes == [(1, 3, 2, 2)]
+
+
+def test_dual_view_siglip_uses_primary_action_and_two_feature_views(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    class FakeDualRenderer(FakeOptimizationRenderer):
+        def render(
+            self,
+            mvp: torch.Tensor,
+            resolution: tuple[int, int],
+            *,
+            model_rot: torch.Tensor | None = None,
+        ) -> tuple[torch.Tensor, torch.Tensor]:
+            del mvp, model_rot
+            height, width = resolution
+            rgb = self.adv_noise.reshape(1, 1, 1, 1).expand(
+                1, height, width, 3
+            )
+            mask = torch.ones((1, height, width, 1))
+            return rgb, mask
+
+    renderer = FakeDualRenderer()
+    model = FakeSharedFeatureModel()
+    frame = _training_frame()
+    instance = {"mvp": torch.eye(4), "model_rot": torch.eye(3)}
+    frame["clean_siglip_features"] = torch.zeros((1, 1, 3))
+    frame["shared_texture_views"] = (
+        {
+            "view_name": "primary",
+            "bg_tensor": torch.zeros((1, 3, 2, 2)),
+            "bg_tensor_no_obj": torch.zeros((1, 3, 2, 2)),
+            "instances": (instance,),
+            "clean_siglip_features": torch.zeros((1, 1, 3)),
+        },
+        {
+            "view_name": "wrist",
+            "bg_tensor": torch.zeros((1, 3, 2, 2)),
+            "bg_tensor_no_obj": torch.zeros((1, 3, 2, 2)),
+            "instances": (instance,),
+            "clean_siglip_features": torch.full((1, 1, 3), 0.1),
+        },
+    )
+    action_calls: list[torch.Tensor] = []
+
+    def fake_action_loss(
+        logits: torch.Tensor,
+        clean_ids: torch.Tensor,
+    ) -> torch.Tensor:
+        del clean_ids
+        action_calls.append(logits)
+        return logits.mean()
+
+    monkeypatch.setattr(optimization, "get_attack_loss", fake_action_loss)
+    monkeypatch.setattr(
+        optimization,
+        "autocast",
+        lambda **kwargs: nullcontext(),
+    )
+    optimizer = AttackOptimizer(
+        cfg=FakeOptimizationConfig(alpha_action=0.0, alpha_feature=1.0),
+        model=model,
+        renderer=renderer,
+        feature_objective="siglip_patch",
+        feature_view_mode="primary_wrist",
+        render_resolution=2,
+    )
+
+    losses = optimizer.optimize(
+        frames=[frame],
+        num_iters=1,
+        gradient_log_path=tmp_path / "dual-view-gradient.txt",
+    )
+
+    # Feature = mean(-(.2-0)^2, -(.2-.1)^2) = -0.025。
+    np.testing.assert_allclose(losses, [-0.025], rtol=4e-3)
+    assert len(action_calls) == 1
+    assert model.siglip.input_shapes == [(1, 3, 2, 2), (1, 3, 2, 2)]
+    torch.testing.assert_close(
+        renderer.adv_noise.detach(),
+        torch.tensor([0.3]),
+    )
 
 
 def test_objective_gradient_audit_returns_unweighted_independent_gradients(

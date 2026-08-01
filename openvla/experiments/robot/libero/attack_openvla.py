@@ -41,9 +41,11 @@ from libero_utils import get_libero_env, save_rollout_video
 from openvla_attack.artifacts import AttackArtifactStore
 from openvla_attack.configuration import (
     FeatureObjectiveKind,
+    FeatureViewModeKind,
     GenerateConfig,
     TextureParameterizationKind,
     resolve_feature_objective,
+    resolve_feature_view_mode,
     resolve_texture_parameterization,
 )
 from openvla_attack.evaluation import (
@@ -85,6 +87,17 @@ def eval_libero(cfg: GenerateConfig) -> None:
     feature_objective: FeatureObjectiveKind = resolve_feature_objective(
         cfg.feature_objective
     )
+    feature_view_mode: FeatureViewModeKind = resolve_feature_view_mode(
+        cfg.feature_view_mode
+    )
+    if (
+        feature_view_mode == "primary_wrist"
+        and feature_objective != "siglip_patch"
+    ):
+        raise ValueError(
+            "feature_view_mode='primary_wrist' 要求 "
+            "feature_objective='siglip_patch'"
+        )
     if (
         cfg.spectral_gradient_audit_only
         and not cfg.spectral_gradient_audit_enabled
@@ -200,6 +213,7 @@ def eval_libero(cfg: GenerateConfig) -> None:
             "[INFO] Attack objective: "
             f"action_weight={cfg.alpha_action:.6f}, "
             f"feature={feature_objective}, "
+            f"feature_views={feature_view_mode}, "
             f"feature_weight={cfg.alpha_feature:.6f}"
         )
     total_episodes: int = 0
@@ -227,6 +241,7 @@ def eval_libero(cfg: GenerateConfig) -> None:
             runtime_assets=runtime_assets,
             search_keywords=search_kw,
             feature_objective=feature_objective,
+            feature_view_mode=feature_view_mode,
         )
 
     # 每个 task 都遵循“恢复干净资产→训练纹理→激活纹理→评估”的生命周期。

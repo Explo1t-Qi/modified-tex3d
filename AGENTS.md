@@ -36,8 +36,9 @@
 - 多实例修正后的正式 VJP 结果为：主视角跨模型 Feature/Action cosine
   `0.662 / 0.228`，当前 Source目标对 OFT主视角/双视角Action为
   `0.281 / 0.133`；OFT腕部Action范数是主视角3.31倍且两视角方向近似正交。
-  下一条最小候选固定为 source-only dual-view Shared-SigLIP：Action仍只用
-  OpenVLA主视角，Feature覆盖主视角和腕部，不引入OFT梯度。
+  source-only dual-view Shared-SigLIP 已完成 CPU 侧实现：Action仍只用
+  OpenVLA主视角，Feature覆盖主视角和腕部，不引入OFT梯度；真实 GPU smoke、
+  正式命令及验收门槛见 `docs/spectral/openvla-dual-view-siglip.md`。
 - OpenVLA 第一版使用 LIBERO Spatial task 0 / `akita_black_bowl`，从 K=128
   个非恒定低频谱基开始；实现和命令见
   `docs/spectral/openvla-spectral-mvp.md`。

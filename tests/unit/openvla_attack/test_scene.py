@@ -20,6 +20,7 @@ from openvla_attack.scene import (
     find_target_body_pose,
     find_target_body_poses,
     render_background_without_target,
+    render_background_without_targets,
 )
 
 
@@ -27,9 +28,9 @@ class FakeMujocoModel:
     """只实现场景 module 读取字段的 MuJoCo model fake。"""
 
     nbody: int = 4
-    ngeom: int = 2
-    geom_bodyid: np.ndarray = np.array([0, 2], dtype=np.int32)
-    geom_rgba: np.ndarray = np.ones((2, 4), dtype=np.float32)
+    ngeom: int = 3
+    geom_bodyid: np.ndarray = np.array([0, 2, 3], dtype=np.int32)
+    geom_rgba: np.ndarray = np.ones((3, 4), dtype=np.float32)
     cam_fovy: np.ndarray = np.asarray([45.0, 60.0], dtype=np.float32)
 
     @staticmethod
@@ -76,6 +77,7 @@ class FakeMujocoSimulation:
             ).reshape(2, 9),
         )
         self.alpha_seen_during_render: float | None = None
+        self.alphas_seen_during_render: np.ndarray | None = None
 
     def render(
         self,
@@ -87,6 +89,7 @@ class FakeMujocoSimulation:
     ) -> np.ndarray:
         del camera_name, mode
         self.alpha_seen_during_render = float(self.model.geom_rgba[1, 3])
+        self.alphas_seen_during_render = self.model.geom_rgba[:, 3].copy()
         return np.arange(height * width * 3, dtype=np.uint8).reshape(
             height, width, 3
         )
@@ -119,6 +122,29 @@ def test_scene_finds_target_pose_and_restores_hidden_geometry() -> None:
     assert background is not None
     assert simulation.alpha_seen_during_render == 0.0
     assert simulation.model.geom_rgba[1, 3] == 1.0
+
+
+def test_scene_hides_and_restores_all_shared_texture_instances() -> None:
+    simulation = FakeMujocoSimulation()
+    env = SimpleNamespace(sim=simulation)
+
+    background = render_background_without_targets(
+        env,
+        body_ids=(2, 3),
+        resolution=2,
+        camera_name="robot0_eye_in_hand",
+    )
+
+    assert background is not None
+    assert simulation.alphas_seen_during_render is not None
+    np.testing.assert_array_equal(
+        simulation.alphas_seen_during_render,
+        np.asarray([1.0, 0.0, 0.0], dtype=np.float32),
+    )
+    np.testing.assert_array_equal(
+        simulation.model.geom_rgba[:, 3],
+        np.ones(3, dtype=np.float32),
+    )
 
 
 def test_scene_finds_all_instances_for_first_matching_keyword_group() -> None:

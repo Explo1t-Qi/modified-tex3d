@@ -227,6 +227,8 @@ Feature/Action 系数 cosine 为 `0.662 / 0.228`。当前 Source 加权目标对
   `docs/spectral/oft-transfer-response-diagnostic.md`
 - OpenVLA→OFT 像素梯度方向审计：
   `docs/spectral/cross-model-pixel-gradient-audit.md`
+- Source-only 双视角 Shared-SigLIP 实现与实验：
+  `docs/spectral/openvla-dual-view-siglip.md`
 - Spatial K=256：
   `experiments/logs/spectral-source-comparison/`
   `spectral-k256-siglip-states0-9-EVAL-libero_spatial-2026_07_27-08_39_16.txt`

@@ -2,6 +2,7 @@
 
 import math
 import os
+from typing import Mapping
 
 import imageio
 import numpy as np
@@ -56,6 +57,24 @@ def get_libero_image(obs, resize_size):
     img = img[::-1, ::-1]  # IMPORTANT: rotate 180 degrees to match train preprocessing
     img = resize_image(img, resize_size)
     return img
+
+
+def get_libero_wrist_image(
+    obs: Mapping[str, np.ndarray],
+    resize_size: int | tuple[int, int],
+) -> np.ndarray:
+    """提取腕部相机并使用与主视角相同的方向和 resize 预处理。
+
+    输入是 LIBERO observation 中的 uint8 HWC 图像；输出 shape 为
+    ``[resize_height, resize_width, 3]``，dtype 仍为 ``uint8``。
+    """
+    assert isinstance(resize_size, int) or isinstance(resize_size, tuple)
+    if isinstance(resize_size, int):
+        resize_size = (resize_size, resize_size)
+    img: np.ndarray = obs["robot0_eye_in_hand_image"]
+    img = img[::-1, ::-1]
+    resized_image: np.ndarray = resize_image(img, resize_size)
+    return resized_image
 
 
 def save_rollout_video(rollout_images, idx, success, task_description, log_file=None):

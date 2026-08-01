@@ -32,7 +32,7 @@ from .artifacts import (
     AttackArtifactStore,
     LiveSnapshotPaths,
 )
-from .configuration import FeatureObjectiveKind
+from .configuration import FeatureObjectiveKind, FeatureViewModeKind
 from .evaluation import LiberoEpisodeRunner, RolloutConfig, RolloutResult
 from .frame_collection import (
     FrameCollectionConfig,
@@ -109,6 +109,7 @@ class AttackTrainer:
         runtime_assets: RuntimeAssetTransaction,
         search_keywords: SearchKeywords,
         feature_objective: FeatureObjectiveKind,
+        feature_view_mode: FeatureViewModeKind = "primary",
         render_resolution: int = DEFAULT_RENDER_RESOLUTION,
     ) -> None:
         self._cfg: AttackTrainingConfig = cfg
@@ -119,6 +120,7 @@ class AttackTrainer:
         self._runtime_assets: RuntimeAssetTransaction = runtime_assets
         self._search_keywords: SearchKeywords = search_keywords
         self._feature_objective: FeatureObjectiveKind = feature_objective
+        self._feature_view_mode: FeatureViewModeKind = feature_view_mode
         self._render_resolution: int = render_resolution
 
         self._optimizer: AttackOptimizer = AttackOptimizer(
@@ -126,6 +128,7 @@ class AttackTrainer:
             model=model,
             renderer=renderer,
             feature_objective=feature_objective,
+            feature_view_mode=feature_view_mode,
             render_resolution=render_resolution,
         )
         self._live_episode_runner: LiberoEpisodeRunner = (
@@ -182,6 +185,7 @@ class AttackTrainer:
             renderer=self._renderer,
             search_keywords=self._search_keywords,
             feature_objective=self._feature_objective,
+            feature_view_mode=self._feature_view_mode,
             render_resolution=self._render_resolution,
         )
         frame_pool: list[TrainingFrame] = frame_collector.collect(

@@ -16,7 +16,9 @@ sys.path.insert(0, str(LIBERO_EXPERIMENT_DIR))
 
 from openvla_attack.compositing import (
     ImageResolution,
+    MultiInstanceViewFrame,
     SingleViewFrame,
+    build_multi_instance_view_sample,
     build_single_view_samples,
     composite_foreground,
     render_and_composite,
@@ -94,3 +96,45 @@ def test_single_view_builder_prefers_background_without_target() -> None:
     assert called_rotation is model_rotation
     assert len(samples) == 1
     torch.testing.assert_close(samples[0], background_without_target)
+
+
+def test_multi_instance_builder_composites_every_shared_parameter_instance() -> None:
+    class FakeRenderer:
+        def __init__(self) -> None:
+            self.parameter = torch.nn.Parameter(torch.tensor(0.5))
+
+        def render(
+            self,
+            mvp: torch.Tensor,
+            resolution: ImageResolution,
+            model_rot: Optional[torch.Tensor] = None,
+        ) -> tuple[torch.Tensor, torch.Tensor]:
+            del resolution, model_rot
+            instance_index = int(mvp[0, 3].item())
+            rgb = self.parameter.expand(1, 1, 2, 3)
+            mask = torch.zeros((1, 1, 2, 1), dtype=torch.float32)
+            mask[..., instance_index, :] = 1.0
+            return rgb, mask
+
+    renderer = FakeRenderer()
+    first_mvp = torch.eye(4)
+    first_mvp[0, 3] = 0.0
+    second_mvp = torch.eye(4)
+    second_mvp[0, 3] = 1.0
+    frame: MultiInstanceViewFrame = {
+        "view_name": "primary",
+        "bg_tensor": torch.zeros((1, 3, 1, 2)),
+        "bg_tensor_no_obj": torch.full((1, 3, 1, 2), 0.1),
+        "instances": (
+            {"mvp": first_mvp, "model_rot": torch.eye(3)},
+            {"mvp": second_mvp, "model_rot": torch.eye(3)},
+        ),
+        "clean_siglip_features": torch.zeros((1, 1, 3)),
+    }
+
+    image = build_multi_instance_view_sample(renderer, frame, 2)
+    image.sum().backward()
+
+    torch.testing.assert_close(image, torch.full((1, 3, 1, 2), 0.5))
+    assert renderer.parameter.grad is not None
+    torch.testing.assert_close(renderer.parameter.grad, torch.tensor(6.0))
