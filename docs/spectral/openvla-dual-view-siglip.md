@@ -516,3 +516,86 @@ openvla/experiments/robot/libero/attack_openvla.py \
 正式检查除源成功率外，还要汇总5000轮 `Feature Grad Scale` 的均值、分位数、
 触发比例，以及保护后 `ratio*scale` 是否始终不超过1。这样可以判断保护是仅在
 训练后期介入，还是从零点开始就持续改变优化方向。
+
+### 2026-08-02 范数保护正式源结果
+
+5000轮训练和 held-out states 10–19 均完整结束。只有 state 18 失败，OpenVLA
+任务成功率为90%、攻击成功率为10%，没有达到预设的3/10源攻击门槛。因此按
+go/no-go 不运行 OFT；单次失败状态从未保护版本的 state 10 变成 state 18，
+但攻击数量仍为1/10，不能视为源攻击恢复。
+
+保护机制本身工作正常：
+
+| 指标 | 5000轮结果 |
+| --- | ---: |
+| Feature/Action 原始 ratio 均值 | `2.9875` |
+| ratio 中位数 / 95%分位数 | `2.9635 / 3.3183` |
+| Feature scale 均值 | `0.3355` |
+| scale 5% / 50% / 95%分位数 | `0.3014 / 0.3374 / 0.3533` |
+| 保护触发次数 | `5000/5000` |
+| `ratio*scale` 最大值 | `1.00000031` |
+| Action–Feature cosine 均值 | `0.2003` |
+| cosine 为负的迭代比例 | `66.24%` |
+
+batch 级 ratio 在第0轮已经是 `1.7151`，前100轮平均为 `3.0643`，最后100轮
+仍为 `2.9954`。因此保护并非只修正训练后期，而是从第一轮开始持续改变优化
+方向。这与逐 state 审计不矛盾：Action 梯度跨状态一致性弱，batch 求和时更易
+相互抵消；Feature 梯度更一致，求和后相对范数进一步放大。
+
+保护显著改变了代理目标，但没有改变 held-out 行为：
+
+| 最后100轮均值 | 未保护双视角 | rho=1保护 |
+| --- | ---: | ---: |
+| Action loss | `20.4625` | `19.5362` |
+| Combined Feature loss | `-0.1712` | `-0.1481` |
+| Primary Feature loss | `-0.1813` | `-0.1483` |
+| Wrist Feature loss | `-0.1611` | `-0.1479` |
+| held-out 攻击成功率 | `1/10` | `1/10` |
+
+按当前 loss 的最小化语义，较低 Action loss 表示 Action 代理攻击更强；保护使它
+改善约4.5%，同时牺牲了 Feature 距离，但真实 rollout 没有恢复。这反驳了
+“只要防止 Feature 梯度压过 Action，就能恢复源攻击”的机制假设，也表明继续
+扫描 rho 的证据很弱：`rho=1` 与未保护两个端点的 held-out 攻击都只有1/10。
+
+约束与产物正常。纹理在第70轮首次触及 `128/255`，64%的迭代结束在预算边界；
+未保护版本对应第74轮和62.46%，说明触边/振荡不是范数保护独有。最大记录单步
+仅比 `2/255` 高 `2.98e-7`，没有超过 `1e-6` 数值容差；总预算从未越界。最终
+谱系数为有限 float32 `[256,3]`，UV Map 与 Active Texture 一致，XML 和原纹理
+均已恢复。
+
+下一项最小诊断应直接用最终 Active Texture 回放训练 states 0–9，不重新训练：
+
+- 若训练 states 也只有弱攻击，说明平均 Action loss 代理与 rollout 行为不对齐；
+- 若训练 states 攻击明显强、held-out 仍弱，则主要问题是状态泛化/过拟合；
+- 得到该分支后，再决定是否值得实现修正后多实例 Primary-only 控制。
+
+回放直接加载正式训练保存的 `[256,3]` 系数，避免 PNG 反推谱参数。配置中的
+`train_state_ids=20-29` 只用于满足严格不相交的 partition；加载已有纹理时不会
+对这些状态采帧或训练。
+
+```bash
+CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES=<gpu-id> \
+MUJOCO_GL=egl PYOPENGL_PLATFORM=egl TF_CPP_MIN_LOG_LEVEL=2 \
+TOKENIZERS_PARALLELISM=false PYTHONNOUSERSITE=1 PYTHONDONTWRITEBYTECODE=1 \
+PYTHONPATH="$PWD/openvla" \
+/home/xiaomengqi/miniconda3/envs/tex3d-openvla/bin/python \
+openvla/experiments/robot/libero/attack_openvla.py \
+  --pretrained_checkpoint /data/huangsimin/openvla-7b-finetuned-libero-spatial \
+  --unnorm_key libero_spatial_no_noops \
+  --task_suite_name libero_spatial \
+  --object_name akita_black_bowl \
+  --task_id 0 \
+  --num_trials_per_task 10 \
+  --enable_attack True \
+  --texture_parameterization spectral \
+  --spectral_basis_path experiments/spectral_basis/akita_black_bowl_k512.npz \
+  --spectral_basis_count 256 \
+  --load_texture_path experiments/logs/spectral-k256-gradient-norm-protection-source/attack_artifacts/spectral-k256-gradient-norm-protection-states0-9-EVAL-libero_spatial-2026_08_02-09_57_38/Ep0_Spectral_Coefficients.pt \
+  --num_train_init_states 10 \
+  --train_init_state_ids 20-29 \
+  --eval_init_state_ids 0-9 \
+  --live_test_enabled False \
+  --use_wandb False \
+  --local_log_dir experiments/logs/spectral-k256-gradient-norm-protection-train-replay \
+  --run_id_note spectral-k256-gradient-norm-protection-train-states0-9
+```

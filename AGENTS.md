@@ -66,6 +66,11 @@
   scale `0.914733`、缩放后 ratio 为 `1.0000003`；Surface Step 与最大扰动均为
   `2/255`，谱系数/PNG/运行时资产均正常。下一步只运行一个 K=256、rho=1.0、
   states 0–9、5000轮正式源候选；held-out states 10–19 至少3/10失败才进入 OFT。
+- rho=1.0 正式源候选已完成：保护5000/5000轮触发，ratio/scale均值为
+  `2.9875/0.3355`，Action loss 最后100轮从未保护的 `20.4625` 改善到
+  `19.5362`，但 held-out 仍只有1/10失败。该候选未过源门槛，不运行 OFT，
+  也不直接扫描 rho。下一步用最终 Active Texture 回放训练 states 0–9，区分
+  Action loss 代理失配和状态过拟合；完整结果见双视角文档。
 - OpenVLA 第一版使用 LIBERO Spatial task 0 / `akita_black_bowl`，从 K=128
   个非恒定低频谱基开始；实现和命令见
   `docs/spectral/openvla-spectral-mvp.md`。
