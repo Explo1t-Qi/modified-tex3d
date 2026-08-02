@@ -56,6 +56,12 @@
   10个状态中两项变化均有8个同向。当前优先讨论动态范数保护，不优先采用只
   处理负内积的 PCGrad；完整结果与判读见
   `docs/spectral/openvla-dual-view-siglip.md`。
+- 动态梯度范数保护首版已经实现：每轮先在谱系数空间累积包含 alpha 和 frame
+  weight 的 Action/Combined Feature 梯度，再把 Feature 范数限制为 Action 的
+  `rho` 倍，最后进入既有 Surface-normalized step。功能默认关闭；首轮固定
+  `rho=1.0`，仅验证 spectral + siglip_patch + primary_wrist。逐轮日志必须保留
+  两组加权范数、原始 ratio、Feature scale 和 cosine；GPU smoke 命令及门槛见
+  `docs/spectral/openvla-dual-view-siglip.md`。
 - OpenVLA 第一版使用 LIBERO Spatial task 0 / `akita_black_bowl`，从 K=128
   个非恒定低频谱基开始；实现和命令见
   `docs/spectral/openvla-spectral-mvp.md`。

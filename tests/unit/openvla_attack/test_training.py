@@ -47,6 +47,8 @@ class FakeTrainingConfig:
     spectral_gradient_audit_only: bool = False
     spectral_gradient_audit_top_k: int = 1
     spectral_gradient_audit_reference_path: Optional[str] = None
+    gradient_norm_protection_enabled: bool = False
+    feature_gradient_norm_ratio_limit: float = 1.0
 
 
 class FakeArtifactStore:

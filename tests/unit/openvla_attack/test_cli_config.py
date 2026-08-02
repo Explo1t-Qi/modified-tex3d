@@ -10,6 +10,7 @@ from openvla.experiments.robot.libero.openvla_attack.configuration import (
     resolve_feature_objective,
     resolve_feature_view_mode,
     resolve_texture_parameterization,
+    validate_gradient_norm_protection,
 )
 
 
@@ -78,3 +79,56 @@ def test_draccus_decodes_source_only_spectral_gradient_audit_fields() -> None:
     assert config.spectral_gradient_audit_only is True
     assert config.spectral_gradient_audit_top_k == 128
     assert config.spectral_gradient_audit_reference_path == "/tmp/final.pt"
+
+
+def test_draccus_decodes_dynamic_gradient_norm_protection_fields() -> None:
+    config = decoding.decode(
+        GenerateConfig,
+        {
+            "gradient_norm_protection_enabled": True,
+            "feature_gradient_norm_ratio_limit": 1.0,
+        },
+    )
+
+    assert config.gradient_norm_protection_enabled is True
+    assert config.feature_gradient_norm_ratio_limit == 1.0
+
+
+def test_gradient_norm_protection_accepts_only_first_candidate_scope() -> None:
+    config = GenerateConfig(
+        gradient_norm_protection_enabled=True,
+        feature_gradient_norm_ratio_limit=1.0,
+        alpha_action=0.1,
+        alpha_feature=4.0,
+    )
+
+    validate_gradient_norm_protection(
+        config,
+        texture_parameterization="spectral",
+        feature_objective="siglip_patch",
+        feature_view_mode="primary_wrist",
+    )
+    with pytest.raises(ValueError, match="primary_wrist"):
+        validate_gradient_norm_protection(
+            config,
+            texture_parameterization="spectral",
+            feature_objective="siglip_patch",
+            feature_view_mode="primary",
+        )
+
+
+def test_gradient_norm_protection_rejects_nonpositive_ratio_limit() -> None:
+    config = GenerateConfig(
+        gradient_norm_protection_enabled=True,
+        feature_gradient_norm_ratio_limit=0.0,
+        alpha_action=0.1,
+        alpha_feature=4.0,
+    )
+
+    with pytest.raises(ValueError, match="必须为有限正数"):
+        validate_gradient_norm_protection(
+            config,
+            texture_parameterization="spectral",
+            feature_objective="siglip_patch",
+            feature_view_mode="primary_wrist",
+        )

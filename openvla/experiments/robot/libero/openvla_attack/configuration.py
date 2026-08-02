@@ -4,6 +4,7 @@
 ``GenerateConfig``，单元测试也不会因为导入实验入口而修改 ``sys.path``。
 """
 
+import math
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, Optional, TypeAlias, Union, cast
@@ -116,6 +117,10 @@ class GenerateConfig:
     train_frames_per_state: int = 1
     alpha_action: float = 1.0
     alpha_feature: float = 10.0
+    # 开启后，在每轮 batch 的谱系数空间中限制“加权 Feature 梯度 / 加权
+    # Action 梯度”的 L2 范数比。默认关闭以保持已有实验行为。
+    gradient_norm_protection_enabled: bool = False
+    feature_gradient_norm_ratio_limit: float = 1.0
     # 保持 last_hidden 为默认值以复现现有行为；siglip_patch 直接攻击共享的
     # SigLIP patch features。Draccus 不支持 Literal，入口负责校验和收窄。
     feature_objective: str = "last_hidden"
@@ -155,3 +160,39 @@ class GenerateConfig:
     seed: int = 7
     run_id_note: Optional[str] = None
     unnorm_key: Optional[str] = None
+
+
+def validate_gradient_norm_protection(
+    cfg: GenerateConfig,
+    *,
+    texture_parameterization: TextureParameterizationKind,
+    feature_objective: FeatureObjectiveKind,
+    feature_view_mode: FeatureViewModeKind,
+) -> None:
+    """校验第一版动态梯度范数保护的实验边界。
+
+    当前功能只用于验证 K=256 双视角 Shared-SigLIP 的诊断结论。把范围限制在
+    Spectral + Primary/Wrist，可以避免用户误以为 Geometry/Legacy 或历史
+    last-hidden 基线也已经获得相同实验语义。
+    """
+    if not cfg.gradient_norm_protection_enabled:
+        return
+    if texture_parameterization != "spectral":
+        raise ValueError("动态梯度范数保护当前只支持 spectral 参数化")
+    if feature_objective != "siglip_patch":
+        raise ValueError(
+            "动态梯度范数保护当前要求 feature_objective='siglip_patch'"
+        )
+    if feature_view_mode != "primary_wrist":
+        raise ValueError(
+            "动态梯度范数保护当前要求 feature_view_mode='primary_wrist'"
+        )
+    if (
+        not math.isfinite(cfg.feature_gradient_norm_ratio_limit)
+        or cfg.feature_gradient_norm_ratio_limit <= 0.0
+    ):
+        raise ValueError("feature_gradient_norm_ratio_limit 必须为有限正数")
+    if not math.isfinite(cfg.alpha_action) or cfg.alpha_action <= 0.0:
+        raise ValueError("动态梯度范数保护要求 alpha_action 为有限正数")
+    if not math.isfinite(cfg.alpha_feature) or cfg.alpha_feature <= 0.0:
+        raise ValueError("动态梯度范数保护要求 alpha_feature 为有限正数")

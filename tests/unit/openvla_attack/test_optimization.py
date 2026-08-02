@@ -20,6 +20,9 @@ sys.path.insert(0, str(LIBERO_EXPERIMENT_DIR))
 import openvla_attack.optimization as optimization
 from openvla_attack.compositing import SingleViewFrame
 from openvla_attack.frame_collection import TrainingFrame
+from openvla_attack.gradient_protection import (
+    combine_gradients_with_feature_norm_protection,
+)
 from openvla_attack.optimization import (
     AttackOptimizer,
     WeightedTrainingFrame,
@@ -41,6 +44,8 @@ class FakeOptimizationConfig:
     attack_surface_step: float = 0.02
     alpha_action: float = 1.0
     alpha_feature: float = 0.0
+    gradient_norm_protection_enabled: bool = False
+    feature_gradient_norm_ratio_limit: float = 1.0
     live_test_enabled: bool = True
     live_test_every_n_iters: int = 1
 
@@ -142,6 +147,66 @@ class FakeSurfaceOptimizationRenderer:
             gradient,
             surface_step,
         )
+
+
+def test_gradient_norm_protection_caps_feature_without_changing_direction(
+) -> None:
+    """Feature 超限时缩小到 rho，Action 与 Feature 方向都保持不变。"""
+    weighted_action = torch.tensor([[3.0, 0.0, 0.0]])
+    weighted_feature = torch.tensor([[0.0, 8.0, 0.0]])
+
+    result = combine_gradients_with_feature_norm_protection(
+        weighted_action,
+        weighted_feature,
+        feature_to_action_ratio_limit=1.0,
+    )
+
+    torch.testing.assert_close(
+        result.combined_gradient,
+        torch.tensor([[3.0, 3.0, 0.0]]),
+    )
+    assert result.weighted_action_norm == 3.0
+    assert result.weighted_feature_norm == 8.0
+    np.testing.assert_allclose(
+        result.feature_to_action_norm_ratio,
+        8.0 / 3.0,
+    )
+    assert result.feature_scale == 3.0 / 8.0
+    assert result.action_feature_cosine == 0.0
+
+
+def test_gradient_norm_protection_never_amplifies_small_feature() -> None:
+    weighted_action = torch.tensor([[3.0, 0.0, 0.0]])
+    weighted_feature = torch.tensor([[0.0, 2.0, 0.0]])
+
+    result = combine_gradients_with_feature_norm_protection(
+        weighted_action,
+        weighted_feature,
+        feature_to_action_ratio_limit=1.0,
+    )
+
+    assert result.feature_scale == 1.0
+    torch.testing.assert_close(
+        result.combined_gradient,
+        weighted_action + weighted_feature,
+    )
+
+
+def test_gradient_norm_protection_skips_feature_without_action_signal() -> None:
+    weighted_action = torch.zeros((1, 3))
+    weighted_feature = torch.tensor([[0.0, 2.0, 0.0]])
+
+    result = combine_gradients_with_feature_norm_protection(
+        weighted_action,
+        weighted_feature,
+        feature_to_action_ratio_limit=1.0,
+    )
+
+    assert result.feature_scale == 0.0
+    torch.testing.assert_close(
+        result.combined_gradient,
+        torch.zeros((1, 3)),
+    )
 
 
 def _training_frame() -> TrainingFrame:
@@ -332,6 +397,91 @@ def test_optimizer_uses_surface_normalized_update_for_new_adapter(
     gradient_log = gradient_log_path.read_text()
     assert "surface_normalized" in gradient_log
     assert "2.000000e-02" in gradient_log
+
+
+def test_optimizer_applies_batch_gradient_norm_protection_before_surface_step(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    """batch 累积后先限制 Feature，再把合并方向交给曲面归一化更新。"""
+    renderer = FakeSurfaceOptimizationRenderer()
+    first_frame = _training_frame()
+    second_frame = _training_frame()
+    second_frame["initial_state_id"] = 1
+
+    def fixed_two_frame_batch(
+        frames: list[TrainingFrame],
+        batch_size: int,
+    ) -> list[WeightedTrainingFrame]:
+        assert batch_size == 2
+        return [
+            WeightedTrainingFrame(frame=frames[0], weight=0.5),
+            WeightedTrainingFrame(frame=frames[1], weight=0.5),
+        ]
+
+    optimizer = AttackOptimizer(
+        cfg=FakeOptimizationConfig(
+            num_frames_to_attack=2,
+            alpha_action=1.0,
+            alpha_feature=4.0,
+            gradient_norm_protection_enabled=True,
+            feature_gradient_norm_ratio_limit=1.0,
+        ),
+        model=FakeOptimizationModel(),
+        renderer=renderer,
+        feature_objective="siglip_patch",
+        frame_batch_sampler=fixed_two_frame_batch,
+        render_resolution=2,
+    )
+
+    def orthogonal_frame_losses(
+        frame: TrainingFrame,
+        frame_mvp: torch.Tensor,
+    ) -> optimization.FrameObjectiveLosses:
+        del frame_mvp
+        # 两帧加权后的 Action 梯度相加为 [1,0,0]。Feature 两帧分别贡献
+        # [0,4,0] 与 [0,-1,0]，batch 累积为 [0,3,0]，最后缩放到 [0,1,0]。
+        # 如果错误地逐帧保护，两项会各自缩放后抵消，无法得到该更新方向。
+        parameter = renderer.get_texture_param()
+        feature_coefficient: float = (
+            2.0 if frame["initial_state_id"] == 0 else -0.5
+        )
+        return optimization.FrameObjectiveLosses(
+            action=parameter[0, 0],
+            feature=feature_coefficient * parameter[0, 1],
+        )
+
+    monkeypatch.setattr(
+        optimizer,
+        "_compute_frame_losses",
+        orthogonal_frame_losses,
+    )
+    log_path = tmp_path / "protected-gradient.txt"
+
+    optimizer.optimize(
+        frames=[first_frame, second_frame],
+        num_iters=1,
+        gradient_log_path=log_path,
+    )
+
+    torch.testing.assert_close(
+        renderer.get_texture_param().detach(),
+        torch.tensor([[-0.02, -0.02, 0.0]]),
+    )
+    log_lines = log_path.read_text().splitlines()
+    header_fields = [field.strip() for field in log_lines[0].split("|")]
+    value_fields = [field.strip() for field in log_lines[1].split("|")]
+    assert header_fields[-5:] == [
+        "Weighted Action Grad Norm",
+        "Weighted Feature Grad Norm",
+        "Feature/Action Grad Norm Ratio",
+        "Feature Grad Scale",
+        "Action-Feature Grad Cosine",
+    ]
+    np.testing.assert_allclose(
+        [float(value) for value in value_fields[-5:]],
+        [1.0, 3.0, 3.0, 1.0 / 3.0, 0.0],
+    )
 
 
 def test_siglip_objective_uses_three_channel_shared_features_and_backpropagates(

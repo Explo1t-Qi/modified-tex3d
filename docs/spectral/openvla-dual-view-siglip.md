@@ -358,3 +358,93 @@ Feature 在 states 0、7、8 出现较明显负 cosine，但均值仍只有 `-0.
 当前目标是优先快速验证机制，因此下一纵切应优先设计动态范数保护；在确定
 公式、上限和日志验收口径之前，不直接开始实现或扫描超参数。PCGrad 只会处理
 负内积，而当前主要问题是近似正交但范数失衡，所以不作为第一候选。
+
+## 动态梯度范数保护
+
+第一版已固定为 batch 级、谱系数空间的 Feature 范数上限。每轮先按原配置和
+frame weight 分别累积：
+
+```text
+g_action  = sum_frames frame_weight * 0.1 * dL_action/dC
+g_feature = sum_frames frame_weight * 4.0 * dL_feature/dC
+C shape   = [256,3]
+
+scale   = min(1, rho * ||g_action||_2 / (||g_feature||_2 + epsilon))
+g_total = g_action + scale * g_feature
+rho     = 1.0
+```
+
+保护发生在 batch 累积后、Surface-normalized step 之前。它不改变 Primary/Wrist
+等权平均，不放大较弱的 Feature，也不改变已有 Surface Step 与 L∞ 投影。默认
+关闭，因此旧命令的反向传播与日志字段保持不变。首版 CLI 只允许
+`spectral + siglip_patch + primary_wrist`，并要求两个 alpha 和 rho 均为有限
+正数，避免把该机制误用为 Geometry/Legacy 的既有基线。
+
+启用后 gradient log 在原字段后追加：
+
+```text
+Weighted Action Grad Norm
+Weighted Feature Grad Norm
+Feature/Action Grad Norm Ratio
+Feature Grad Scale
+Action-Feature Grad Cosine
+```
+
+模型无关的范数合并规则位于
+`openvla/experiments/robot/libero/openvla_attack/gradient_protection.py`；OpenVLA
+专用的逐帧求导、batch 累积和 renderer 更新仍由 `optimization.py` 编排。
+
+其中 `Total Loss` 仍记录原始 `0.1*Action + 4.0*Feature` 名义目标，便于与旧实验
+对照；真正用于更新的是日志所对应的受保护合并梯度。实现逐帧完成两次 autograd
+并只累积 detach 后的 `[256,3]` 梯度，不会把全部训练帧计算图同时保留在显存中。
+
+### 单步 GPU smoke
+
+```bash
+CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES=<gpu-id> \
+MUJOCO_GL=egl PYOPENGL_PLATFORM=egl TF_CPP_MIN_LOG_LEVEL=2 \
+TOKENIZERS_PARALLELISM=false PYTHONNOUSERSITE=1 PYTHONDONTWRITEBYTECODE=1 \
+PYTHONPATH="$PWD/openvla" \
+/home/xiaomengqi/miniconda3/envs/tex3d-openvla/bin/python \
+openvla/experiments/robot/libero/attack_openvla.py \
+  --pretrained_checkpoint /data/huangsimin/openvla-7b-finetuned-libero-spatial \
+  --unnorm_key libero_spatial_no_noops \
+  --task_suite_name libero_spatial \
+  --object_name akita_black_bowl \
+  --task_id 0 \
+  --num_trials_per_task 1 \
+  --enable_attack True \
+  --texture_parameterization spectral \
+  --spectral_basis_path experiments/spectral_basis/akita_black_bowl_k512.npz \
+  --spectral_basis_count 256 \
+  --feature_objective siglip_patch \
+  --feature_view_mode primary_wrist \
+  --alpha_action 0.1 \
+  --alpha_feature 4.0 \
+  --gradient_norm_protection_enabled True \
+  --feature_gradient_norm_ratio_limit 1.0 \
+  --attack_iters 1 \
+  --num_train_init_states 1 \
+  --train_init_state_ids 0 \
+  --eval_init_state_ids 10 \
+  --train_frames_per_state 1 \
+  --num_frames_to_attack 1 \
+  --photometric_calib_frames 5 \
+  --live_test_enabled False \
+  --use_wandb False \
+  --local_log_dir experiments/logs/spectral-k256-gradient-norm-protection-smoke \
+  --run_id_note spectral-k256-gradient-norm-protection-smoke
+```
+
+smoke 的 go/no-go：
+
+- 启动日志明确显示 ratio limit `1.0`；
+- 五个新梯度字段全部有限，`0 <= Feature Grad Scale <= 1`；
+- 当原始 ratio 大于 `1` 时，缩放后的比例
+  `ratio * scale` 在浮点误差内不超过 `1`；
+- `Actual Surface Step <= 2/255`，`Max Surface Delta <= 128/255`；
+- loss、谱系数、Active Texture 与 UV Map 正常保存，运行后 XML/纹理资产恢复。
+
+smoke 只验证实现，不用其单次 rollout 成败判断攻击效果。通过后再运行与旧
+K=256 双视角完全相同的 states 0–9、5000轮训练；唯一方法变量是开启保护并令
+`rho=1.0`。

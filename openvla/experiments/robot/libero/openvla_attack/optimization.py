@@ -13,7 +13,8 @@ SignSGD 参数更新、梯度日志和 live-test 调度。调用方只需提供�
 优化路径为：
 
 ``TrainingFrame 池 → FrameBatchSampler → 构造对抗视图 → OpenVLA forward
-→ action/feature loss → 加权 total loss → backward → 纹理参数更新``。
+→ action/feature loss → 加权参数梯度 → 可选 Feature 范数保护
+→ 纹理参数更新``。
 """
 
 from __future__ import annotations
@@ -39,6 +40,10 @@ from .compositing import (
 )
 from .configuration import FeatureObjectiveKind, FeatureViewModeKind
 from .frame_collection import TrainingFrame
+from .gradient_protection import (
+    GradientNormProtectionResult,
+    combine_gradients_with_feature_norm_protection,
+)
 from .objective import get_attack_loss
 from .spectral_gradient_audit import ObjectiveParameterGradients
 from .texture_parameterization import SurfaceStepStats
@@ -56,6 +61,8 @@ class OptimizationConfig(Protocol):
     attack_surface_step: float
     alpha_action: float
     alpha_feature: float
+    gradient_norm_protection_enabled: bool
+    feature_gradient_norm_ratio_limit: float
     live_test_enabled: bool
     live_test_every_n_iters: int
 
@@ -134,6 +141,30 @@ class FrameObjectiveLosses:
     feature_by_view: Optional[
         dict[SharedTextureViewName, torch.Tensor]
     ] = None
+
+
+def _differentiate_texture_parameter(
+    loss: torch.Tensor,
+    texture_parameter: nn.Parameter,
+    *,
+    retain_graph: bool,
+) -> torch.Tensor:
+    """返回一个标量 loss 对唯一纹理参数的有限、已 detach 梯度。"""
+    gradient: Optional[torch.Tensor] = torch.autograd.grad(
+        loss,
+        texture_parameter,
+        retain_graph=retain_graph,
+        create_graph=False,
+        allow_unused=True,
+    )[0]
+    resolved_gradient: torch.Tensor = (
+        gradient
+        if gradient is not None
+        else torch.zeros_like(texture_parameter)
+    )
+    if not torch.isfinite(resolved_gradient).all():
+        raise RuntimeError("目标关于纹理参数的梯度包含 NaN/Inf")
+    return resolved_gradient.detach()
 
 
 class FrameBatchSampler(Protocol):
@@ -518,23 +549,11 @@ class AttackOptimizer:
             *,
             retain_graph: bool,
         ) -> torch.Tensor:
-            gradient: Optional[torch.Tensor] = torch.autograd.grad(
+            return _differentiate_texture_parameter(
                 loss,
                 texture_parameter,
                 retain_graph=retain_graph,
-                create_graph=False,
-                allow_unused=True,
-            )[0]
-            resolved_gradient: torch.Tensor = (
-                gradient
-                if gradient is not None
-                else torch.zeros_like(texture_parameter)
             )
-            if not torch.isfinite(resolved_gradient).all():
-                raise RuntimeError(
-                    "独立目标关于纹理参数的梯度包含 NaN/Inf"
-                )
-            return resolved_gradient.detach()
 
         action_gradient: torch.Tensor = objective_gradient(
             frame_losses.action,
@@ -633,6 +652,14 @@ class AttackOptimizer:
         )
         if self._feature_view_mode == "primary_wrist":
             log_header += " | Primary Feature Loss | Wrist Feature Loss"
+        if self._cfg.gradient_norm_protection_enabled:
+            log_header += (
+                " | Weighted Action Grad Norm"
+                " | Weighted Feature Grad Norm"
+                " | Feature/Action Grad Norm Ratio"
+                " | Feature Grad Scale"
+                " | Action-Feature Grad Cosine"
+            )
         resolved_log_path.write_text(log_header + "\n")
 
         iterator = tqdm.tqdm(
@@ -651,6 +678,17 @@ class AttackOptimizer:
             average_primary_feature_loss: float = 0.0
             average_wrist_feature_loss: float = 0.0
             valid_frame_count: int = 0
+            weighted_action_gradient: Optional[torch.Tensor] = None
+            weighted_feature_gradient: Optional[torch.Tensor] = None
+            if self._cfg.gradient_norm_protection_enabled:
+                # 两个 accumulator 均定义在唯一纹理参数空间；谱方法中 shape
+                # 为 `[num_basis,3]`。先跨 frame 累积，再应用一次 batch 级上限。
+                weighted_action_gradient = torch.zeros_like(
+                    texture_parameter
+                )
+                weighted_feature_gradient = torch.zeros_like(
+                    texture_parameter
+                )
 
             selected_frames: Sequence[WeightedTrainingFrame] = (
                 self._frame_batch_sampler(
@@ -677,11 +715,41 @@ class AttackOptimizer:
                         frame_mvp,
                     )
                 )
-                frame_loss: torch.Tensor = frame_weight * (
-                    self._cfg.alpha_action * frame_losses.action
-                    + self._cfg.alpha_feature * frame_losses.feature
+                weighted_action_loss: torch.Tensor = (
+                    frame_weight
+                    * self._cfg.alpha_action
+                    * frame_losses.action
                 )
-                frame_loss.backward()
+                weighted_feature_loss: torch.Tensor = (
+                    frame_weight
+                    * self._cfg.alpha_feature
+                    * frame_losses.feature
+                )
+                frame_loss: torch.Tensor = (
+                    weighted_action_loss + weighted_feature_loss
+                )
+                if self._cfg.gradient_norm_protection_enabled:
+                    assert weighted_action_gradient is not None
+                    assert weighted_feature_gradient is not None
+                    # Action/Feature 共用主视角 renderer graph。先保留 graph
+                    # 求 Action 梯度，再由 Combined Feature 求导并释放该帧图。
+                    weighted_action_gradient.add_(
+                        _differentiate_texture_parameter(
+                            weighted_action_loss,
+                            texture_parameter,
+                            retain_graph=True,
+                        )
+                    )
+                    weighted_feature_gradient.add_(
+                        _differentiate_texture_parameter(
+                            weighted_feature_loss,
+                            texture_parameter,
+                            retain_graph=False,
+                        )
+                    )
+                else:
+                    # 默认路径保持已有一次 total-loss backward 的数值行为。
+                    frame_loss.backward()
 
                 average_total_loss += frame_loss.item()
                 average_action_loss += frame_losses.action.item()
@@ -702,6 +770,28 @@ class AttackOptimizer:
                 average_primary_feature_loss /= valid_frame_count
                 average_wrist_feature_loss /= valid_frame_count
             loss_history.append(average_total_loss)
+
+            protection_result: Optional[
+                GradientNormProtectionResult
+            ] = None
+            if (
+                self._cfg.gradient_norm_protection_enabled
+                and valid_frame_count > 0
+            ):
+                assert weighted_action_gradient is not None
+                assert weighted_feature_gradient is not None
+                protection_result = (
+                    combine_gradients_with_feature_norm_protection(
+                        weighted_action_gradient,
+                        weighted_feature_gradient,
+                        feature_to_action_ratio_limit=(
+                            self._cfg.feature_gradient_norm_ratio_limit
+                        ),
+                    )
+                )
+                texture_parameter.grad = (
+                    protection_result.combined_gradient
+                )
 
             gradient: Optional[torch.Tensor] = texture_parameter.grad
             gradient_norm: float = (
@@ -757,13 +847,27 @@ class AttackOptimizer:
                         f" | {average_primary_feature_loss:.6f}"
                         f" | {average_wrist_feature_loss:.6f}"
                     )
+                if protection_result is not None:
+                    log_line += (
+                        f" | {protection_result.weighted_action_norm:.6e}"
+                        f" | {protection_result.weighted_feature_norm:.6e}"
+                        " | "
+                        f"{protection_result.feature_to_action_norm_ratio:.6e}"
+                        f" | {protection_result.feature_scale:.6e}"
+                        f" | {protection_result.action_feature_cosine:.6e}"
+                    )
                 log_file.write(log_line + "\n")
-            iterator.set_postfix(
+            progress_metrics: dict[str, str] = dict(
                 act=f"{average_action_loss:.4f}",
                 feat=f"{average_feature_loss:.4f}",
                 gnorm=f"{gradient_norm:.4f}",
                 step=f"{actual_surface_step:.4f}",
             )
+            if protection_result is not None:
+                progress_metrics["fscale"] = (
+                    f"{protection_result.feature_scale:.3f}"
+                )
+            iterator.set_postfix(**progress_metrics)
 
             one_based_iteration: int = iteration_index + 1
             should_run_callback: bool = (

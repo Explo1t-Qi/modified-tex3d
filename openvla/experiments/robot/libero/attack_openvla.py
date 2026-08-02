@@ -47,6 +47,7 @@ from openvla_attack.configuration import (
     resolve_feature_objective,
     resolve_feature_view_mode,
     resolve_texture_parameterization,
+    validate_gradient_norm_protection,
 )
 from openvla_attack.evaluation import (
     LiberoEpisodeRunner,
@@ -98,6 +99,12 @@ def eval_libero(cfg: GenerateConfig) -> None:
             "feature_view_mode='primary_wrist' 要求 "
             "feature_objective='siglip_patch'"
         )
+    validate_gradient_norm_protection(
+        cfg,
+        texture_parameterization=texture_parameterization,
+        feature_objective=feature_objective,
+        feature_view_mode=feature_view_mode,
+    )
     if (
         cfg.spectral_gradient_audit_only
         and not cfg.spectral_gradient_audit_enabled
@@ -224,6 +231,12 @@ def eval_libero(cfg: GenerateConfig) -> None:
             f"feature_views={feature_view_mode}, "
             f"feature_weight={cfg.alpha_feature:.6f}"
         )
+        if cfg.gradient_norm_protection_enabled:
+            print(
+                "[INFO] Gradient norm protection: enabled, "
+                "weighted_feature/action_ratio_limit="
+                f"{cfg.feature_gradient_norm_ratio_limit:.6f}"
+            )
     total_episodes: int = 0
     total_successes: int = 0
     video_resolution: int = 512
