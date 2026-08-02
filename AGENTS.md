@@ -71,6 +71,11 @@
   `19.5362`，但 held-out 仍只有1/10失败。该候选未过源门槛，不运行 OFT，
   也不直接扫描 rho。下一步用最终 Active Texture 回放训练 states 0–9，区分
   Action loss 代理失配和状态过拟合；完整结果见双视角文档。
+- 最终纹理在训练 states 0–9 回放也只有1/10失败，且 Active Texture hash 与
+  正式训练完全一致，因此状态过拟合不是主要解释。下一步优先实现 source
+  OpenVLA action-response 最小诊断：在相同初始观测比较 clean/adv action 向量、
+  token Hamming、clean/argmax/对称 target margin 与 CE；在该证据出来前不再
+  扫描 rho、K、Feature weight，也不进入 OFT。
 - OpenVLA 第一版使用 LIBERO Spatial task 0 / `akita_black_bowl`，从 K=128
   个非恒定低频谱基开始；实现和命令见
   `docs/spectral/openvla-spectral-mvp.md`。

@@ -599,3 +599,32 @@ openvla/experiments/robot/libero/attack_openvla.py \
   --local_log_dir experiments/logs/spectral-k256-gradient-norm-protection-train-replay \
   --run_id_note spectral-k256-gradient-norm-protection-train-states0-9
 ```
+
+### 2026-08-02 训练状态回放结果
+
+加载的 Active Texture SHA-256 为
+`f849dd2f2b8d6a64f330a863b6aa3980cb9a3d6a9e054908e34836fab0d3fc1a`，
+与正式训练的 UV Map 和 Active Texture 完全一致，因此回放没有发生 PNG 重采样
+或纹理加载偏差。states 0–9 中只有 state 3 失败，任务成功率仍为90%、攻击成功率
+仍为1/10；XML 和原纹理在退出后正常恢复。
+
+训练状态并没有比 held-out states 10–19 更易受攻击，因此“只是在 held-out
+状态过拟合”被否定。即便 state 3 最终被 clean 对照证明是纹理引起，它也只能把
+攻击强度确认在1/10；若它是 clean 自然失败，真实攻击只会更弱，不影响当前
+分支选择。
+
+当前最强证据链是：动态保护让最后100轮对称 action-bin CE 从 `20.4625` 降到
+`19.5362`，但训练与 held-out rollout 都只有1/10失败。也就是说，当前 Action
+代理在训练图像上数值改善，却没有可靠改变闭环行为。下一步不继续调 rho、K 或
+Feature weight，而应做一次 source OpenVLA action-response 最小诊断，在完全
+相同的 states 0–9 初始观测上比较 clean/adv：
+
+- 实际 `predict_action` 向量的 L2/L∞ 变化；
+- 生成 action token 的 Hamming distance；
+- clean token、当前 argmax 与对称 target token 的 logit/probability margin；
+- 当前对称 target CE 与动作是否真正跨过决策边界。
+
+若 CE 下降但 token/action 几乎不变，应把目标改为直接压低 clean/argmax margin
+的 untargeted decision loss；若首步 token/action 已明显改变但 rollout 仍成功，
+瓶颈则是单步静态帧覆盖，需要转向轨迹/关键步骤采样。该诊断只需固定状态前向，
+不再训练5000轮。
