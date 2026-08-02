@@ -36,6 +36,7 @@ import torch
 import torch.nn as nn
 from numpy.typing import NDArray
 
+from .compositing import SharedTextureViewName
 from .frame_collection import TrainingFrame
 
 
@@ -60,6 +61,14 @@ class ObjectiveParameterGradients:
     feature_loss: float
     action_gradient: torch.Tensor
     feature_gradient: torch.Tensor
+    # 双视角诊断时额外保留 primary/wrist 的未加权标量 loss 与 [K,3] 梯度。
+    # 默认单视角审计保持 None，原有选基产物和调用方无需感知新字段。
+    feature_losses_by_view: Optional[
+        dict[SharedTextureViewName, float]
+    ] = None
+    feature_gradients_by_view: Optional[
+        dict[SharedTextureViewName, torch.Tensor]
+    ] = None
 
 
 class ObjectiveGradientProvider(Protocol):
@@ -134,6 +143,12 @@ class SpectralGradientAuditResult:
     action_ranked_indices: IntArray
     feature_ranked_indices: IntArray
     requested_top_k: int
+    # 以下四项只在 primary_wrist Shared-SigLIP 审计中存在。梯度 shape 均为
+    # float64 CPU [num_samples, num_basis, 3]。
+    primary_feature_losses: Optional[FloatArray] = None
+    wrist_feature_losses: Optional[FloatArray] = None
+    primary_feature_gradients: Optional[FloatArray] = None
+    wrist_feature_gradients: Optional[FloatArray] = None
 
     @property
     def num_samples(self) -> int:
@@ -167,29 +182,44 @@ class SpectralGradientAuditResult:
             json_path=resolved_directory / f"{stem}.json",
         )
 
-        np.savez_compressed(
-            paths.npz_path,
-            state_ids=self.state_ids,
-            step_indices=self.step_indices,
-            eigenvalues=self.eigenvalues,
-            basis_linf=self.basis_linf,
-            action_losses=self.action_losses,
-            feature_losses=self.feature_losses,
-            action_gradients=self.action_gradients,
-            feature_gradients=self.feature_gradients,
-            action_mean_norm=self.action_mean_norm,
-            feature_mean_norm=self.feature_mean_norm,
-            action_consistency=self.action_consistency,
-            feature_consistency=self.feature_consistency,
-            action_surface_score=self.action_surface_score,
-            feature_surface_score=self.feature_surface_score,
-            action_stable_score=self.action_stable_score,
-            feature_stable_score=self.feature_stable_score,
-            action_cumulative_energy=self.action_cumulative_energy,
-            feature_cumulative_energy=self.feature_cumulative_energy,
-            action_ranked_indices=self.action_ranked_indices,
-            feature_ranked_indices=self.feature_ranked_indices,
-        )
+        archive_payload: dict[str, NDArray[np.generic]] = {
+            "state_ids": self.state_ids,
+            "step_indices": self.step_indices,
+            "eigenvalues": self.eigenvalues,
+            "basis_linf": self.basis_linf,
+            "action_losses": self.action_losses,
+            "feature_losses": self.feature_losses,
+            "action_gradients": self.action_gradients,
+            "feature_gradients": self.feature_gradients,
+            "action_mean_norm": self.action_mean_norm,
+            "feature_mean_norm": self.feature_mean_norm,
+            "action_consistency": self.action_consistency,
+            "feature_consistency": self.feature_consistency,
+            "action_surface_score": self.action_surface_score,
+            "feature_surface_score": self.feature_surface_score,
+            "action_stable_score": self.action_stable_score,
+            "feature_stable_score": self.feature_stable_score,
+            "action_cumulative_energy": self.action_cumulative_energy,
+            "feature_cumulative_energy": self.feature_cumulative_energy,
+            "action_ranked_indices": self.action_ranked_indices,
+            "feature_ranked_indices": self.feature_ranked_indices,
+        }
+        if self.primary_feature_gradients is not None:
+            if (
+                self.primary_feature_losses is None
+                or self.wrist_feature_losses is None
+                or self.wrist_feature_gradients is None
+            ):
+                raise SpectralGradientAuditError(
+                    "双视角审计产物字段不完整"
+                )
+            archive_payload.update(
+                primary_feature_losses=self.primary_feature_losses,
+                wrist_feature_losses=self.wrist_feature_losses,
+                primary_feature_gradients=self.primary_feature_gradients,
+                wrist_feature_gradients=self.wrist_feature_gradients,
+            )
+        np.savez_compressed(paths.npz_path, **archive_payload)
         self._save_csv(paths.csv_path)
         self._save_json(paths.json_path)
         return paths
@@ -283,6 +313,24 @@ class SpectralGradientAuditResult:
             "mean_action_loss": float(self.action_losses.mean()),
             "mean_feature_loss": float(self.feature_losses.mean()),
         }
+        if self.primary_feature_gradients is not None:
+            if (
+                self.primary_feature_losses is None
+                or self.wrist_feature_losses is None
+                or self.wrist_feature_gradients is None
+            ):
+                raise SpectralGradientAuditError(
+                    "双视角审计 JSON 字段不完整"
+                )
+            summary["dual_view_diagnostic_available"] = True
+            summary["mean_primary_feature_loss"] = float(
+                self.primary_feature_losses.mean()
+            )
+            summary["mean_wrist_feature_loss"] = float(
+                self.wrist_feature_losses.mean()
+            )
+        else:
+            summary["dual_view_diagnostic_available"] = False
         path.write_text(
             json.dumps(
                 summary,
@@ -414,6 +462,10 @@ def summarize_spectral_gradients(
     basis: torch.Tensor,
     eigenvalues: torch.Tensor,
     requested_top_k: int,
+    primary_feature_losses: Optional[Sequence[float]] = None,
+    wrist_feature_losses: Optional[Sequence[float]] = None,
+    primary_feature_gradients: Optional[torch.Tensor] = None,
+    wrist_feature_gradients: Optional[torch.Tensor] = None,
 ) -> SpectralGradientAuditResult:
     """计算逐模态强度、状态一致性和曲面预算归一化排名。
 
@@ -514,6 +566,85 @@ def summarize_spectral_gradients(
         feature_ranked_indices,
     ) = summarize_objective(feature_array)
 
+    # 双视角字段必须四项同时存在，并与 combined Feature 使用相同的
+    # [S,K,3] 坐标。这里不重新参与选基，只为后续冲突诊断保存原始证据。
+    optional_view_values: tuple[object, ...] = (
+        primary_feature_losses,
+        wrist_feature_losses,
+        primary_feature_gradients,
+        wrist_feature_gradients,
+    )
+    present_view_value_count: int = sum(
+        value is not None for value in optional_view_values
+    )
+    if present_view_value_count not in (0, len(optional_view_values)):
+        raise SpectralGradientAuditError(
+            "双视角 Feature loss/gradient 必须同时提供"
+        )
+    primary_feature_loss_array: Optional[FloatArray] = None
+    wrist_feature_loss_array: Optional[FloatArray] = None
+    primary_feature_array: Optional[FloatArray] = None
+    wrist_feature_array: Optional[FloatArray] = None
+    if present_view_value_count:
+        assert primary_feature_losses is not None
+        assert wrist_feature_losses is not None
+        assert primary_feature_gradients is not None
+        assert wrist_feature_gradients is not None
+        primary_feature_loss_array = np.asarray(
+            primary_feature_losses,
+            dtype=np.float64,
+        )
+        wrist_feature_loss_array = np.asarray(
+            wrist_feature_losses,
+            dtype=np.float64,
+        )
+        primary_feature_array = (
+            primary_feature_gradients.detach()
+            .float()
+            .cpu()
+            .numpy()
+            .astype(np.float64)
+        )
+        wrist_feature_array = (
+            wrist_feature_gradients.detach()
+            .float()
+            .cpu()
+            .numpy()
+            .astype(np.float64)
+        )
+        expected_gradient_shape: tuple[int, ...] = action_array.shape
+        expected_loss_shape: tuple[int, ...] = action_loss_array.shape
+        if (
+            primary_feature_array.shape != expected_gradient_shape
+            or wrist_feature_array.shape != expected_gradient_shape
+            or primary_feature_loss_array.shape != expected_loss_shape
+            or wrist_feature_loss_array.shape != expected_loss_shape
+        ):
+            raise SpectralGradientAuditError(
+                "双视角 Feature 字段与 combined audit shape 不一致"
+            )
+        if not all(
+            np.isfinite(array).all()
+            for array in (
+                primary_feature_loss_array,
+                wrist_feature_loss_array,
+                primary_feature_array,
+                wrist_feature_array,
+            )
+        ):
+            raise SpectralGradientAuditError(
+                "双视角 Feature 审计包含 NaN/Inf"
+            )
+        if not np.allclose(
+            feature_array,
+            (primary_feature_array + wrist_feature_array) / 2.0,
+            rtol=2e-4,
+            atol=2e-6,
+        ):
+            raise SpectralGradientAuditError(
+                "combined Feature 梯度不等于主/腕部梯度均值"
+            )
+
     return SpectralGradientAuditResult(
         state_ids=state_array,
         step_indices=step_array,
@@ -536,6 +667,10 @@ def summarize_spectral_gradients(
         action_ranked_indices=action_ranked_indices,
         feature_ranked_indices=feature_ranked_indices,
         requested_top_k=requested_top_k,
+        primary_feature_losses=primary_feature_loss_array,
+        wrist_feature_losses=wrist_feature_loss_array,
+        primary_feature_gradients=primary_feature_array,
+        wrist_feature_gradients=wrist_feature_array,
     )
 
 
@@ -592,6 +727,11 @@ class SpectralGradientAuditor:
         feature_losses: list[float] = []
         action_gradients: list[torch.Tensor] = []
         feature_gradients: list[torch.Tensor] = []
+        primary_feature_losses: list[float] = []
+        wrist_feature_losses: list[float] = []
+        primary_feature_gradients: list[torch.Tensor] = []
+        wrist_feature_gradients: list[torch.Tensor] = []
+        has_dual_view_diagnostics: Optional[bool] = None
         try:
             frame: TrainingFrame
             for frame in frames:
@@ -614,6 +754,44 @@ class SpectralGradientAuditor:
                 feature_gradients.append(
                     sample.feature_gradient.detach().cpu()
                 )
+                sample_has_dual_view: bool = (
+                    sample.feature_losses_by_view is not None
+                    and sample.feature_gradients_by_view is not None
+                )
+                if has_dual_view_diagnostics is None:
+                    has_dual_view_diagnostics = sample_has_dual_view
+                elif has_dual_view_diagnostics != sample_has_dual_view:
+                    raise SpectralGradientAuditError(
+                        "同一次审计不能混合单视角与双视角样本"
+                    )
+                if sample_has_dual_view:
+                    assert sample.feature_losses_by_view is not None
+                    assert sample.feature_gradients_by_view is not None
+                    if (
+                        set(sample.feature_losses_by_view)
+                        != {"primary", "wrist"}
+                        or set(sample.feature_gradients_by_view)
+                        != {"primary", "wrist"}
+                    ):
+                        raise SpectralGradientAuditError(
+                            "双视角样本必须包含 primary/wrist"
+                        )
+                    primary_feature_losses.append(
+                        sample.feature_losses_by_view["primary"]
+                    )
+                    wrist_feature_losses.append(
+                        sample.feature_losses_by_view["wrist"]
+                    )
+                    primary_feature_gradients.append(
+                        sample.feature_gradients_by_view["primary"]
+                        .detach()
+                        .cpu()
+                    )
+                    wrist_feature_gradients.append(
+                        sample.feature_gradients_by_view["wrist"]
+                        .detach()
+                        .cpu()
+                    )
         finally:
             self._renderer.reset_texture()
 
@@ -631,4 +809,24 @@ class SpectralGradientAuditor:
             basis=basis,
             eigenvalues=eigenvalues,
             requested_top_k=self._requested_top_k,
+            primary_feature_losses=(
+                primary_feature_losses
+                if has_dual_view_diagnostics
+                else None
+            ),
+            wrist_feature_losses=(
+                wrist_feature_losses
+                if has_dual_view_diagnostics
+                else None
+            ),
+            primary_feature_gradients=(
+                torch.stack(primary_feature_gradients, dim=0)
+                if has_dual_view_diagnostics
+                else None
+            ),
+            wrist_feature_gradients=(
+                torch.stack(wrist_feature_gradients, dim=0)
+                if has_dual_view_diagnostics
+                else None
+            ),
         )

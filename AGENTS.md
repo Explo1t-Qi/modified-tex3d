@@ -44,6 +44,10 @@
   OpenVLA只造成1/10失败，低于旧K=256的3/10；尽管两个视角 Feature loss 都
   更强，Action loss 反而更差。因此按预设门槛跳过OFT rollout，下一步先审计
   双视角Feature与源Action的系数梯度冲突。
+- 双视角 source-only 谱审计会额外保存主视角/腕部各自的 Feature loss 与
+  `[S,K,3]` 梯度；CPU 汇总入口为
+  `scripts/analyze_dual_view_spectral_gradients.py`。第一轮固定零 Surface Delta、
+  K=256、训练 states 0–9，不更新纹理、不读取 OFT。
 - OpenVLA 第一版使用 LIBERO Spatial task 0 / `akita_black_bowl`，从 K=128
   个非恒定低频谱基开始；实现和命令见
   `docs/spectral/openvla-spectral-mvp.md`。

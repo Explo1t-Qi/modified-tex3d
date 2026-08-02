@@ -65,6 +65,10 @@ def test_summary_normalizes_surface_scale_and_measures_state_consistency(
         basis=basis,
         eigenvalues=torch.tensor([0.25, 0.5]),
         requested_top_k=1,
+        primary_feature_losses=[-0.5, -1.5],
+        wrist_feature_losses=[-1.5, -4.5],
+        primary_feature_gradients=feature_gradients * 0.5,
+        wrist_feature_gradients=feature_gradients * 1.5,
     )
 
     np.testing.assert_allclose(result.basis_linf, [2.0, 1.0])
@@ -95,6 +99,11 @@ def test_summary_normalizes_surface_scale_and_measures_state_consistency(
             [1, 0],
         )
         assert archive["feature_gradients"].shape == (2, 2, 3)
+        assert archive["primary_feature_gradients"].shape == (2, 2, 3)
+        np.testing.assert_allclose(
+            archive["wrist_feature_losses"],
+            [-1.5, -4.5],
+        )
     with paths.csv_path.open(newline="", encoding="utf-8") as file:
         csv_rows = list(csv.DictReader(file))
     assert len(csv_rows) == 2
@@ -105,6 +114,9 @@ def test_summary_normalizes_surface_scale_and_measures_state_consistency(
     assert summary["top_feature_indices"] == [1]
     assert summary["mean_action_loss"] == 5.0
     assert summary["mean_feature_loss"] == -2.0
+    assert summary["dual_view_diagnostic_available"] is True
+    assert summary["mean_primary_feature_loss"] == -1.0
+    assert summary["mean_wrist_feature_loss"] == -3.0
 
 
 class _FakeGradientProvider:

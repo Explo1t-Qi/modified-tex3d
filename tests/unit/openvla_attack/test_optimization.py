@@ -463,6 +463,46 @@ def test_dual_view_siglip_uses_primary_action_and_two_feature_views(
         render_resolution=2,
     )
 
+    gradient_sample = optimizer.compute_objective_parameter_gradients(frame)
+    assert gradient_sample is not None
+    assert gradient_sample.feature_losses_by_view is not None
+    assert gradient_sample.feature_gradients_by_view is not None
+    np.testing.assert_allclose(
+        [
+            gradient_sample.feature_losses_by_view["primary"],
+            gradient_sample.feature_losses_by_view["wrist"],
+        ],
+        [-0.04, -0.01],
+        rtol=4e-3,
+    )
+    torch.testing.assert_close(
+        gradient_sample.action_gradient,
+        torch.tensor([1.0]),
+        rtol=4e-3,
+        atol=4e-3,
+    )
+    torch.testing.assert_close(
+        gradient_sample.feature_gradients_by_view["primary"],
+        torch.tensor([-0.4]),
+        rtol=4e-3,
+        atol=4e-3,
+    )
+    torch.testing.assert_close(
+        gradient_sample.feature_gradients_by_view["wrist"],
+        torch.tensor([-0.2]),
+        rtol=4e-3,
+        atol=4e-3,
+    )
+    torch.testing.assert_close(
+        gradient_sample.feature_gradient,
+        torch.tensor([-0.3]),
+        rtol=4e-3,
+        atol=4e-3,
+    )
+    assert len(action_calls) == 1
+    action_calls.clear()
+    model.siglip.input_shapes.clear()
+
     losses = optimizer.optimize(
         frames=[frame],
         num_iters=1,

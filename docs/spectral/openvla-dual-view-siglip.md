@@ -191,3 +191,67 @@ Smoke 通过后，运行一个且仅一个 K=256 候选。相较上面的命令�
 rollout：即使偶然产生目标失败，也不能支持“在近似相同源对抗性下提高迁移性”
 这一研究命题。下一步应先量化双视角 Feature 梯度与源 Action 梯度的冲突，再
 选择能保护 Action 攻击强度的组合规则，而不是继续增加 K 或直接扫描多个权重。
+
+## 三目标梯度冲突审计
+
+现有 source-only 谱审计已扩展为：在 `feature_view_mode=primary_wrist` 时，除
+combined Feature 外，同时保存以下三条未乘 loss weight 的独立梯度：
+
+```text
+g_action          = d L_action(primary) / d C
+g_primary_feature = d L_feature(primary) / d C
+g_wrist_feature   = d L_feature(wrist) / d C
+
+C shape = [256,3]
+g_feature = (g_primary_feature + g_wrist_feature) / 2
+```
+
+第一轮只在零 Surface Delta、训练 states 0–9 上审计。它直接区分四种原因：
+
+- 腕部 Feature 与 Action 方向是否负相关；
+- 腕部方向是否不冲突、但加权后范数过大；
+- 主视角多实例 Feature 本身是否已与 Action 冲突；
+- 三项目标各自的跨 state 一致性是否不同。
+
+GPU 命令：
+
+```bash
+CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES=<gpu-id> \
+MUJOCO_GL=egl PYOPENGL_PLATFORM=egl TF_CPP_MIN_LOG_LEVEL=2 \
+TOKENIZERS_PARALLELISM=false PYTHONNOUSERSITE=1 PYTHONDONTWRITEBYTECODE=1 \
+PYTHONPATH="$PWD/openvla" \
+/home/xiaomengqi/miniconda3/envs/tex3d-openvla/bin/python \
+openvla/experiments/robot/libero/attack_openvla.py \
+  --pretrained_checkpoint /data/huangsimin/openvla-7b-finetuned-libero-spatial \
+  --unnorm_key libero_spatial_no_noops \
+  --task_suite_name libero_spatial \
+  --object_name akita_black_bowl \
+  --task_id 0 \
+  --num_trials_per_task 1 \
+  --enable_attack True \
+  --texture_parameterization spectral \
+  --spectral_basis_path experiments/spectral_basis/akita_black_bowl_k512.npz \
+  --spectral_basis_count 256 \
+  --feature_objective siglip_patch \
+  --feature_view_mode primary_wrist \
+  --spectral_gradient_audit_enabled True \
+  --spectral_gradient_audit_only True \
+  --spectral_gradient_audit_top_k 128 \
+  --attack_iters 1 \
+  --num_train_init_states 10 \
+  --train_init_state_ids 0-9 \
+  --eval_init_state_ids 10 \
+  --train_frames_per_state 1 \
+  --num_frames_to_attack 10 \
+  --photometric_calib_frames 5 \
+  --live_test_enabled False \
+  --use_wandb False \
+  --local_log_dir experiments/logs/spectral-k256-dual-view-gradient-audit \
+  --run_id_note spectral-k256-dual-view-gradient-audit-states0-9
+```
+
+产物中的 NPZ 会额外包含 `primary_feature_gradients` 与
+`wrist_feature_gradients`。GPU 采集完成后，用
+`scripts/analyze_dual_view_spectral_gradients.py` 在 CPU 上生成范数、两两 cosine、
+当前 `0.1/4.0` 加权比例和跨状态一致性汇总。若零点不存在冲突，再决定是否值得
+扩展到最终 K=256 系数点，避免一开始增加第二套参考点和额外 GPU 工作。

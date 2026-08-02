@@ -540,15 +540,53 @@ class AttackOptimizer:
             frame_losses.action,
             retain_graph=True,
         )
-        feature_gradient: torch.Tensor = objective_gradient(
-            frame_losses.feature,
-            retain_graph=False,
-        )
+        feature_losses_by_view: Optional[
+            dict[SharedTextureViewName, float]
+        ] = None
+        feature_gradients_by_view: Optional[
+            dict[SharedTextureViewName, torch.Tensor]
+        ] = None
+        if frame_losses.feature_by_view is None:
+            feature_gradient: torch.Tensor = objective_gradient(
+                frame_losses.feature,
+                retain_graph=False,
+            )
+        else:
+            if set(frame_losses.feature_by_view) != {"primary", "wrist"}:
+                raise RuntimeError(
+                    "双视角独立梯度要求 primary/wrist Feature loss"
+                )
+            # Action 与 primary Feature 共用主视角 renderer graph；先保留
+            # primary graph，再由 wrist 的最后一次 autograd 完成释放。三条
+            # 梯度均未乘 alpha，便于事后公平比较范数和方向。
+            primary_feature_gradient: torch.Tensor = objective_gradient(
+                frame_losses.feature_by_view["primary"],
+                retain_graph=True,
+            )
+            wrist_feature_gradient: torch.Tensor = objective_gradient(
+                frame_losses.feature_by_view["wrist"],
+                retain_graph=False,
+            )
+            feature_gradient = (
+                primary_feature_gradient + wrist_feature_gradient
+            ) / 2.0
+            feature_losses_by_view = {
+                view_name: float(view_loss.detach().item())
+                for view_name, view_loss in (
+                    frame_losses.feature_by_view.items()
+                )
+            }
+            feature_gradients_by_view = {
+                "primary": primary_feature_gradient,
+                "wrist": wrist_feature_gradient,
+            }
         return ObjectiveParameterGradients(
             action_loss=float(frame_losses.action.detach().item()),
             feature_loss=float(frame_losses.feature.detach().item()),
             action_gradient=action_gradient,
             feature_gradient=feature_gradient,
+            feature_losses_by_view=feature_losses_by_view,
+            feature_gradients_by_view=feature_gradients_by_view,
         )
 
     def optimize(
