@@ -67,6 +67,7 @@ def summarize_dual_view_gradients(
     wrist_feature_gradients: FloatArray,
     action_weight: float,
     feature_weight: float,
+    reference_kind: str = "zero_surface_delta",
 ) -> dict[str, object]:
     """汇总三条 source-only 梯度的方向、范数和跨状态稳定性。
 
@@ -194,7 +195,8 @@ def summarize_dual_view_gradients(
         "weighted_total": weighted_total,
     }
     return {
-        "scope": "source_openvla_only_zero_surface_delta",
+        "scope": "source_openvla_only",
+        "gradient_reference_kind": reference_kind,
         "num_samples": int(expected_shape[0]),
         "num_basis": int(expected_shape[1]),
         "state_ids": state_ids.tolist(),
@@ -267,6 +269,11 @@ def analyze_archive(
             ),
             action_weight=action_weight,
             feature_weight=feature_weight,
+            reference_kind=(
+                str(np.asarray(archive["reference_kind"]).item())
+                if "reference_kind" in archive.files
+                else "zero_surface_delta"
+            ),
         )
 
 

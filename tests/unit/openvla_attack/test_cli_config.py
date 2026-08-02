@@ -70,9 +70,11 @@ def test_draccus_decodes_source_only_spectral_gradient_audit_fields() -> None:
             "spectral_gradient_audit_enabled": True,
             "spectral_gradient_audit_only": True,
             "spectral_gradient_audit_top_k": 128,
+            "spectral_gradient_audit_reference_path": "/tmp/final.pt",
         },
     )
 
     assert config.spectral_gradient_audit_enabled is True
     assert config.spectral_gradient_audit_only is True
     assert config.spectral_gradient_audit_top_k == 128
+    assert config.spectral_gradient_audit_reference_path == "/tmp/final.pt"

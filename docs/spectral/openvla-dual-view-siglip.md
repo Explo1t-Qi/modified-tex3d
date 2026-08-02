@@ -255,3 +255,63 @@ openvla/experiments/robot/libero/attack_openvla.py \
 `scripts/analyze_dual_view_spectral_gradients.py` 在 CPU 上生成范数、两两 cosine、
 当前 `0.1/4.0` 加权比例和跨状态一致性汇总。若零点不存在冲突，再决定是否值得
 扩展到最终 K=256 系数点，避免一开始增加第二套参考点和额外 GPU 工作。
+
+### 零 Surface Delta 审计结果
+
+2026-08-02 已完成 K=256、训练 states 0–9 的审计。10个样本均来自 step 0，
+四组梯度 shape 均为 `[10,256,3]`、数值有限；并且
+`g_feature=(g_primary_feature+g_wrist_feature)/2` 的最大绝对误差只有
+`2.98e-08`。CPU 汇总位于：
+
+```text
+experiments/logs/spectral-k256-dual-view-gradient-audit/
+  dual_view_gradient_diagnosis_states0-9.json
+```
+
+核心结果如下。cosine 比较的是 loss 对谱系数的梯度；由于三项目标都由梯度
+下降最小化，符号关系也等价于比较实际更新方向。
+
+| 指标 | 结果 |
+| --- | ---: |
+| `cos(Action, Primary Feature)` | `0.0166` |
+| `cos(Action, Wrist Feature)` | `-0.0093` |
+| `cos(Primary Feature, Wrist Feature)` | `0.0355` |
+| `cos(Action, Combined Feature)` | `0.0065` |
+| `cos(Weighted Total, Action)` | `0.6153` |
+| 加权 Feature / Action 梯度范数比 | `1.3291` |
+| Wrist / Primary raw Feature 梯度范数比 | `1.6097` |
+| Primary / Wrist 跨状态 pairwise cosine | `0.1649 / 0.0712` |
+
+这组证据否定了最直接的假设：腕部 Feature 并没有在零点与 Action 形成强负向
+冲突，二者近似正交。Feature 加权后确实比 Action 更强，会把总更新方向旋离
+Action；但旧单视角审计的对应范数比约为 `1.4607`，比新双视角的 `1.3291`
+还高，因此“Feature 范数过大”不是本次源攻击从3/10退化到1/10的充分解释，
+不能据此直接改权重。
+
+方向比较提供了更窄的线索：旧 Feature 与新 Primary/Wrist Feature 的 cosine
+分别为 `0.6859 / 0.0443`，旧加权总梯度与新双视角总梯度只有 `0.4994`；同时
+旧/新 Action 梯度 cosine 为 `0.6077`。也就是说，腕部 Feature 显著旋转了
+feature 更新方向，但多实例 renderer 修正也改变了 Action/Primary 梯度，当前
+跨版本结果不能把退化单独归因给腕部视角。
+
+### 最终谱系数参考点审计
+
+零点没有发现直接冲突后，下一步是在已经训练完成的双视角 K=256 系数上重复
+完全相同的10状态审计。该路径只读取本地可信的 Tensor `.pt`，每个样本前恢复
+同一份 `[256,3]` 系数，不更新参数；JSON 会记录绝对路径与 SHA-256，结束后
+renderer 参数仍恢复为零。这样可以判断冲突是否是在优化轨迹后期才出现，无需
+再进行一次5000轮训练。
+
+在上一条 GPU 命令中追加：
+
+```bash
+  --spectral_gradient_audit_reference_path \
+    experiments/logs/spectral-k256-dual-view-source/attack_artifacts/spectral-k256-dual-view-states0-9-EVAL-libero_spatial-2026_08_01-19_39_26/Ep0_Spectral_Coefficients.pt \
+  --local_log_dir experiments/logs/spectral-k256-dual-view-final-gradient-audit \
+  --run_id_note spectral-k256-dual-view-final-gradient-audit-states0-9
+```
+
+其中 `local_log_dir` 和 `run_id_note` 应替换原命令的同名参数，不能重复传入。
+若最终点出现明显负 cosine 或总梯度与 Action 对齐进一步下降，再优先验证
+Action-protecting 的梯度组合；若最终点仍没有冲突，则应先做“修正后多实例
+Primary-only”控制实验，隔离多实例语义变化和腕部视角的影响。

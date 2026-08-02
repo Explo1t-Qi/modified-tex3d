@@ -74,6 +74,7 @@ class AttackTrainingConfig(
     spectral_gradient_audit_enabled: bool
     spectral_gradient_audit_only: bool
     spectral_gradient_audit_top_k: int
+    spectral_gradient_audit_reference_path: Optional[str]
 
 
 class AttackTrainingModel(TrainingModel, Protocol):
@@ -205,6 +206,9 @@ class AttackTrainer:
                 renderer=self._renderer,
                 requested_top_k=(
                     self._cfg.spectral_gradient_audit_top_k
+                ),
+                reference_parameter_path=(
+                    self._cfg.spectral_gradient_audit_reference_path
                 ),
             )
             audit_result: SpectralGradientAuditResult = (

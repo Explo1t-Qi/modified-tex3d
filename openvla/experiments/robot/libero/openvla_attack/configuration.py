@@ -127,6 +127,9 @@ class GenerateConfig:
     spectral_gradient_audit_enabled: bool = False
     spectral_gradient_audit_only: bool = False
     spectral_gradient_audit_top_k: int = 128
+    # 缺省在零 Surface Delta 审计；提供谱系数 .pt 时只在该固定参考点求梯度，
+    # 不更新参数。该字段不能替代迁移评估中的 Active Texture PNG。
+    spectral_gradient_audit_reference_path: Optional[str] = None
     frame_collect_with_policy: bool = False
     collect_grasp_frames: bool = False
     grasp_pre_frames: int = 40

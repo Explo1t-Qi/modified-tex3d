@@ -47,7 +47,11 @@
 - 双视角 source-only 谱审计会额外保存主视角/腕部各自的 Feature loss 与
   `[S,K,3]` 梯度；CPU 汇总入口为
   `scripts/analyze_dual_view_spectral_gradients.py`。第一轮固定零 Surface Delta、
-  K=256、训练 states 0–9，不更新纹理、不读取 OFT。
+  K=256、训练 states 0–9，不更新纹理、不读取 OFT，现已完成：Action 与
+  Primary/Wrist Feature cosine 为 `0.0166/-0.0093`，不存在强负向冲突；加权
+  Feature/Action 范数比 `1.3291` 也低于旧单视角参考的 `1.4607`，不得仅凭
+  零点结果直接改 loss weight。下一步使用保存的最终 `[256,3]` 谱系数做固定
+  参考点审计；命令与判读见 `docs/spectral/openvla-dual-view-siglip.md`。
 - OpenVLA 第一版使用 LIBERO Spatial task 0 / `akita_black_bowl`，从 K=128
   个非恒定低频谱基开始；实现和命令见
   `docs/spectral/openvla-spectral-mvp.md`。

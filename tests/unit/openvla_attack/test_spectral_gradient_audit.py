@@ -206,3 +206,49 @@ def test_auditor_resets_each_frame_skips_invalid_mvp_and_preserves_state_ids(
         renderer.parameter,
         torch.zeros((2, 3)),
     )
+
+
+def test_auditor_replays_fixed_saved_coefficients_and_records_provenance(
+    tmp_path: Path,
+) -> None:
+    renderer = _FakeSpectralRenderer()
+    seen_parameters: list[torch.Tensor] = []
+
+    class ReferenceInspectingProvider:
+        def compute_objective_parameter_gradients(
+            self,
+            frame: TrainingFrame,
+        ) -> ObjectiveParameterGradients:
+            del frame
+            seen_parameters.append(renderer.parameter.detach().clone())
+            gradient = torch.ones((2, 3))
+            return ObjectiveParameterGradients(
+                action_loss=1.0,
+                feature_loss=-1.0,
+                action_gradient=gradient,
+                feature_gradient=-gradient,
+            )
+
+    reference_path = tmp_path / "final_coefficients.pt"
+    torch.save(torch.full((2, 3), 2.0), reference_path)
+    auditor = SpectralGradientAuditor(
+        gradient_provider=ReferenceInspectingProvider(),
+        renderer=renderer,
+        requested_top_k=1,
+        reference_parameter_path=reference_path,
+    )
+
+    result = auditor.run(
+        [_audit_frame(state_id=7, step_index=2, has_mvp=True)]
+    )
+
+    assert len(seen_parameters) == 1
+    torch.testing.assert_close(
+        seen_parameters[0],
+        torch.full((2, 3), 2.0),
+    )
+    assert result.reference_kind == "spectral_coefficients"
+    assert result.reference_path == str(reference_path.resolve())
+    assert result.reference_sha256 is not None
+    # 审计结束后仍恢复零 Surface Delta，避免参考参数泄漏到后续流程。
+    torch.testing.assert_close(renderer.parameter, torch.zeros((2, 3)))

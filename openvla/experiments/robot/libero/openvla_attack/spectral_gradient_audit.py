@@ -26,6 +26,7 @@ TrainingFrame
 from __future__ import annotations
 
 import csv
+import hashlib
 import json
 from dataclasses import dataclass
 from pathlib import Path
@@ -149,6 +150,9 @@ class SpectralGradientAuditResult:
     wrist_feature_losses: Optional[FloatArray] = None
     primary_feature_gradients: Optional[FloatArray] = None
     wrist_feature_gradients: Optional[FloatArray] = None
+    reference_kind: str = "zero_surface_delta"
+    reference_path: Optional[str] = None
+    reference_sha256: Optional[str] = None
 
     @property
     def num_samples(self) -> int:
@@ -203,6 +207,7 @@ class SpectralGradientAuditResult:
             "feature_cumulative_energy": self.feature_cumulative_energy,
             "action_ranked_indices": self.action_ranked_indices,
             "feature_ranked_indices": self.feature_ranked_indices,
+            "reference_kind": np.asarray(self.reference_kind),
         }
         if self.primary_feature_gradients is not None:
             if (
@@ -331,6 +336,11 @@ class SpectralGradientAuditResult:
             )
         else:
             summary["dual_view_diagnostic_available"] = False
+        summary["gradient_reference"] = {
+            "kind": self.reference_kind,
+            "path": self.reference_path,
+            "sha256": self.reference_sha256,
+        }
         path.write_text(
             json.dumps(
                 summary,
@@ -466,6 +476,9 @@ def summarize_spectral_gradients(
     wrist_feature_losses: Optional[Sequence[float]] = None,
     primary_feature_gradients: Optional[torch.Tensor] = None,
     wrist_feature_gradients: Optional[torch.Tensor] = None,
+    reference_kind: str = "zero_surface_delta",
+    reference_path: Optional[str] = None,
+    reference_sha256: Optional[str] = None,
 ) -> SpectralGradientAuditResult:
     """计算逐模态强度、状态一致性和曲面预算归一化排名。
 
@@ -671,6 +684,9 @@ def summarize_spectral_gradients(
         wrist_feature_losses=wrist_feature_loss_array,
         primary_feature_gradients=primary_feature_array,
         wrist_feature_gradients=wrist_feature_array,
+        reference_kind=reference_kind,
+        reference_path=reference_path,
+        reference_sha256=reference_sha256,
     )
 
 
@@ -683,12 +699,18 @@ class SpectralGradientAuditor:
         gradient_provider: ObjectiveGradientProvider,
         renderer: SpectralAuditRenderer,
         requested_top_k: int,
+        reference_parameter_path: Optional[str | Path] = None,
     ) -> None:
         self._gradient_provider: ObjectiveGradientProvider = (
             gradient_provider
         )
         self._renderer: SpectralAuditRenderer = renderer
         self._requested_top_k: int = requested_top_k
+        self._reference_parameter_path: Optional[Path] = (
+            Path(reference_parameter_path).resolve()
+            if reference_parameter_path is not None
+            else None
+        )
 
     def run(
         self,
@@ -721,6 +743,45 @@ class SpectralGradientAuditor:
                 f"{expected_parameter_shape}"
             )
 
+        reference_parameter: Optional[torch.Tensor] = None
+        reference_kind: str = "zero_surface_delta"
+        reference_path: Optional[str] = None
+        reference_sha256: Optional[str] = None
+        if self._reference_parameter_path is not None:
+            if not self._reference_parameter_path.is_file():
+                raise SpectralGradientAuditError(
+                    "谱梯度审计参考参数不存在："
+                    f"{self._reference_parameter_path}"
+                )
+            loaded_reference: object = torch.load(
+                self._reference_parameter_path,
+                map_location=texture_parameter.device,
+                weights_only=True,
+            )
+            if not isinstance(loaded_reference, torch.Tensor):
+                raise SpectralGradientAuditError(
+                    "谱梯度审计参考 .pt 必须直接保存 Tensor"
+                )
+            reference_parameter = loaded_reference.to(
+                device=texture_parameter.device,
+                dtype=texture_parameter.dtype,
+            )
+            if tuple(reference_parameter.shape) != expected_parameter_shape:
+                raise SpectralGradientAuditError(
+                    "谱梯度审计参考参数 shape 不匹配："
+                    f"{tuple(reference_parameter.shape)} != "
+                    f"{expected_parameter_shape}"
+                )
+            if not torch.isfinite(reference_parameter).all():
+                raise SpectralGradientAuditError(
+                    "谱梯度审计参考参数包含 NaN/Inf"
+                )
+            reference_kind = "spectral_coefficients"
+            reference_path = str(self._reference_parameter_path)
+            reference_sha256 = hashlib.sha256(
+                self._reference_parameter_path.read_bytes()
+            ).hexdigest()
+
         state_ids: list[int] = []
         step_indices: list[int] = []
         action_losses: list[float] = []
@@ -735,9 +796,14 @@ class SpectralGradientAuditor:
         try:
             frame: TrainingFrame
             for frame in frames:
-                # 每个样本都从零 Surface Delta 出发，避免前一状态改变后一状态的
-                # 梯度，也使不同 K 的候选池可在同一参考点比较。
-                self._renderer.reset_texture()
+                # 每个样本恢复到完全相同的固定参考点，避免前一状态改变后一状态
+                # 的梯度。默认参考为零 Surface Delta；诊断训练终点时则复制同一
+                # 份保存谱系数，不执行任何优化更新。
+                if reference_parameter is None:
+                    self._renderer.reset_texture()
+                else:
+                    with torch.no_grad():
+                        texture_parameter.copy_(reference_parameter)
                 sample: Optional[ObjectiveParameterGradients] = (
                     self._gradient_provider
                     .compute_objective_parameter_gradients(frame)
@@ -829,4 +895,7 @@ class SpectralGradientAuditor:
                 if has_dual_view_diagnostics
                 else None
             ),
+            reference_kind=reference_kind,
+            reference_path=reference_path,
+            reference_sha256=reference_sha256,
         )

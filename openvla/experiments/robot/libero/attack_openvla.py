@@ -106,6 +106,14 @@ def eval_libero(cfg: GenerateConfig) -> None:
             "spectral_gradient_audit_only=True 要求同时启用 "
             "spectral_gradient_audit_enabled"
         )
+    if (
+        cfg.spectral_gradient_audit_reference_path is not None
+        and not cfg.spectral_gradient_audit_enabled
+    ):
+        raise ValueError(
+            "spectral_gradient_audit_reference_path 要求同时启用 "
+            "spectral_gradient_audit_enabled"
+        )
     if cfg.spectral_gradient_audit_enabled:
         if not cfg.enable_attack:
             raise ValueError("谱基梯度审计要求 enable_attack=True")
