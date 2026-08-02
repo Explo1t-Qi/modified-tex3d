@@ -217,6 +217,12 @@ Feature/Action 系数 cosine 为 `0.662 / 0.228`。当前 Source 加权目标对
 纵切确定为 **source-only dual-view Shared-SigLIP**，而不是继续增加 K 或立即
 进行大规模非连续谱基搜索。
 
+2026-08-02 已完成该双视角候选：主/腕部 Feature loss 均被有效推远，但源
+OpenVLA 只造成1/10失败，弱于单主视角 K=256 的3/10，因此未通过源攻击门槛，
+不进入 OFT rollout。该结果把下一问题进一步收窄为“如何在加入跨视角共享
+Feature 方向时保护源 Action 攻击”，而不是“腕部是否有梯度”或“K是否不足”。
+完整数值见 `docs/spectral/openvla-dual-view-siglip.md`。
+
 ## 结果索引
 
 - 实现、基线和迁移流程：

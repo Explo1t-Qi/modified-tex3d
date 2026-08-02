@@ -40,8 +40,10 @@
   OpenVLA主视角，Feature覆盖主视角和腕部，不引入OFT梯度；真实 GPU smoke、
   正式命令及验收门槛见 `docs/spectral/openvla-dual-view-siglip.md`。
 - 双视角 Shared-SigLIP 的 K=256 单步 GPU smoke 已通过；gradient log 会分别
-  持久化主视角与腕部 Feature loss。下一步直接运行 states 0–9、5000轮源训练，
-  然后把 bake PNG 直接迁移到 OFT states 10–19。
+  持久化主视角与腕部 Feature loss。正式 states 0–9、5000轮源训练已完成：
+  OpenVLA只造成1/10失败，低于旧K=256的3/10；尽管两个视角 Feature loss 都
+  更强，Action loss 反而更差。因此按预设门槛跳过OFT rollout，下一步先审计
+  双视角Feature与源Action的系数梯度冲突。
 - OpenVLA 第一版使用 LIBERO Spatial task 0 / `akita_black_bowl`，从 K=128
   个非恒定低频谱基开始；实现和命令见
   `docs/spectral/openvla-spectral-mvp.md`。
