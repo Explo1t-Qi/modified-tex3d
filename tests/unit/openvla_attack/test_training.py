@@ -32,6 +32,7 @@ from openvla_attack.frame_collection import TrainingFrame
 from openvla_attack.spectral_gradient_audit import (
     ObjectiveParameterGradients,
 )
+from openvla_attack.source_action_response import SourceActionResponsePaths
 from openvla_attack.training import AttackTrainer
 
 
@@ -47,8 +48,11 @@ class FakeTrainingConfig:
     spectral_gradient_audit_only: bool = False
     spectral_gradient_audit_top_k: int = 1
     spectral_gradient_audit_reference_path: Optional[str] = None
+    source_action_response_audit_enabled: bool = False
+    source_action_response_reference_path: Optional[str] = None
     gradient_norm_protection_enabled: bool = False
     feature_gradient_norm_ratio_limit: float = 1.0
+    unnorm_key: Optional[str] = "fake"
 
 
 class FakeArtifactStore:
@@ -357,3 +361,102 @@ def test_trainer_runs_source_only_spectral_audit_and_skips_optimizer(
     summary = json.loads(summary_path.read_text(encoding="utf-8"))
     assert summary["selection_scope"] == "source_openvla_only"
     assert summary["state_ids"] == [23]
+
+
+def test_trainer_runs_action_response_audit_and_skips_optimizer(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    frame = cast(
+        TrainingFrame,
+        {"initial_state_id": 7, "collection_step_index": 0},
+    )
+    events: list[tuple[str, object]] = []
+
+    class FakeFrameCollector:
+        def __init__(self, **kwargs: object) -> None:
+            del kwargs
+
+        def collect(self, **kwargs: object) -> list[TrainingFrame]:
+            del kwargs
+            return [frame]
+
+    class FakeEpisodeRunner:
+        def __init__(self, **kwargs: object) -> None:
+            del kwargs
+
+    class FakeOptimizer:
+        def __init__(self, **kwargs: object) -> None:
+            del kwargs
+
+        def optimize(self, **kwargs: object) -> list[float]:
+            del kwargs
+            raise AssertionError("动作响应诊断不应进入攻击优化")
+
+    class FakeResponseResult:
+        num_samples: int = 1
+        samples = (SimpleNamespace(token_hamming_count=2, action_l2=0.25),)
+
+        def save(
+            self,
+            *,
+            output_directory: Path,
+            task_id: int,
+        ) -> SourceActionResponsePaths:
+            paths = SourceActionResponsePaths(
+                npz_path=output_directory / f"Ep{task_id}_response.npz",
+                csv_path=output_directory / f"Ep{task_id}_response.csv",
+                json_path=output_directory / f"Ep{task_id}_response.json",
+            )
+            for path in (paths.npz_path, paths.csv_path, paths.json_path):
+                path.touch()
+            return paths
+
+    class FakeResponseAuditor:
+        def __init__(self, **kwargs: object) -> None:
+            events.append(("auditor_init", kwargs))
+
+        def run(self, frames: Sequence[TrainingFrame]) -> FakeResponseResult:
+            assert list(frames) == [frame]
+            return FakeResponseResult()
+
+    monkeypatch.setattr(training, "TrainingFrameCollector", FakeFrameCollector)
+    monkeypatch.setattr(training, "LiberoEpisodeRunner", FakeEpisodeRunner)
+    monkeypatch.setattr(training, "AttackOptimizer", FakeOptimizer)
+    monkeypatch.setattr(
+        training,
+        "SourceActionResponseAuditor",
+        FakeResponseAuditor,
+    )
+
+    config = FakeTrainingConfig(
+        source_action_response_audit_enabled=True,
+        source_action_response_reference_path="/tmp/reference.pt",
+    )
+    artifact_store = FakeArtifactStore(tmp_path)
+    trainer = AttackTrainer(
+        cfg=config,
+        model=SimpleNamespace(device=torch.device("cpu")),
+        processor=SimpleNamespace(
+            tokenizer=SimpleNamespace(pad_token_id=0)
+        ),
+        renderer=SimpleNamespace(),
+        artifact_store=artifact_store,
+        runtime_assets=FakeRuntimeAssets(),
+        search_keywords=[["akita", "bowl"]],
+        feature_objective="siglip_patch",
+        feature_view_mode="primary_wrist",
+    )
+
+    loss_history = trainer.train(
+        task=object(),
+        task_description="pick up the bowl",
+        fallback_initial_state=object(),
+        task_id=4,
+        num_iters=5000,
+    )
+
+    assert loss_history == []
+    auditor_arguments = dict(events[0][1])
+    assert auditor_arguments["reference_parameter_path"] == "/tmp/reference.pt"
+    assert (artifact_store.attack_directory / "Ep4_response.json").exists()

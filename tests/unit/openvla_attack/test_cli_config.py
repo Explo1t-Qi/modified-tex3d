@@ -11,6 +11,7 @@ from openvla.experiments.robot.libero.openvla_attack.configuration import (
     resolve_feature_view_mode,
     resolve_texture_parameterization,
     validate_gradient_norm_protection,
+    validate_source_action_response_audit,
 )
 
 
@@ -127,6 +128,56 @@ def test_gradient_norm_protection_rejects_nonpositive_ratio_limit() -> None:
 
     with pytest.raises(ValueError, match="必须为有限正数"):
         validate_gradient_norm_protection(
+            config,
+            texture_parameterization="spectral",
+            feature_objective="siglip_patch",
+            feature_view_mode="primary_wrist",
+        )
+
+
+def test_draccus_decodes_source_action_response_fields() -> None:
+    config = decoding.decode(
+        GenerateConfig,
+        {
+            "source_action_response_audit_enabled": True,
+            "source_action_response_reference_path": "/tmp/final.pt",
+        },
+    )
+
+    assert config.source_action_response_audit_enabled is True
+    assert config.source_action_response_reference_path == "/tmp/final.pt"
+
+
+def test_source_action_response_requires_exact_dual_view_spectral_scope() -> None:
+    config = GenerateConfig(
+        enable_attack=True,
+        source_action_response_audit_enabled=True,
+        source_action_response_reference_path="/tmp/final.pt",
+    )
+    validate_source_action_response_audit(
+        config,
+        texture_parameterization="spectral",
+        feature_objective="siglip_patch",
+        feature_view_mode="primary_wrist",
+    )
+
+    with pytest.raises(ValueError, match="primary_wrist"):
+        validate_source_action_response_audit(
+            config,
+            texture_parameterization="spectral",
+            feature_objective="siglip_patch",
+            feature_view_mode="primary",
+        )
+
+
+def test_source_action_response_rejects_missing_reference() -> None:
+    config = GenerateConfig(
+        enable_attack=True,
+        source_action_response_audit_enabled=True,
+    )
+
+    with pytest.raises(ValueError, match="参考谱系数"):
+        validate_source_action_response_audit(
             config,
             texture_parameterization="spectral",
             feature_objective="siglip_patch",

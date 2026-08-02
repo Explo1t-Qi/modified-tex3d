@@ -135,6 +135,11 @@ class GenerateConfig:
     # 缺省在零 Surface Delta 审计；提供谱系数 .pt 时只在该固定参考点求梯度，
     # 不更新参数。该字段不能替代迁移评估中的 Active Texture PNG。
     spectral_gradient_audit_reference_path: Optional[str] = None
+    # 固定源 OpenVLA 训练状态上的动作响应诊断。该模式加载一份已训练谱系数，
+    # 对比 clean/adv 的 teacher-forced margin、生成 token 与连续 action；只做
+    # 前向并自动跳过纹理优化和 held-out rollout。
+    source_action_response_audit_enabled: bool = False
+    source_action_response_reference_path: Optional[str] = None
     frame_collect_with_policy: bool = False
     collect_grasp_frames: bool = False
     grasp_pre_frames: int = 40
@@ -196,3 +201,43 @@ def validate_gradient_norm_protection(
         raise ValueError("动态梯度范数保护要求 alpha_action 为有限正数")
     if not math.isfinite(cfg.alpha_feature) or cfg.alpha_feature <= 0.0:
         raise ValueError("动态梯度范数保护要求 alpha_feature 为有限正数")
+
+
+def validate_source_action_response_audit(
+    cfg: GenerateConfig,
+    *,
+    texture_parameterization: TextureParameterizationKind,
+    feature_objective: FeatureObjectiveKind,
+    feature_view_mode: FeatureViewModeKind,
+) -> None:
+    """校验源模型动作响应诊断的可比性边界。"""
+    if (
+        cfg.source_action_response_reference_path is not None
+        and not cfg.source_action_response_audit_enabled
+    ):
+        raise ValueError(
+            "source_action_response_reference_path 要求同时启用 "
+            "source_action_response_audit_enabled"
+        )
+    if not cfg.source_action_response_audit_enabled:
+        return
+    if not cfg.enable_attack:
+        raise ValueError("源动作响应诊断要求 enable_attack=True")
+    if texture_parameterization != "spectral":
+        raise ValueError("源动作响应诊断要求 texture_parameterization='spectral'")
+    if feature_objective != "siglip_patch":
+        raise ValueError("源动作响应诊断要求 feature_objective='siglip_patch'")
+    if feature_view_mode != "primary_wrist":
+        raise ValueError(
+            "源动作响应诊断要求 feature_view_mode='primary_wrist'，"
+            "以复现共享纹理的全部主视角实例"
+        )
+    if cfg.source_action_response_reference_path is None:
+        raise ValueError("源动作响应诊断必须提供参考谱系数 .pt")
+    if cfg.load_texture_path is not None:
+        raise ValueError(
+            "源动作响应诊断使用独立 reference path，不能同时设置 "
+            "load_texture_path"
+        )
+    if cfg.spectral_gradient_audit_enabled:
+        raise ValueError("源动作响应诊断不能与谱基梯度审计在同一次运行中启用")

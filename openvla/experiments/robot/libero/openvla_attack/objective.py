@@ -8,7 +8,7 @@ LIBERO 环境或训练循环。
 
 from __future__ import annotations
 
-from typing import Final, TypeAlias
+from typing import Final, NamedTuple, TypeAlias
 
 import torch
 import torch.nn.functional as F
@@ -20,6 +20,93 @@ Tensor: TypeAlias = torch.Tensor
 ACTION_TOKEN_START: Final[int] = 31_744
 ACTION_TOKEN_END: Final[int] = 32_000
 NUM_ACTION_BINS: Final[int] = ACTION_TOKEN_END - ACTION_TOKEN_START
+
+
+class NoActionTokensError(ValueError):
+    """clean labels 中没有可用于 Action loss 的 OpenVLA action token。"""
+
+
+class ActionTokenLogits(NamedTuple):
+    """从 causal LM 输出中抽出的 action 子词表分类数据。
+
+    三个 tensor 的第一维都是有效 action token 数 ``A``。``logits`` shape 为
+    ``[A, 256]``，两个 class tensor shape 为 ``[A]``。当前 LIBERO/OpenVLA
+    通常有 ``A=7``，但这里不硬编码动作维数。
+    """
+
+    logits: Tensor
+    clean_classes: Tensor
+    symmetric_target_classes: Tensor
+
+
+def extract_action_token_logits(
+    logits: Tensor,
+    clean_generated_token_ids: Tensor,
+) -> ActionTokenLogits:
+    """按训练损失的完全相同对齐规则抽取 action logits 与类别。
+
+    该函数把容易出错的“尾部序列对齐 + causal shift + action mask”变为公共
+    interface。攻击损失和动作响应诊断必须共同调用它，避免诊断看见的 logit
+    位置与实际优化位置不同。
+
+    Raises:
+        ValueError: 当前序列中没有有效 action token，或词表不足以覆盖 256 个
+            OpenVLA action token。
+    """
+    if logits.ndim != 3:
+        raise ValueError(
+            "logits 必须为 [batch, sequence, vocab]，收到 "
+            f"{tuple(logits.shape)}"
+        )
+    if clean_generated_token_ids.ndim != 2:
+        raise ValueError(
+            "clean_generated_token_ids 必须为 [batch, sequence]，收到 "
+            f"{tuple(clean_generated_token_ids.shape)}"
+        )
+    if logits.shape[0] != clean_generated_token_ids.shape[0]:
+        raise ValueError("logits 与 labels 的 batch size 不一致")
+    if logits.shape[2] < ACTION_TOKEN_END:
+        raise ValueError(
+            f"模型词表大小 {logits.shape[2]} 小于 {ACTION_TOKEN_END}"
+        )
+
+    aligned_logits: Tensor = logits
+    if aligned_logits.shape[1] > clean_generated_token_ids.shape[1]:
+        aligned_logits = aligned_logits[
+            :, -clean_generated_token_ids.shape[1] :, :
+        ]
+    if aligned_logits.shape[1] != clean_generated_token_ids.shape[1]:
+        raise ValueError(
+            "模型 logits 序列不能短于 clean labels："
+            f"{aligned_logits.shape[1]} != "
+            f"{clean_generated_token_ids.shape[1]}"
+        )
+
+    shifted_logits: Tensor = aligned_logits[:, :-1, :].contiguous()
+    shifted_labels: Tensor = (
+        clean_generated_token_ids[:, 1:].contiguous().to(logits.device)
+    )
+    action_mask: Tensor = (
+        (shifted_labels >= ACTION_TOKEN_START)
+        & (shifted_labels < ACTION_TOKEN_END)
+        & (shifted_labels != -100)
+    )
+    if not bool(action_mask.any().item()):
+        raise NoActionTokensError(
+            "clean labels 中没有有效 OpenVLA action token"
+        )
+
+    # 布尔索引合并 batch/sequence 维：[A, vocab] -> [A, 256]。
+    action_logits: Tensor = shifted_logits[action_mask][
+        :, ACTION_TOKEN_START:ACTION_TOKEN_END
+    ]
+    clean_classes: Tensor = shifted_labels[action_mask] - ACTION_TOKEN_START
+    target_classes: Tensor = NUM_ACTION_BINS - 1 - clean_classes
+    return ActionTokenLogits(
+        logits=action_logits,
+        clean_classes=clean_classes,
+        symmetric_target_classes=target_classes,
+    )
 
 
 def get_attack_loss(logits: Tensor, clean_generated_token_ids: Tensor) -> Tensor:
@@ -45,45 +132,16 @@ def get_attack_loss(logits: Tensor, clean_generated_token_ids: Tensor) -> Tensor
         labels 的第一个位置。当模型输出序列比标签更长时，只保留末尾与标签
         等长的 logits；这与重构前实现保持一致。
     """
-    # 某些生成路径会在标签前保留额外模型输出。此处从尾部对齐 token 序列。
-    aligned_logits: Tensor = logits
-    if aligned_logits.shape[1] > clean_generated_token_ids.shape[1]:
-        aligned_logits = aligned_logits[
-            :, -clean_generated_token_ids.shape[1] :, :
-        ]
-
-    # 自回归模型中位置 t 的 logits 预测位置 t+1 的 token。
-    # causal shift 后：
-    # shifted_logits: [batch_size, sequence_length - 1, vocab_size]
-    # shifted_labels: [batch_size, sequence_length - 1]
-    shifted_logits: Tensor = aligned_logits[:, :-1, :].contiguous()
-    shifted_labels: Tensor = (
-        clean_generated_token_ids[:, 1:].contiguous().to(logits.device)
-    )
-
-    # action_mask: [batch_size, sequence_length - 1]，True 表示该标签是动作 token。
-    action_mask: Tensor = (
-        (shifted_labels >= ACTION_TOKEN_START)
-        & (shifted_labels < ACTION_TOKEN_END)
-        & (shifted_labels != -100)
-    )
-    if not action_mask.any():
+    try:
+        action_tokens: ActionTokenLogits = extract_action_token_logits(
+            logits,
+            clean_generated_token_ids,
+        )
+    except NoActionTokensError:
+        # 保留历史约定：唯一允许静默退化为可反传零值的情况是 labels 中完全
+        # 没有 action token。shape/词表错误属于实现错误，必须继续抛出。
         return torch.tensor(0.0, device=logits.device, requires_grad=True)
-
-    # 布尔索引会合并 batch 与 sequence 两个维度：
-    # valid_logits: [num_action_tokens, vocab_size]
-    # valid_labels: [num_action_tokens]
-    valid_logits: Tensor = shifted_logits[action_mask]
-    valid_labels: Tensor = shifted_labels[action_mask]
-
-    # 只保留 action 子词表，避免普通语言 token 参与这项分类损失。
-    # action_logits: [num_action_tokens, 256]
-    action_logits: Tensor = valid_logits[
-        :, ACTION_TOKEN_START:ACTION_TOKEN_END
-    ]
-    clean_token_classes: Tensor = valid_labels - ACTION_TOKEN_START
-    target_token_classes: Tensor = (
-        NUM_ACTION_BINS - 1 - clean_token_classes
+    return F.cross_entropy(
+        action_tokens.logits,
+        action_tokens.symmetric_target_classes,
     )
-
-    return F.cross_entropy(action_logits, target_token_classes)

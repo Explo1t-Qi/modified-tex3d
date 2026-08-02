@@ -55,6 +55,11 @@ from .spectral_gradient_audit import (
     SpectralGradientAuditResult,
     SpectralGradientAuditor,
 )
+from .source_action_response import (
+    SourceActionResponseAuditor,
+    SourceActionResponsePaths,
+    SourceActionResponseResult,
+)
 
 
 DEFAULT_RENDER_RESOLUTION: Final[int] = 256
@@ -75,6 +80,8 @@ class AttackTrainingConfig(
     spectral_gradient_audit_only: bool
     spectral_gradient_audit_top_k: int
     spectral_gradient_audit_reference_path: Optional[str]
+    source_action_response_audit_enabled: bool
+    source_action_response_reference_path: Optional[str]
 
 
 class AttackTrainingModel(TrainingModel, Protocol):
@@ -196,6 +203,56 @@ class AttackTrainer:
             initial_states=initial_states,
             initial_state_ids=initial_state_ids,
         )
+        if self._cfg.source_action_response_audit_enabled:
+            reference_path: Optional[str] = (
+                self._cfg.source_action_response_reference_path
+            )
+            if reference_path is None:
+                raise ValueError("源动作响应诊断缺少参考谱系数路径")
+            tokenizer: Any = self._processor.tokenizer
+            response_auditor = SourceActionResponseAuditor(
+                model=self._model,
+                renderer=self._renderer,
+                reference_parameter_path=reference_path,
+                unnorm_key=self._cfg.unnorm_key,
+                pad_token_id=getattr(tokenizer, "pad_token_id", None),
+                render_resolution=self._render_resolution,
+            )
+            response_result: SourceActionResponseResult = (
+                response_auditor.run(frame_pool)
+            )
+            response_paths: SourceActionResponsePaths = response_result.save(
+                output_directory=self._artifact_store.attack_directory,
+                task_id=task_id,
+            )
+            mean_hamming: float = float(
+                np.mean(
+                    [
+                        sample.token_hamming_count
+                        for sample in response_result.samples
+                    ]
+                )
+            )
+            mean_action_l2: float = float(
+                np.mean(
+                    [sample.action_l2 for sample in response_result.samples]
+                )
+            )
+            print(
+                "[ACTION-RESPONSE] "
+                f"samples={response_result.num_samples}, "
+                f"mean_token_hamming={mean_hamming:.3f}, "
+                f"mean_action_l2={mean_action_l2:.6f}"
+            )
+            print(
+                "[ACTION-RESPONSE] "
+                f"NPZ={response_paths.npz_path} | "
+                f"CSV={response_paths.csv_path} | "
+                f"JSON={response_paths.json_path}"
+            )
+            # 该诊断的定义就是 fixed-reference forward-only。保存完结果后不得
+            # 意外继续5000轮优化或 held-out rollout。
+            return []
         if self._cfg.spectral_gradient_audit_enabled:
             if self._feature_objective != "siglip_patch":
                 raise ValueError(

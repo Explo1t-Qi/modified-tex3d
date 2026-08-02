@@ -14,7 +14,10 @@ LIBERO_EXPERIMENT_DIR = (
 )
 sys.path.insert(0, str(LIBERO_EXPERIMENT_DIR))
 
-from openvla_attack.objective import get_attack_loss
+from openvla_attack.objective import (
+    extract_action_token_logits,
+    get_attack_loss,
+)
 
 
 def test_attack_loss_targets_the_opposite_action_bins() -> None:
@@ -43,3 +46,26 @@ def test_attack_loss_is_a_differentiable_zero_without_action_tokens() -> None:
     assert loss.item() == 0.0
     assert loss.requires_grad
     loss.backward()
+
+
+def test_action_logit_extraction_reuses_tail_alignment_and_causal_shift() -> None:
+    """诊断读取的位置必须与实际攻击损失完全一致。"""
+    labels = torch.tensor([[5, 31744, 31999]], dtype=torch.long)
+    # 比 labels 多两个前缀位置，公共函数应从尾部对齐后再 causal shift。
+    logits = torch.zeros((1, 5, 32000), dtype=torch.float32)
+    logits[0, 2, 31744:32000] = torch.arange(256)
+    logits[0, 3, 31744:32000] = torch.arange(256) + 1000
+
+    action_tokens = extract_action_token_logits(logits, labels)
+
+    assert action_tokens.logits.shape == (2, 256)
+    torch.testing.assert_close(
+        action_tokens.logits[0],
+        torch.arange(256, dtype=torch.float32),
+    )
+    torch.testing.assert_close(
+        action_tokens.logits[1],
+        torch.arange(256, dtype=torch.float32) + 1000,
+    )
+    assert action_tokens.clean_classes.tolist() == [0, 255]
+    assert action_tokens.symmetric_target_classes.tolist() == [255, 0]

@@ -76,6 +76,12 @@
   OpenVLA action-response 最小诊断：在相同初始观测比较 clean/adv action 向量、
   token Hamming、clean/argmax/对称 target margin 与 CE；在该证据出来前不再
   扫描 rho、K、Feature weight，也不进入 OFT。
+- Source OpenVLA action-response 诊断已实现为 fixed-reference、forward-only
+  模式：复用正式采帧和多实例主视角合成，同时报告 collector/manual-clean
+  一致性、teacher-forced 对称 target CE/margin、greedy token Hamming 与连续
+  action L2/L∞。greedy 路径使用攻击训练的6通道预处理，不代表 rollout 的
+  center-crop 输入；若训练输入动作已变化，先补部署预处理响应，再判断轨迹采样。
+  详细命令和分支标准见双视角文档；GPU 结果出来前不修改 loss。
 - OpenVLA 第一版使用 LIBERO Spatial task 0 / `akita_black_bowl`，从 K=128
   个非恒定低频谱基开始；实现和命令见
   `docs/spectral/openvla-spectral-mvp.md`。

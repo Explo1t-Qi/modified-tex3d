@@ -48,6 +48,7 @@ from openvla_attack.configuration import (
     resolve_feature_view_mode,
     resolve_texture_parameterization,
     validate_gradient_norm_protection,
+    validate_source_action_response_audit,
 )
 from openvla_attack.evaluation import (
     LiberoEpisodeRunner,
@@ -100,6 +101,12 @@ def eval_libero(cfg: GenerateConfig) -> None:
             "feature_objective='siglip_patch'"
         )
     validate_gradient_norm_protection(
+        cfg,
+        texture_parameterization=texture_parameterization,
+        feature_objective=feature_objective,
+        feature_view_mode=feature_view_mode,
+    )
+    validate_source_action_response_audit(
         cfg,
         texture_parameterization=texture_parameterization,
         feature_objective=feature_objective,
@@ -366,9 +373,17 @@ def eval_libero(cfg: GenerateConfig) -> None:
                         state_partition.train_state_ids
                     ),
                 )
-                if cfg.spectral_gradient_audit_only:
+                if (
+                    cfg.spectral_gradient_audit_only
+                    or cfg.source_action_response_audit_enabled
+                ):
+                    diagnostic_name: str = (
+                        "SPECTRAL-AUDIT"
+                        if cfg.spectral_gradient_audit_only
+                        else "ACTION-RESPONSE"
+                    )
                     print(
-                        f"[SPECTRAL-AUDIT] Task {task_id} 审计完成；"
+                        f"[{diagnostic_name}] Task {task_id} 诊断完成；"
                         "跳过纹理训练产物激活与 held-out rollout"
                     )
                     continue
@@ -433,10 +448,18 @@ def eval_libero(cfg: GenerateConfig) -> None:
                     log_file=log_file,
                 )
 
-        if cfg.spectral_gradient_audit_only:
-            print("\n[DONE] Source-only spectral gradient audit completed.")
+        if (
+            cfg.spectral_gradient_audit_only
+            or cfg.source_action_response_audit_enabled
+        ):
+            diagnostic_description: str = (
+                "spectral gradient audit"
+                if cfg.spectral_gradient_audit_only
+                else "action-response audit"
+            )
+            print(f"\n[DONE] Source-only {diagnostic_description} completed.")
             log_file.write(
-                "\nSOURCE-ONLY SPECTRAL GRADIENT AUDIT COMPLETED\n"
+                f"\nSOURCE-ONLY {diagnostic_description.upper()} COMPLETED\n"
             )
         else:
             average_success_rate: float = (

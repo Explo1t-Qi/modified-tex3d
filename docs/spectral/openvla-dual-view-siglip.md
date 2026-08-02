@@ -625,6 +625,64 @@ Feature weight，而应做一次 source OpenVLA action-response 最小诊断，�
 - 当前对称 target CE 与动作是否真正跨过决策边界。
 
 若 CE 下降但 token/action 几乎不变，应把目标改为直接压低 clean/argmax margin
-的 untargeted decision loss；若首步 token/action 已明显改变但 rollout 仍成功，
-瓶颈则是单步静态帧覆盖，需要转向轨迹/关键步骤采样。该诊断只需固定状态前向，
-不再训练5000轮。
+的 untargeted decision loss；若攻击训练输入上的 token/action 已明显改变，还要
+先核查 rollout 使用的 center-crop 策略预处理，再判断是否是单步静态帧覆盖不足。
+该诊断只需固定状态前向，不再训练5000轮。
+
+### 源 OpenVLA 单步动作响应诊断
+
+诊断已经实现为 forward-only 模式。它先按正式训练配置重新采集 states 0–9 的
+初始训练帧，再在 renderer 内加载正式实验保存的 `[256,3]` 谱系数；参考参数
+不会写入 MuJoCo XML，也不会启动优化或 held-out rollout。每个状态并列记录：
+
+- collector/processor 的 clean token 与手工6通道 clean 输入重生成 token 的
+  Hamming distance，用来先排除预处理数据流不一致；
+- clean/adv 贪心 action token 的 Hamming distance，以及同一 codec 解码后的
+  连续 action L2/L∞；
+- 与真实攻击损失共用 causal 对齐函数的对称 target CE；
+- target-clean 和 target-best-other 的 logit/probability margin。其中只有
+  `target_minus_best_other > 0` 才表示对称 target 真正跨过 argmax 决策边界。
+
+详细逐动作维数组保存为 NPZ，逐状态汇总保存为 CSV，关键判读保存为 JSON。
+命令中的 `attack_iters=1` 只是满足普通入口配置；诊断保存后会直接返回，不会
+执行这1轮更新。当前 greedy generation 刻意使用与 Action loss 相同的手工6通道
+输入，以首先隔离“代理损失是否改变其直接决策”；它不冒充 rollout 的
+center-crop 部署输入。若这一层已经明显改变，下一项最小检查才是部署预处理响应。
+
+```bash
+CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES=<gpu-id> \
+MUJOCO_GL=egl PYOPENGL_PLATFORM=egl TF_CPP_MIN_LOG_LEVEL=2 \
+TOKENIZERS_PARALLELISM=false PYTHONNOUSERSITE=1 PYTHONDONTWRITEBYTECODE=1 \
+PYTHONPATH="$PWD/openvla" \
+/home/xiaomengqi/miniconda3/envs/tex3d-openvla/bin/python \
+openvla/experiments/robot/libero/attack_openvla.py \
+  --pretrained_checkpoint /data/huangsimin/openvla-7b-finetuned-libero-spatial \
+  --unnorm_key libero_spatial_no_noops \
+  --task_suite_name libero_spatial \
+  --object_name akita_black_bowl \
+  --task_id 0 \
+  --num_trials_per_task 10 \
+  --enable_attack True \
+  --texture_parameterization spectral \
+  --spectral_basis_path experiments/spectral_basis/akita_black_bowl_k512.npz \
+  --spectral_basis_count 256 \
+  --feature_objective siglip_patch \
+  --feature_view_mode primary_wrist \
+  --source_action_response_audit_enabled True \
+  --source_action_response_reference_path experiments/logs/spectral-k256-gradient-norm-protection-source/attack_artifacts/spectral-k256-gradient-norm-protection-states0-9-EVAL-libero_spatial-2026_08_02-09_57_38/Ep0_Spectral_Coefficients.pt \
+  --attack_iters 1 \
+  --num_train_init_states 10 \
+  --train_init_state_ids 0-9 \
+  --eval_init_state_ids 10-19 \
+  --train_frames_per_state 1 \
+  --photometric_calib_frames 5 \
+  --live_test_enabled False \
+  --use_wandb False \
+  --local_log_dir experiments/logs/source-action-response-diagnostic \
+  --run_id_note spectral-k256-protected-source-action-response
+```
+
+首轮判读顺序固定为：先检查 clean 重生成是否与 collector token 一致；再检查
+adv CE 是否下降以及 target argmax 比例；最后看 token/action 变化。只在这三层
+证据一致后决定是实现 untargeted decision-margin loss，还是补一项部署
+center-crop 响应；只有部署首步动作也明显变化，才转向轨迹关键帧采样。
