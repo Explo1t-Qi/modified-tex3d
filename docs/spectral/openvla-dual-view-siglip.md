@@ -448,3 +448,71 @@ smoke 的 go/no-go：
 smoke 只验证实现，不用其单次 rollout 成败判断攻击效果。通过后再运行与旧
 K=256 双视角完全相同的 states 0–9、5000轮训练；唯一方法变量是开启保护并令
 `rho=1.0`。
+
+### 2026-08-02 范数保护 smoke 结果
+
+真实 OpenVLA 单步流程已通过：
+
+- total/action/Combined Feature loss 为
+  `1.824497 / 21.897314 / -0.091309`，均有限；
+- 加权 Action/Feature 梯度 norm 为 `7.912201 / 8.649742`，原始 ratio
+  `1.093216`，Feature scale `0.914733`；`ratio*scale=1.0000003`，仅有
+  `3.1e-7` 的日志舍入误差；
+- Action–Feature cosine 为 `-0.039141`，与零点审计中的近似正交关系一致；
+- 保护后的合并梯度 norm 为 `10.96837`，所有梯度日志字段有限；
+- Actual Surface Step 与 Max Surface Delta 均为 `0.007843138`，没有越过
+  `2/255` 单步上限或 `128/255` 总预算；
+- 谱系数为有限 float32 `[256,3]`，768个参数均发生非零更新；UV Map 与
+  Active Texture 的 SHA-256 一致，均为 RGB `4096x4096`；相对原纹理的最大
+  PNG 变化为2个 uint8 色阶；
+- 运行结束后 XML 已恢复引用 `texture.png`，未遗留 clean backup。
+
+state 10 的单次 rollout 成功率为100%，但 smoke 的样本数和训练轮数都不能
+用于判断攻击强度。该结果只证明动态范数保护、双视角求导、曲面更新、产物保存
+和运行时资产事务已经形成完整可运行链路。
+
+### 范数保护正式源实验
+
+下一步固定 K=256、`rho=1.0`，使用与未保护双视角实验相同的训练 states 0–9、
+held-out states 10–19 和5000轮配置。唯一方法变量是开启动态范数保护。源门槛
+仍为至少造成3/10失败；低于门槛则不做 OFT rollout。
+
+```bash
+CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES=<gpu-id> \
+MUJOCO_GL=egl PYOPENGL_PLATFORM=egl TF_CPP_MIN_LOG_LEVEL=2 \
+TOKENIZERS_PARALLELISM=false PYTHONNOUSERSITE=1 PYTHONDONTWRITEBYTECODE=1 \
+PYTHONPATH="$PWD/openvla" \
+/home/xiaomengqi/miniconda3/envs/tex3d-openvla/bin/python \
+openvla/experiments/robot/libero/attack_openvla.py \
+  --pretrained_checkpoint /data/huangsimin/openvla-7b-finetuned-libero-spatial \
+  --unnorm_key libero_spatial_no_noops \
+  --task_suite_name libero_spatial \
+  --object_name akita_black_bowl \
+  --task_id 0 \
+  --num_trials_per_task 10 \
+  --enable_attack True \
+  --texture_parameterization spectral \
+  --spectral_basis_path experiments/spectral_basis/akita_black_bowl_k512.npz \
+  --spectral_basis_count 256 \
+  --feature_objective siglip_patch \
+  --feature_view_mode primary_wrist \
+  --alpha_action 0.1 \
+  --alpha_feature 4.0 \
+  --gradient_norm_protection_enabled True \
+  --feature_gradient_norm_ratio_limit 1.0 \
+  --attack_iters 5000 \
+  --num_train_init_states 10 \
+  --train_init_state_ids 0-9 \
+  --eval_init_state_ids 10-19 \
+  --train_frames_per_state 1 \
+  --num_frames_to_attack 10 \
+  --photometric_calib_frames 5 \
+  --live_test_enabled False \
+  --use_wandb False \
+  --local_log_dir experiments/logs/spectral-k256-gradient-norm-protection-source \
+  --run_id_note spectral-k256-gradient-norm-protection-states0-9
+```
+
+正式检查除源成功率外，还要汇总5000轮 `Feature Grad Scale` 的均值、分位数、
+触发比例，以及保护后 `ratio*scale` 是否始终不超过1。这样可以判断保护是仅在
+训练后期介入，还是从零点开始就持续改变优化方向。

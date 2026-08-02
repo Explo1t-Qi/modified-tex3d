@@ -62,6 +62,10 @@
   `rho=1.0`，仅验证 spectral + siglip_patch + primary_wrist。逐轮日志必须保留
   两组加权范数、原始 ratio、Feature scale 和 cosine；GPU smoke 命令及门槛见
   `docs/spectral/openvla-dual-view-siglip.md`。
+- 动态梯度范数保护的单步 OpenVLA GPU smoke 已通过：原始 ratio `1.093216`、
+  scale `0.914733`、缩放后 ratio 为 `1.0000003`；Surface Step 与最大扰动均为
+  `2/255`，谱系数/PNG/运行时资产均正常。下一步只运行一个 K=256、rho=1.0、
+  states 0–9、5000轮正式源候选；held-out states 10–19 至少3/10失败才进入 OFT。
 - OpenVLA 第一版使用 LIBERO Spatial task 0 / `akita_black_bowl`，从 K=128
   个非恒定低频谱基开始；实现和命令见
   `docs/spectral/openvla-spectral-mvp.md`。
