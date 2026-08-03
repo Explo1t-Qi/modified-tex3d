@@ -981,3 +981,40 @@ openvla/experiments/robot/libero/attack_openvla.py \
 该诊断只回答“最终纹理在优化所见的固定观测上是否真正改变动作决策”。如果
 greedy token/action 变化仍小，下一轮优先改进 decision-margin/target objective；
 如果训练观测变化显著但 rollout 仍0/10失败，再转向部署 center-crop 与轨迹覆盖。
+
+### 正式候选 action-response 首轮结果
+
+2026-08-03 对训练 states 0–9 完成首轮 forward-only 诊断。可微 clean→adv 的
+结果表面上并不弱：8/10状态至少改变一个 greedy token，平均改变3.6/7个 token，
+连续 action L2/L∞ 均值为 `0.1767/0.1508`。但对称 target CE 只从
+`21.1260` 降到 `19.8955`，70个动作维中仅1维使 target 成为 argmax，target 与
+best-other 的平均 logit margin 仍为 `-19.5450`。因此现有优化主要把动作推向
+其他类别，并没有真正达到设定的强对称 target。
+
+不过该结果同时暴露了新的预处理稳定性门槛：真实 processor 与可微 clean 仅
+6/10条动作序列完全一致，state 2/5/6/8 分别相差6/3/5/4个 token；平均 pixel
+values MAE 只有 `0.003104`、L∞ 为 `0.09375`。collector 与可微 clean 仍是
+10/10一致，说明训练内部可复现，但不能据此证明与 rollout processor 一致。
+state 6 的可微 adv 序列甚至与真实 processor clean 序列完全相同，进一步说明
+微小 resize 数值差异可能与纹理效应处于同一量级。adversarial teacher-forced
+首 token 与 greedy 也只有9/10一致，失配发生在 state 9。
+
+因此不能仅凭本轮结果直接选择“改 target loss”或“补轨迹覆盖”。state 0 的单点
+7/7 smoke 不足以代表多状态稳定性，后续 processor-equivalent 门槛必须覆盖全部
+训练 smoke states。当前代码已扩展诊断但不改变训练行为：为可微 clean、adv、
+真实 processor 各保存 `[S,7]` 的 teacher-forced top1−top2 margin，并记录每个
+processor 失配状态的第一次 token 分叉位置及两侧 margin。共享前缀位置能直接
+区分“接近 tie 被插值误差翻转”与“虽有大 margin 仍被预处理差异显著改变”。
+
+CPU 回归为112 passed、1 skipped。使用相同最终系数重跑上一节命令，仅将输出
+目录和 note 改为：
+
+```text
+--local_log_dir experiments/logs/processor-equivalent-k256-margin-audit
+--run_id_note processor-equivalent-k256-states0-9-margin-audit
+```
+
+若第一次分叉处两侧 margin 普遍很小，下一步实现 PIL/uint8 forward 与当前 tensor
+gradient 结合的 BPDA/STE 预处理，再做多状态等价 smoke；若 margin 较大，则说明
+当前 tensor bicubic 近似本身不可接受，需要优先替换 forward kernel。只有部署
+输入门槛重新通过后，才根据 clean→adv 决策 margin 选择 target loss 或轨迹诊断。

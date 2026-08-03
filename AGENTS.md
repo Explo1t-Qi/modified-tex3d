@@ -98,8 +98,11 @@
   更新，Surface Step/Delta均为2/255，PNG、rollout和资产事务正常。K=256、
   rho=1.0、states 0–9、5000轮 processor-equivalent 正式源候选也已完成，但
   held-out states 10–19 为0/10攻击成功；训练数值、保护、预算、bake和资产事务
-  均正常。按门槛不进入OFT，下一步只对最终系数运行训练states 0–9的修正后
-  action-response，区分决策目标不足与部署/轨迹覆盖问题。
+  均正常。按门槛不进入OFT。最终系数的训练states 0–9 action-response 首轮显示
+  可微clean→adv平均改变3.6/7 token，但真实processor与可微clean只有6/10序列
+  完全一致，不能直接归因target或轨迹。诊断已补充三条路径的top1−top2 margin
+  和第一次processor分叉信息；下一步用相同系数短重跑，再决定是否采用
+  PIL/uint8 forward + tensor-gradient 的BPDA/STE。
 - OpenVLA 第一版使用 LIBERO Spatial task 0 / `akita_black_bowl`，从 K=128
   个非恒定低频谱基开始；实现和命令见
   `docs/spectral/openvla-spectral-mvp.md`。

@@ -41,6 +41,7 @@ def test_response_sample_distinguishes_ce_improvement_from_decision_crossing() -
     sample = compute_action_response_sample(
         clean_action_logits=clean_logits,
         adversarial_action_logits=adversarial_logits,
+        processor_action_logits=clean_logits,
         clean_classes=clean_classes,
         symmetric_target_classes=target_classes,
         clean_generated_token_ids=torch.tensor([31754, 31764]),
@@ -58,6 +59,9 @@ def test_response_sample_distinguishes_ce_improvement_from_decision_crossing() -
     assert sample.token_hamming_count == 1
     assert sample.action_l2 == 1.0
     assert sample.action_linf == 1.0
+    assert sample.clean_decision_margin.tolist() == [7.0, 6.0]
+    assert sample.adversarial_decision_margin.tolist() == [1.0, 3.0]
+    assert sample.processor_decision_margin.tolist() == [7.0, 6.0]
 
 
 def test_response_result_saves_machine_readable_arrays_and_summary(
@@ -68,6 +72,7 @@ def test_response_result_saves_machine_readable_arrays_and_summary(
     sample = compute_action_response_sample(
         clean_action_logits=torch.zeros_like(logits),
         adversarial_action_logits=logits,
+        processor_action_logits=torch.zeros_like(logits),
         clean_classes=torch.tensor([0]),
         symmetric_target_classes=torch.tensor([255]),
         clean_generated_token_ids=torch.tensor([31744]),
@@ -118,3 +123,48 @@ def test_response_result_saves_machine_readable_arrays_and_summary(
             1,
             1,
         )
+        assert archive["processor_decision_margin"].shape == (1, 1)
+
+
+def test_summary_reports_processor_first_divergence_margin(
+    tmp_path: Path,
+) -> None:
+    """processor 序列分叉时应保存共享前缀位置的两侧决策 margin。"""
+    clean_logits = torch.zeros((2, 256), dtype=torch.float32)
+    processor_logits = torch.zeros((2, 256), dtype=torch.float32)
+    clean_logits[0, 10] = 4.0
+    clean_logits[1, 20] = 3.0
+    clean_logits[1, 21] = 2.5
+    processor_logits[0, 10] = 4.0
+    processor_logits[1, 21] = 2.0
+    processor_logits[1, 20] = 1.75
+    sample = compute_action_response_sample(
+        clean_action_logits=clean_logits,
+        adversarial_action_logits=clean_logits,
+        processor_action_logits=processor_logits,
+        clean_classes=torch.tensor([10, 20]),
+        symmetric_target_classes=torch.tensor([245, 235]),
+        clean_generated_token_ids=torch.tensor([31754, 31764]),
+        adversarial_generated_token_ids=torch.tensor([31754, 31764]),
+        processor_generated_token_ids=torch.tensor([31754, 31765]),
+        clean_actions=np.array([0.0, 0.0]),
+        adversarial_actions=np.array([0.0, 0.0]),
+        processor_pixel_mae=0.001,
+        processor_pixel_linf=0.01,
+    )
+    result = SourceActionResponseResult(
+        state_ids=np.array([2], dtype=np.int64),
+        step_indices=np.array([0], dtype=np.int64),
+        samples=(sample,),
+        reference_path="/tmp/reference.pt",
+        reference_sha256="abc123",
+    )
+
+    paths = result.save(output_directory=tmp_path, task_id=0)
+    summary = json.loads(paths.json_path.read_text(encoding="utf-8"))
+    stability = summary["processor_equivalence"]["first_divergence"]
+    assert stability["num_mismatched_samples"] == 1
+    assert stability["mean_token_index"] == 1.0
+    assert stability["clean_margin_mean"] == 0.5
+    assert stability["processor_margin_mean"] == 0.25
+    assert stability["teacher_matches_generated_fraction"] == 1.0

@@ -104,6 +104,10 @@ class ActionResponseSample:
     symmetric_target_classes: IntArray
     clean_teacher_argmax_classes: IntArray
     adversarial_teacher_argmax_classes: IntArray
+    processor_teacher_argmax_classes: IntArray
+    clean_decision_margin: FloatArray
+    adversarial_decision_margin: FloatArray
+    processor_decision_margin: FloatArray
     clean_target_ce: float
     adversarial_target_ce: float
     clean_target_minus_clean_logit: FloatArray
@@ -183,6 +187,16 @@ def _best_other_values(
     return masked_values.amax(dim=1)
 
 
+def _top1_minus_top2(values: torch.Tensor) -> torch.Tensor:
+    """返回每行 top1−top2 logit margin，shape ``[A]``。"""
+    if values.ndim != 2 or values.shape[1] < 2:
+        raise SourceActionResponseError(
+            f"决策 margin 要求 [A,num_classes>=2]，收到 {tuple(values.shape)}"
+        )
+    top_two: torch.Tensor = values.topk(k=2, dim=1).values
+    return top_two[:, 0] - top_two[:, 1]
+
+
 def _as_float64_numpy(tensor: torch.Tensor) -> FloatArray:
     return tensor.detach().to(torch.float64).cpu().numpy()
 
@@ -195,6 +209,7 @@ def compute_action_response_sample(
     *,
     clean_action_logits: torch.Tensor,
     adversarial_action_logits: torch.Tensor,
+    processor_action_logits: torch.Tensor,
     clean_classes: torch.Tensor,
     symmetric_target_classes: torch.Tensor,
     clean_generated_token_ids: torch.Tensor,
@@ -228,6 +243,11 @@ def compute_action_response_sample(
             "adversarial action logits shape 不匹配："
             f"{tuple(adversarial_action_logits.shape)} != {expected_shape}"
         )
+    if tuple(processor_action_logits.shape) != expected_shape:
+        raise SourceActionResponseError(
+            "processor action logits shape 不匹配："
+            f"{tuple(processor_action_logits.shape)} != {expected_shape}"
+        )
     action_dim: int = expected_shape[0]
     for name, tensor in (
         ("symmetric_target_classes", symmetric_target_classes),
@@ -257,6 +277,7 @@ def compute_action_response_sample(
     ) -> tuple[
         float,
         IntArray,
+        FloatArray,
         FloatArray,
         FloatArray,
         FloatArray,
@@ -303,10 +324,12 @@ def compute_action_response_sample(
             _as_float64_numpy(
                 target_probabilities - best_other_probabilities
             ),
+            _as_float64_numpy(_top1_minus_top2(logits_float)),
         )
 
     clean_metrics = teacher_metrics(clean_action_logits)
     adversarial_metrics = teacher_metrics(adversarial_action_logits)
+    processor_metrics = teacher_metrics(processor_action_logits)
     return ActionResponseSample(
         clean_generated_token_ids=_as_int64_numpy(
             clean_generated_token_ids
@@ -325,6 +348,10 @@ def compute_action_response_sample(
         ),
         clean_teacher_argmax_classes=clean_metrics[1],
         adversarial_teacher_argmax_classes=adversarial_metrics[1],
+        processor_teacher_argmax_classes=processor_metrics[1],
+        clean_decision_margin=clean_metrics[6],
+        adversarial_decision_margin=adversarial_metrics[6],
+        processor_decision_margin=processor_metrics[6],
         clean_target_ce=clean_metrics[0],
         adversarial_target_ce=adversarial_metrics[0],
         clean_target_minus_clean_logit=clean_metrics[2],
@@ -435,6 +462,36 @@ class SourceActionResponseResult:
         adversarial_teacher_argmax: IntArray = self._stack(
             "adversarial_teacher_argmax_classes"
         ).astype(np.int64)
+        processor_teacher_argmax: IntArray = self._stack(
+            "processor_teacher_argmax_classes"
+        ).astype(np.int64)
+        first_divergence_indices: list[int] = []
+        first_divergence_clean_margins: list[float] = []
+        first_divergence_processor_margins: list[float] = []
+        first_divergence_teacher_matches: list[bool] = []
+        sample: ActionResponseSample
+        for sample in self.samples:
+            divergent_indices: NDArray[np.int64] = np.flatnonzero(
+                sample.processor_generated_token_ids
+                != sample.clean_generated_token_ids
+            ).astype(np.int64)
+            if divergent_indices.size == 0:
+                continue
+            token_index: int = int(divergent_indices[0])
+            first_divergence_indices.append(token_index)
+            first_divergence_clean_margins.append(
+                float(sample.clean_decision_margin[token_index])
+            )
+            first_divergence_processor_margins.append(
+                float(sample.processor_decision_margin[token_index])
+            )
+            first_divergence_teacher_matches.append(
+                int(sample.processor_teacher_argmax_classes[token_index])
+                == int(
+                    sample.processor_generated_token_ids[token_index]
+                    - ACTION_TOKEN_START
+                )
+            )
         target_token_ids: IntArray = (
             self._stack("symmetric_target_classes").astype(np.int64)
             + ACTION_TOKEN_START
@@ -462,6 +519,31 @@ class SourceActionResponseResult:
                 "exact_token_match_fraction": float(
                     np.mean(processor_equivalence_hamming == 0)
                 ),
+                "first_divergence": {
+                    "num_mismatched_samples": len(
+                        first_divergence_indices
+                    ),
+                    "mean_token_index": (
+                        float(np.mean(first_divergence_indices))
+                        if first_divergence_indices
+                        else None
+                    ),
+                    "clean_margin_mean": (
+                        float(np.mean(first_divergence_clean_margins))
+                        if first_divergence_clean_margins
+                        else None
+                    ),
+                    "processor_margin_mean": (
+                        float(np.mean(first_divergence_processor_margins))
+                        if first_divergence_processor_margins
+                        else None
+                    ),
+                    "teacher_matches_generated_fraction": (
+                        float(np.mean(first_divergence_teacher_matches))
+                        if first_divergence_teacher_matches
+                        else None
+                    ),
+                },
             },
             "teacher_forced_first_token_consistency": {
                 "clean_match_fraction": float(
@@ -475,6 +557,17 @@ class SourceActionResponseResult:
                         adversarial_teacher_argmax[:, 0]
                         == adversarial_generated_ids[:, 0]
                         - ACTION_TOKEN_START
+                    )
+                ),
+                "processor_match_fraction": float(
+                    np.mean(
+                        processor_teacher_argmax[:, 0]
+                        == (
+                            self._stack("processor_generated_token_ids")[
+                                :, 0
+                            ]
+                            - ACTION_TOKEN_START
+                        )
                     )
                 ),
             },
@@ -537,6 +630,10 @@ class SourceActionResponseResult:
             "symmetric_target_classes",
             "clean_teacher_argmax_classes",
             "adversarial_teacher_argmax_classes",
+            "processor_teacher_argmax_classes",
+            "clean_decision_margin",
+            "adversarial_decision_margin",
+            "processor_decision_margin",
             "clean_target_minus_clean_logit",
             "adversarial_target_minus_clean_logit",
             "clean_target_minus_best_other_logit",
@@ -611,6 +708,9 @@ class SourceActionResponseResult:
                     "processor_equivalence_hamming_count",
                     "processor_pixel_mae",
                     "processor_pixel_linf",
+                    "processor_first_divergence_index",
+                    "processor_first_divergence_clean_margin",
+                    "processor_first_divergence_processor_margin",
                     "action_l2",
                     "action_linf",
                     "clean_symmetric_target_ce",
@@ -623,6 +723,33 @@ class SourceActionResponseResult:
                 self.step_indices,
                 self.samples,
             ):
+                divergent_indices: NDArray[np.int64] = np.flatnonzero(
+                    sample.processor_generated_token_ids
+                    != sample.clean_generated_token_ids
+                ).astype(np.int64)
+                first_divergence_index: int = (
+                    int(divergent_indices[0])
+                    if divergent_indices.size > 0
+                    else -1
+                )
+                first_divergence_clean_margin: Optional[float] = (
+                    float(
+                        sample.clean_decision_margin[
+                            first_divergence_index
+                        ]
+                    )
+                    if first_divergence_index >= 0
+                    else None
+                )
+                first_divergence_processor_margin: Optional[float] = (
+                    float(
+                        sample.processor_decision_margin[
+                            first_divergence_index
+                        ]
+                    )
+                    if first_divergence_index >= 0
+                    else None
+                )
                 writer.writerow(
                     (
                         int(state_id),
@@ -632,6 +759,9 @@ class SourceActionResponseResult:
                         sample.processor_equivalence_hamming_count,
                         sample.processor_pixel_mae,
                         sample.processor_pixel_linf,
+                        first_divergence_index,
+                        first_divergence_clean_margin,
+                        first_divergence_processor_margin,
                         sample.action_l2,
                         sample.action_linf,
                         sample.clean_target_ce,
@@ -740,6 +870,12 @@ class SourceActionResponseAuditor:
                 pixel_values=adversarial_pixel_values,
                 output_hidden_states=False,
             )
+            processor_outputs: Any = self._model(
+                input_ids=clean_labels,
+                attention_mask=torch.ones_like(clean_labels),
+                pixel_values=processor_pixel_values,
+                output_hidden_states=False,
+            )
             clean_generated_ids: torch.Tensor = self._generate(
                 frame=frame,
                 pixel_values=clean_pixel_values,
@@ -764,11 +900,22 @@ class SourceActionResponseAuditor:
             adversarial_outputs.logits,
             clean_labels,
         )
+        processor_teacher: ActionTokenLogits = extract_action_token_logits(
+            processor_outputs.logits,
+            clean_labels,
+        )
         if not torch.equal(
             clean_teacher.clean_classes,
             adversarial_teacher.clean_classes,
         ):
             raise SourceActionResponseError("clean/adv teacher labels 不一致")
+        if not torch.equal(
+            clean_teacher.clean_classes,
+            processor_teacher.clean_classes,
+        ):
+            raise SourceActionResponseError(
+                "clean/processor teacher labels 不一致"
+            )
         if clean_teacher.logits.shape[0] != action_dim:
             raise SourceActionResponseError(
                 "teacher-forced action token 数与 checkpoint action_dim 不一致："
@@ -810,6 +957,7 @@ class SourceActionResponseAuditor:
         return compute_action_response_sample(
             clean_action_logits=clean_teacher.logits,
             adversarial_action_logits=adversarial_teacher.logits,
+            processor_action_logits=processor_teacher.logits,
             clean_classes=clean_teacher.clean_classes,
             symmetric_target_classes=(
                 clean_teacher.symmetric_target_classes
