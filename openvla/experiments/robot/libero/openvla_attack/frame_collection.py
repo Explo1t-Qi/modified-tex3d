@@ -1,8 +1,8 @@
 """OpenVLA 对抗纹理优化所需的训练帧采集。
 
 训练帧不是一张普通 RGB 图像：它同时保存 MuJoCo 场景姿态、去除目标物体后的
-背景、clean action token、连续动作、视觉 hidden state 和双视觉编码器的归一化
-参数。原实现把这些数据的构造、环境推进与后续优化循环放在同一个函数中。
+背景、clean action token、连续动作、视觉 hidden state 和真实 processor 对照
+输入。原实现把这些数据的构造、环境推进与后续优化循环放在同一个函数中。
 
 本模块通过 :class:`TrainingFrameCollector` 集中采集实现。调用方只接收结构明确
 的 :class:`TrainingFrame` 列表，不需要了解等待动作、抓取窗口、光照校准或
@@ -18,7 +18,6 @@ from typing import Any, Optional, Protocol, Sequence, TypedDict
 
 import numpy as np
 import torch
-import torch.nn.functional as F
 from numpy.typing import NDArray
 from PIL import Image
 from torch.cuda.amp import autocast
@@ -51,6 +50,7 @@ from .action_codec import (
 )
 from .compositing import MultiInstanceViewFrame, TextureRenderInstance
 from .configuration import FeatureObjectiveKind, FeatureViewModeKind
+from .image_preprocessing import DifferentiableOpenVLAImageProcessor
 from .scene import (
     SearchKeywords,
     TargetBodyPose,
@@ -105,6 +105,7 @@ class TrainingProcessor(Protocol):
     """训练帧采集所需的 Hugging Face processor interface。"""
 
     tokenizer: Any
+    image_processor: Any
 
     def __call__(self, prompt: str, *, images: Image.Image) -> Any:
         """返回支持 mapping 与 ``.to(device)`` 的模型输入容器。"""
@@ -144,7 +145,9 @@ class TrainingFrame(TypedDict):
       ``None``。
     - ``initial_state_id`` / ``collection_step_index``：该帧对应的原始 LIBERO
       state ID 与状态内采集步，用于跨状态梯度审计，不能用局部列表下标替代。
-    - 四个 mean/std：float32 ``[1, 3, 1, 1]``。
+    - ``processor_pixel_values``：真实 checkpoint processor 在同一 clean RGB
+      上产生的 bfloat16 fused 输入，``[1, 6, model_height, model_width]``；仅作
+      一致性诊断，不进入攻击反向传播。
 
     NumPy action 字段 shape 均为 ``[action_dim]``。只有策略驱动采帧时
     ``executed_action`` 才非 ``None``。
@@ -168,11 +171,7 @@ class TrainingFrame(TypedDict):
     shared_texture_views: tuple[MultiInstanceViewFrame, ...]
     initial_state_id: int
     collection_step_index: int
-    siglip_mean: torch.Tensor
-    siglip_std: torch.Tensor
-    dino_mean: torch.Tensor
-    dino_std: torch.Tensor
-    model_input_size: int
+    processor_pixel_values: torch.Tensor
 
 
 class _LiberoObservation(TypedDict, total=False):
@@ -211,6 +210,7 @@ class TrainingFrameCollector:
         model: TrainingModel,
         processor: TrainingProcessor,
         renderer: LightingCalibrator,
+        image_preprocessor: DifferentiableOpenVLAImageProcessor,
         search_keywords: SearchKeywords,
         feature_objective: FeatureObjectiveKind,
         feature_view_mode: FeatureViewModeKind = "primary",
@@ -220,6 +220,9 @@ class TrainingFrameCollector:
         self._model: TrainingModel = model
         self._processor: TrainingProcessor = processor
         self._renderer: LightingCalibrator = renderer
+        self._image_preprocessor: DifferentiableOpenVLAImageProcessor = (
+            image_preprocessor
+        )
         self._search_keywords: SearchKeywords = search_keywords
         self._feature_objective: FeatureObjectiveKind = feature_objective
         self._feature_view_mode: FeatureViewModeKind = feature_view_mode
@@ -231,27 +234,16 @@ class TrainingFrameCollector:
                 "primary_wrist 只支持 feature_objective='siglip_patch'"
             )
         self._render_resolution: int = render_resolution
-        self._model_input_size: int = get_image_resize_size(cfg)
-
-        device: torch.device = model.device
-        # OpenVLA 当前拼接 SigLIP 与 DINOv2 两路视觉输入。四个 tensor 在所有帧
-        # 间共享，只读使用；shape 均为 [1, 3, 1, 1]。
-        self._siglip_mean: torch.Tensor = torch.tensor(
-            [0.5, 0.5, 0.5],
-            device=device,
-        ).view(1, 3, 1, 1)
-        self._siglip_std: torch.Tensor = torch.tensor(
-            [0.5, 0.5, 0.5],
-            device=device,
-        ).view(1, 3, 1, 1)
-        self._dino_mean: torch.Tensor = torch.tensor(
-            [0.485, 0.456, 0.406],
-            device=device,
-        ).view(1, 3, 1, 1)
-        self._dino_std: torch.Tensor = torch.tensor(
-            [0.229, 0.224, 0.225],
-            device=device,
-        ).view(1, 3, 1, 1)
+        expected_input_size: int = get_image_resize_size(cfg)
+        if self._image_preprocessor.output_size != (
+            expected_input_size,
+            expected_input_size,
+        ):
+            raise ValueError(
+                "checkpoint processor 输出尺寸与 OpenVLA policy 配置不一致："
+                f"{self._image_preprocessor.output_size} != "
+                f"{(expected_input_size, expected_input_size)}"
+            )
 
     def _build_frame(
         self,
@@ -399,21 +391,28 @@ class TrainingFrameCollector:
             )
             calibration_count += 1
 
-        resized_image: Image.Image = Image.fromarray(camera_image).resize(
-            (self._model_input_size, self._model_input_size)
-        )
+        # processor 和可微实现都从同一份原始 uint8 RGB 开始，各自负责 resize。
+        # 保存 processor 输出用于 smoke 比较；训练 clean label 与梯度则统一使用
+        # image_preprocessor，确保零纹理时 label/logits 属于同一视觉输入。
+        clean_image: Image.Image = Image.fromarray(camera_image)
         prompt: str = (
             "In: What action should the robot take to "
             f"{task_description.lower()}?\nOut:"
         )
         clean_inputs: Any = self._processor(
             prompt,
-            images=resized_image,
+            images=clean_image,
         ).to(self._model.device)
-        if "pixel_values" in clean_inputs:
-            clean_inputs["pixel_values"] = clean_inputs["pixel_values"].to(
-                torch.bfloat16
-            )
+        if "pixel_values" not in clean_inputs:
+            raise RuntimeError("OpenVLA processor 输出缺少 pixel_values")
+        processor_pixel_values: torch.Tensor = clean_inputs[
+            "pixel_values"
+        ].to(torch.bfloat16).detach()
+        clean_pixel_values: torch.Tensor = (
+            self._image_preprocessor.build_fused_pixel_values(background)
+            .to(torch.bfloat16)
+        )
+        clean_inputs["pixel_values"] = clean_pixel_values
 
         with torch.no_grad():
             with autocast(dtype=torch.bfloat16):
@@ -425,23 +424,6 @@ class TrainingFrameCollector:
                     do_sample=False,
                     pad_token_id=self._processor.tokenizer.pad_token_id,
                 )  # int64 [1, prompt_sequence_length + action_dim]
-                clean_resized: torch.Tensor = F.interpolate(
-                    background,
-                    size=(self._model_input_size, self._model_input_size),
-                    mode="bilinear",
-                    align_corners=False,
-                )
-                # clean_pixel_values: bfloat16 [1, 6, H, W]。保留历史
-                # SigLIP→DINOv2 拼接顺序，只用于复现 action/last_hidden
-                # 基线；共享 SigLIP feature 由下方独立分支正确提取。
-                clean_pixel_values: torch.Tensor = torch.cat(
-                    (
-                        (clean_resized - self._siglip_mean)
-                        / self._siglip_std,
-                        (clean_resized - self._dino_mean) / self._dino_std,
-                    ),
-                    dim=1,
-                ).to(torch.bfloat16)
                 clean_forward: Any = self._model(
                     input_ids=clean_output_ids,
                     attention_mask=torch.ones_like(clean_output_ids),
@@ -457,9 +439,10 @@ class TrainingFrameCollector:
                     # 共享目标直接进入 checkpoint 配置标识的 SigLIP 分支，不走
                     # 历史 6 通道手工拼接，避免 DINO/SigLIP 顺序错误。
                     normalized_clean_siglip: torch.Tensor = (
-                        (clean_resized - self._siglip_mean)
-                        / self._siglip_std
-                    ).to(torch.bfloat16)
+                        self._image_preprocessor.build_siglip_pixel_values(
+                            background
+                        ).to(torch.bfloat16)
+                    )
                     clean_siglip_features = (
                         extract_siglip_patch_features(
                             self._model,
@@ -471,19 +454,11 @@ class TrainingFrameCollector:
                             raise RuntimeError(
                                 "双视角采集缺少 wrist_background"
                             )
-                        wrist_clean_resized: torch.Tensor = F.interpolate(
-                            wrist_background,
-                            size=(
-                                self._model_input_size,
-                                self._model_input_size,
-                            ),
-                            mode="bilinear",
-                            align_corners=False,
-                        )
                         normalized_wrist_siglip: torch.Tensor = (
-                            (wrist_clean_resized - self._siglip_mean)
-                            / self._siglip_std
-                        ).to(torch.bfloat16)
+                            self._image_preprocessor
+                            .build_siglip_pixel_values(wrist_background)
+                            .to(torch.bfloat16)
+                        )
                         wrist_clean_siglip_features = (
                             extract_siglip_patch_features(
                                 self._model,
@@ -566,11 +541,7 @@ class TrainingFrameCollector:
             "shared_texture_views": shared_texture_views,
             "initial_state_id": initial_state_id,
             "collection_step_index": step_index,
-            "siglip_mean": self._siglip_mean,
-            "siglip_std": self._siglip_std,
-            "dino_mean": self._dino_mean,
-            "dino_std": self._dino_std,
-            "model_input_size": self._model_input_size,
+            "processor_pixel_values": processor_pixel_values,
         }
         return frame, calibration_count
 

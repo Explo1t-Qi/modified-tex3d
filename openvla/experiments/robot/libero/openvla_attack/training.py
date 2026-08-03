@@ -42,6 +42,7 @@ from .frame_collection import (
     TrainingModel,
     TrainingProcessor,
 )
+from .image_preprocessing import DifferentiableOpenVLAImageProcessor
 from .optimization import (
     AttackOptimizer,
     OptimizationConfig,
@@ -119,6 +120,9 @@ class AttackTrainer:
         feature_objective: FeatureObjectiveKind,
         feature_view_mode: FeatureViewModeKind = "primary",
         render_resolution: int = DEFAULT_RENDER_RESOLUTION,
+        image_preprocessor: Optional[
+            DifferentiableOpenVLAImageProcessor
+        ] = None,
     ) -> None:
         self._cfg: AttackTrainingConfig = cfg
         self._model: AttackTrainingModel = model
@@ -130,11 +134,20 @@ class AttackTrainer:
         self._feature_objective: FeatureObjectiveKind = feature_objective
         self._feature_view_mode: FeatureViewModeKind = feature_view_mode
         self._render_resolution: int = render_resolution
+        self._image_preprocessor: DifferentiableOpenVLAImageProcessor = (
+            image_preprocessor
+            if image_preprocessor is not None
+            else DifferentiableOpenVLAImageProcessor.from_checkpoint(
+                model=model,
+                processor=processor,
+            )
+        )
 
         self._optimizer: AttackOptimizer = AttackOptimizer(
             cfg=cfg,
             model=model,
             renderer=renderer,
+            image_preprocessor=self._image_preprocessor,
             feature_objective=feature_objective,
             feature_view_mode=feature_view_mode,
             render_resolution=render_resolution,
@@ -191,6 +204,7 @@ class AttackTrainer:
             model=self._model,
             processor=self._processor,
             renderer=self._renderer,
+            image_preprocessor=self._image_preprocessor,
             search_keywords=self._search_keywords,
             feature_objective=self._feature_objective,
             feature_view_mode=self._feature_view_mode,
@@ -213,6 +227,7 @@ class AttackTrainer:
             response_auditor = SourceActionResponseAuditor(
                 model=self._model,
                 renderer=self._renderer,
+                image_preprocessor=self._image_preprocessor,
                 reference_parameter_path=reference_path,
                 unnorm_key=self._cfg.unnorm_key,
                 pad_token_id=getattr(tokenizer, "pad_token_id", None),

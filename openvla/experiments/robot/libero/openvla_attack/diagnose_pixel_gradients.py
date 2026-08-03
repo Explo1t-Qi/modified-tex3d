@@ -45,7 +45,6 @@ from openvla_utils import get_processor  # noqa: E402
 from robot_utils import get_model, set_seed_everywhere  # noqa: E402
 from scripts.vla_pixel_gradient_audit import (  # noqa: E402
     PixelGradientArtifact,
-    build_fused_pixel_values,
     differentiable_center_crop,
     tensor_gradient_to_hwc_float64,
     visible_perturbation_mask,
@@ -54,6 +53,9 @@ from scripts.vla_pixel_gradient_audit import (  # noqa: E402
 from openvla_attack.objective import (  # noqa: E402
     ACTION_TOKEN_END,
     ACTION_TOKEN_START,
+)
+from openvla_attack.image_preprocessing import (  # noqa: E402
+    DifferentiableOpenVLAImageProcessor,
 )
 from openvla_attack.vision_features import (  # noqa: E402
     extract_siglip_patch_features,
@@ -107,28 +109,6 @@ def _resolve_state_ids(
 def _load_rgb(path: Path) -> np.ndarray:
     with Image.open(path) as image:
         return np.asarray(image.convert("RGB"), dtype=np.uint8).copy()
-
-
-def _processor_statistics(processor: Any) -> tuple[Any, Any]:
-    image_processor: Any = processor.image_processor
-    means: Any = getattr(image_processor, "means", None)
-    stds: Any = getattr(image_processor, "stds", None)
-    if means is None or stds is None:
-        raise RuntimeError("OpenVLA processor 缺少 fused mean/std")
-    return means, stds
-
-
-def _siglip_index(model: Any) -> int:
-    model_ids: tuple[str, ...] = tuple(
-        str(value) for value in model.config.timm_model_ids
-    )
-    indices: list[int] = [
-        index for index, model_id in enumerate(model_ids)
-        if "siglip" in model_id.lower()
-    ]
-    if len(indices) != 1:
-        raise RuntimeError(f"无法唯一定位 SigLIP 分支: {model_ids}")
-    return indices[0]
 
 
 def _action_logits(
@@ -187,10 +167,13 @@ def run_source_gradient_audit(cfg: SourceGradientConfig) -> Path:
     model: Any = get_model(cfg)
     model.eval()
     processor: Any = get_processor(cfg)
-    means, stds = _processor_statistics(processor)
-    if len(means) != len(model.config.timm_model_ids):
-        raise RuntimeError("processor 分支数量与 timm_model_ids 不一致")
-    siglip_index: int = _siglip_index(model)
+    image_preprocessor = (
+        DifferentiableOpenVLAImageProcessor.from_checkpoint(
+            model=model,
+            processor=processor,
+        )
+    )
+    siglip_index: int = image_preprocessor.siglip_index
     device: torch.device = model.device
 
     feature_losses: list[float] = []
@@ -217,16 +200,15 @@ def run_source_gradient_audit(cfg: SourceGradientConfig) -> Path:
         adversarial_cropped: torch.Tensor = differentiable_center_crop(
             adversarial_tensor
         )
-        clean_pixels: torch.Tensor = build_fused_pixel_values(
-            clean_cropped,
-            means=means,
-            stds=stds,
-        ).to(torch.bfloat16)
-        adversarial_pixels: torch.Tensor = build_fused_pixel_values(
-            adversarial_cropped,
-            means=means,
-            stds=stds,
-        ).to(torch.bfloat16)
+        clean_pixels: torch.Tensor = (
+            image_preprocessor.build_fused_pixel_values(clean_cropped)
+            .to(torch.bfloat16)
+        )
+        adversarial_pixels: torch.Tensor = (
+            image_preprocessor.build_fused_pixel_values(
+                adversarial_cropped
+            ).to(torch.bfloat16)
+        )
 
         text_inputs: Any = processor(
             prompt,

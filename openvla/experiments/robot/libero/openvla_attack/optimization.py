@@ -44,6 +44,7 @@ from .gradient_protection import (
     GradientNormProtectionResult,
     combine_gradients_with_feature_norm_protection,
 )
+from .image_preprocessing import DifferentiableOpenVLAImageProcessor
 from .objective import get_attack_loss
 from .spectral_gradient_audit import ObjectiveParameterGradients
 from .texture_parameterization import SurfaceStepStats
@@ -219,6 +220,7 @@ class AttackOptimizer:
         cfg: OptimizationConfig,
         model: OptimizationModel,
         renderer: OptimizationRenderer,
+        image_preprocessor: DifferentiableOpenVLAImageProcessor,
         feature_objective: FeatureObjectiveKind,
         feature_view_mode: FeatureViewModeKind = "primary",
         view_sampler: ViewSampler = build_single_view_samples,
@@ -230,6 +232,9 @@ class AttackOptimizer:
         self._cfg: OptimizationConfig = cfg
         self._model: OptimizationModel = model
         self._renderer: OptimizationRenderer = renderer
+        self._image_preprocessor: DifferentiableOpenVLAImageProcessor = (
+            image_preprocessor
+        )
         self._feature_objective: FeatureObjectiveKind = feature_objective
         self._feature_view_mode: FeatureViewModeKind = feature_view_mode
         if (
@@ -272,28 +277,15 @@ class AttackOptimizer:
 
         adversarial_image: torch.Tensor
         for adversarial_image in adversarial_views:
-            # resized_image: float NCHW [1, 3, model_height, model_width]。
-            resized_image: torch.Tensor = F.interpolate(
-                adversarial_image,
-                size=(
-                    frame["model_input_size"],
-                    frame["model_input_size"],
-                ),
-                mode="bilinear",
-                align_corners=False,
+            # fused pixel values: float [1,6,Hmodel,Wmodel]，顺序、归一化、
+            # bicubic+antialias resize 均由 checkpoint specification 唯一决定。
+            pixel_values: torch.Tensor = (
+                self._image_preprocessor.build_fused_pixel_values(
+                    adversarial_image
+                )
             )
-            # pixel_values: float/bfloat16 NCHW
-            # [1, 6, model_height, model_width]。这里故意保留历史
-            # SigLIP→DINOv2 拼接顺序，使 last_hidden/action 基线行为不变；
-            # 新 siglip_patch 目标不复用这条路径。
-            pixel_values: torch.Tensor = torch.cat(
-                (
-                    (resized_image - frame["siglip_mean"])
-                    / frame["siglip_std"],
-                    (resized_image - frame["dino_mean"])
-                    / frame["dino_std"],
-                ),
-                dim=1,
+            resized_image: torch.Tensor = (
+                self._image_preprocessor.resize_rgb(adversarial_image)
             )
 
             with autocast(dtype=torch.bfloat16):
@@ -338,8 +330,9 @@ class AttackOptimizer:
         """计算当前配置指定的负特征距离。
 
         optimizer 执行梯度下降；使用负 MSE 会主动增大对抗图像与干净图像的
-        feature 距离。``last_hidden`` 完整保留历史行为。``siglip_patch`` 只
-        读取正确归一化的三通道 SigLIP 输入，并直接调用共享视觉分支。
+        feature 距离。``last_hidden`` 保留原有 loss 定义，但与 Action 一样改用
+        checkpoint-order fused 输入。``siglip_patch`` 读取正确归一化的三通道
+        SigLIP 输入，并直接调用共享视觉分支。
         """
         if self._feature_objective == "last_hidden":
             return -F.mse_loss(
@@ -356,7 +349,6 @@ class AttackOptimizer:
                 "请使用相同 feature objective 重新采集训练帧"
             )
         return self._compute_siglip_feature_loss(
-            frame=frame,
             resized_image=resized_image,
             clean_siglip_features=clean_siglip_features,
         )
@@ -364,14 +356,15 @@ class AttackOptimizer:
     def _compute_siglip_feature_loss(
         self,
         *,
-        frame: TrainingFrame,
         resized_image: torch.Tensor,
         clean_siglip_features: torch.Tensor,
     ) -> torch.Tensor:
         """计算一个相机视角的 Shared-SigLIP 负 MSE。"""
         normalized_adversarial_siglip: torch.Tensor = (
-            (resized_image - frame["siglip_mean"])
-            / frame["siglip_std"]
+            self._image_preprocessor.normalize_resized_branch(
+                resized_image,
+                self._image_preprocessor.siglip_index,
+            )
         ).to(torch.bfloat16)
         with autocast(dtype=torch.bfloat16):
             adversarial_siglip_features: torch.Tensor = (
@@ -415,6 +408,7 @@ class AttackOptimizer:
                 "primary_wrist 模式要求且只允许 primary/wrist 两个视角"
             )
 
+        adversarial_by_name: dict[str, torch.Tensor] = {}
         resized_by_name: dict[str, torch.Tensor] = {}
         for view_name in ("primary", "wrist"):
             adversarial_image: torch.Tensor = (
@@ -424,25 +418,16 @@ class AttackOptimizer:
                     self._render_resolution,
                 )
             )
-            resized_by_name[view_name] = F.interpolate(
-                adversarial_image,
-                size=(
-                    frame["model_input_size"],
-                    frame["model_input_size"],
-                ),
-                mode="bilinear",
-                align_corners=False,
+            adversarial_by_name[view_name] = adversarial_image
+            resized_by_name[view_name] = (
+                self._image_preprocessor.resize_rgb(adversarial_image)
             )
 
         primary_resized: torch.Tensor = resized_by_name["primary"]
-        primary_pixel_values: torch.Tensor = torch.cat(
-            (
-                (primary_resized - frame["siglip_mean"])
-                / frame["siglip_std"],
-                (primary_resized - frame["dino_mean"])
-                / frame["dino_std"],
-            ),
-            dim=1,
+        primary_pixel_values: torch.Tensor = (
+            self._image_preprocessor.build_fused_pixel_values(
+                adversarial_by_name["primary"]
+            )
         )
         with autocast(dtype=torch.bfloat16):
             primary_outputs: Any = self._model(
@@ -462,7 +447,6 @@ class AttackOptimizer:
         for feature_view_name in ("primary", "wrist"):
             feature_loss_by_name[feature_view_name] = (
                 self._compute_siglip_feature_loss(
-                    frame=frame,
                     resized_image=resized_by_name[feature_view_name],
                     clean_siglip_features=view_by_name[feature_view_name][
                         "clean_siglip_features"

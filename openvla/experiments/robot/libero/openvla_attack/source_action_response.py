@@ -39,6 +39,7 @@ from .compositing import (
     build_multi_instance_view_sample,
 )
 from .frame_collection import TrainingFrame
+from .image_preprocessing import DifferentiableOpenVLAImageProcessor
 from .objective import (
     ACTION_TOKEN_END,
     ACTION_TOKEN_START,
@@ -96,6 +97,7 @@ class ActionResponseSample:
 
     clean_generated_token_ids: IntArray
     adversarial_generated_token_ids: IntArray
+    processor_generated_token_ids: IntArray
     clean_actions: FloatArray
     adversarial_actions: FloatArray
     clean_classes: IntArray
@@ -112,6 +114,8 @@ class ActionResponseSample:
     adversarial_target_minus_clean_probability: FloatArray
     clean_target_minus_best_other_probability: FloatArray
     adversarial_target_minus_best_other_probability: FloatArray
+    processor_pixel_mae: float
+    processor_pixel_linf: float
 
     @property
     def token_hamming_count(self) -> int:
@@ -129,11 +133,21 @@ class ActionResponseSample:
 
     @property
     def clean_regeneration_hamming_count(self) -> int:
-        """手工6通道输入重生成与 collector/processor 生成之间的差异数。"""
+        """可微预处理重生成与 collector clean label 的差异数。"""
         return int(
             np.count_nonzero(
                 self.clean_generated_token_ids
                 != self.collector_clean_token_ids
+            )
+        )
+
+    @property
+    def processor_equivalence_hamming_count(self) -> int:
+        """真实 processor 与可微预处理生成 token 的差异数。"""
+        return int(
+            np.count_nonzero(
+                self.processor_generated_token_ids
+                != self.clean_generated_token_ids
             )
         )
 
@@ -185,15 +199,19 @@ def compute_action_response_sample(
     symmetric_target_classes: torch.Tensor,
     clean_generated_token_ids: torch.Tensor,
     adversarial_generated_token_ids: torch.Tensor,
+    processor_generated_token_ids: torch.Tensor,
     clean_actions: FloatingArray,
     adversarial_actions: FloatingArray,
+    processor_pixel_mae: float,
+    processor_pixel_linf: float,
 ) -> ActionResponseSample:
     """由模型输出计算一个状态的可复查诊断量。
 
     Args:
         两个 logits: 浮点 ``[action_dim, 256]``。
         两个 class: 整数 ``[action_dim]``，来自实际攻击目标的 clean labels。
-        两个 generated token: 整数 ``[action_dim]``，来自 clean/adv 贪心生成。
+        三个 generated token: 整数 ``[action_dim]``，分别来自可微 clean、
+            adversarial 与真实 processor clean 贪心生成。
         两个 action: 浮点 NumPy ``[action_dim]``，由同一 codec 反归一化。
     """
     expected_shape: tuple[int, int] = (
@@ -215,6 +233,7 @@ def compute_action_response_sample(
         ("symmetric_target_classes", symmetric_target_classes),
         ("clean_generated_token_ids", clean_generated_token_ids),
         ("adversarial_generated_token_ids", adversarial_generated_token_ids),
+        ("processor_generated_token_ids", processor_generated_token_ids),
     ):
         if tuple(tensor.shape) != (action_dim,):
             raise SourceActionResponseError(
@@ -295,6 +314,9 @@ def compute_action_response_sample(
         adversarial_generated_token_ids=_as_int64_numpy(
             adversarial_generated_token_ids
         ),
+        processor_generated_token_ids=_as_int64_numpy(
+            processor_generated_token_ids
+        ),
         clean_actions=clean_action_array,
         adversarial_actions=adversarial_action_array,
         clean_classes=_as_int64_numpy(clean_classes),
@@ -313,6 +335,8 @@ def compute_action_response_sample(
         adversarial_target_minus_clean_probability=adversarial_metrics[4],
         clean_target_minus_best_other_probability=clean_metrics[5],
         adversarial_target_minus_best_other_probability=adversarial_metrics[5],
+        processor_pixel_mae=float(processor_pixel_mae),
+        processor_pixel_linf=float(processor_pixel_linf),
     )
 
 
@@ -365,6 +389,21 @@ class SourceActionResponseResult:
             ],
             dtype=np.float64,
         )
+        processor_equivalence_hamming: FloatArray = np.asarray(
+            [
+                sample.processor_equivalence_hamming_count
+                for sample in self.samples
+            ],
+            dtype=np.float64,
+        )
+        processor_pixel_mae: FloatArray = np.asarray(
+            [sample.processor_pixel_mae for sample in self.samples],
+            dtype=np.float64,
+        )
+        processor_pixel_linf: FloatArray = np.asarray(
+            [sample.processor_pixel_linf for sample in self.samples],
+            dtype=np.float64,
+        )
         action_l2: FloatArray = np.asarray(
             [sample.action_l2 for sample in self.samples],
             dtype=np.float64,
@@ -387,6 +426,15 @@ class SourceActionResponseResult:
         adversarial_generated_ids: IntArray = self._stack(
             "adversarial_generated_token_ids"
         ).astype(np.int64)
+        clean_generated_ids: IntArray = self._stack(
+            "clean_generated_token_ids"
+        ).astype(np.int64)
+        clean_teacher_argmax: IntArray = self._stack(
+            "clean_teacher_argmax_classes"
+        ).astype(np.int64)
+        adversarial_teacher_argmax: IntArray = self._stack(
+            "adversarial_teacher_argmax_classes"
+        ).astype(np.int64)
         target_token_ids: IntArray = (
             self._stack("symmetric_target_classes").astype(np.int64)
             + ACTION_TOKEN_START
@@ -405,11 +453,36 @@ class SourceActionResponseResult:
                 "path": self.reference_path,
                 "sha256": self.reference_sha256,
             },
+            "processor_equivalence": {
+                "pixel_values_mae_mean": float(processor_pixel_mae.mean()),
+                "pixel_values_linf_max": float(processor_pixel_linf.max()),
+                "mean_token_hamming_count": float(
+                    processor_equivalence_hamming.mean()
+                ),
+                "exact_token_match_fraction": float(
+                    np.mean(processor_equivalence_hamming == 0)
+                ),
+            },
+            "teacher_forced_first_token_consistency": {
+                "clean_match_fraction": float(
+                    np.mean(
+                        clean_teacher_argmax[:, 0]
+                        == clean_generated_ids[:, 0] - ACTION_TOKEN_START
+                    )
+                ),
+                "adversarial_match_fraction": float(
+                    np.mean(
+                        adversarial_teacher_argmax[:, 0]
+                        == adversarial_generated_ids[:, 0]
+                        - ACTION_TOKEN_START
+                    )
+                ),
+            },
             "greedy_generation": {
-                "collector_vs_manual_clean_mean_token_hamming_count": float(
+                "collector_vs_differentiable_clean_mean_token_hamming_count": float(
                     clean_regeneration_hamming.mean()
                 ),
-                "collector_vs_manual_clean_exact_match_fraction": float(
+                "collector_vs_differentiable_clean_exact_match_fraction": float(
                     np.mean(clean_regeneration_hamming == 0)
                 ),
                 "mean_token_hamming_count": float(token_hamming.mean()),
@@ -457,6 +530,7 @@ class SourceActionResponseResult:
         array_fields: tuple[str, ...] = (
             "clean_generated_token_ids",
             "adversarial_generated_token_ids",
+            "processor_generated_token_ids",
             "clean_actions",
             "adversarial_actions",
             "clean_classes",
@@ -494,6 +568,21 @@ class SourceActionResponseResult:
                 ],
                 dtype=np.int64,
             ),
+            "processor_equivalence_hamming_count": np.asarray(
+                [
+                    sample.processor_equivalence_hamming_count
+                    for sample in self.samples
+                ],
+                dtype=np.int64,
+            ),
+            "processor_pixel_mae": np.asarray(
+                [sample.processor_pixel_mae for sample in self.samples],
+                dtype=np.float64,
+            ),
+            "processor_pixel_linf": np.asarray(
+                [sample.processor_pixel_linf for sample in self.samples],
+                dtype=np.float64,
+            ),
             "action_l2": np.asarray(
                 [sample.action_l2 for sample in self.samples],
                 dtype=np.float64,
@@ -519,6 +608,9 @@ class SourceActionResponseResult:
                     "step_index",
                     "token_hamming_count",
                     "clean_regeneration_hamming_count",
+                    "processor_equivalence_hamming_count",
+                    "processor_pixel_mae",
+                    "processor_pixel_linf",
                     "action_l2",
                     "action_linf",
                     "clean_symmetric_target_ce",
@@ -537,6 +629,9 @@ class SourceActionResponseResult:
                         int(step_index),
                         sample.token_hamming_count,
                         sample.clean_regeneration_hamming_count,
+                        sample.processor_equivalence_hamming_count,
+                        sample.processor_pixel_mae,
+                        sample.processor_pixel_linf,
                         sample.action_l2,
                         sample.action_linf,
                         sample.clean_target_ce,
@@ -564,6 +659,7 @@ class SourceActionResponseAuditor:
         *,
         model: SourceActionResponseModel,
         renderer: SourceActionResponseRenderer,
+        image_preprocessor: DifferentiableOpenVLAImageProcessor,
         reference_parameter_path: str | Path,
         unnorm_key: Optional[str],
         pad_token_id: Optional[int],
@@ -571,6 +667,9 @@ class SourceActionResponseAuditor:
     ) -> None:
         self._model: SourceActionResponseModel = model
         self._renderer: SourceActionResponseRenderer = renderer
+        self._image_preprocessor: DifferentiableOpenVLAImageProcessor = (
+            image_preprocessor
+        )
         self._reference_path: Path = Path(
             reference_parameter_path
         ).resolve()
@@ -591,25 +690,13 @@ class SourceActionResponseAuditor:
             )
         return primary_views[0]
 
-    @staticmethod
     def _pixel_values(
+        self,
         image: torch.Tensor,
-        frame: TrainingFrame,
     ) -> torch.Tensor:
-        """复现攻击 Action loss 的 6 通道 SigLIP+DINO 输入。"""
-        resized: torch.Tensor = F.interpolate(
-            image,
-            size=(frame["model_input_size"], frame["model_input_size"]),
-            mode="bilinear",
-            align_corners=False,
-        )
-        # [1,6,Hmodel,Wmodel]，前3通道 SigLIP，后3通道 DINOv2。
-        return torch.cat(
-            (
-                (resized - frame["siglip_mean"]) / frame["siglip_std"],
-                (resized - frame["dino_mean"]) / frame["dino_std"],
-            ),
-            dim=1,
+        """复现攻击 Action loss 的 checkpoint-order 六通道输入。"""
+        return self._image_preprocessor.build_fused_pixel_values(
+            image
         ).to(torch.bfloat16)
 
     def _generate(
@@ -636,6 +723,7 @@ class SourceActionResponseAuditor:
         frame: TrainingFrame,
         clean_pixel_values: torch.Tensor,
         adversarial_pixel_values: torch.Tensor,
+        processor_pixel_values: torch.Tensor,
     ) -> ActionResponseSample:
         clean_labels: torch.Tensor = frame["clean_output_ids"]
         action_dim: int = self._model.get_action_dim(self._unnorm_key)
@@ -662,6 +750,11 @@ class SourceActionResponseAuditor:
                 pixel_values=adversarial_pixel_values,
                 action_dim=action_dim,
             )
+            processor_generated_ids: torch.Tensor = self._generate(
+                frame=frame,
+                pixel_values=processor_pixel_values,
+                action_dim=action_dim,
+            )
 
         clean_teacher: ActionTokenLogits = extract_action_token_logits(
             clean_outputs.logits,
@@ -686,9 +779,13 @@ class SourceActionResponseAuditor:
         adversarial_action_tokens: torch.Tensor = (
             adversarial_generated_ids[0, -action_dim:]
         )
+        processor_action_tokens: torch.Tensor = (
+            processor_generated_ids[0, -action_dim:]
+        )
         for name, token_ids in (
             ("clean", clean_action_tokens),
             ("adversarial", adversarial_action_tokens),
+            ("processor", processor_action_tokens),
         ):
             valid_tokens: torch.Tensor = (
                 (token_ids >= ACTION_TOKEN_START)
@@ -719,8 +816,21 @@ class SourceActionResponseAuditor:
             ),
             clean_generated_token_ids=clean_action_tokens,
             adversarial_generated_token_ids=adversarial_action_tokens,
+            processor_generated_token_ids=processor_action_tokens,
             clean_actions=clean_action,
             adversarial_actions=adversarial_action,
+            processor_pixel_mae=float(
+                (
+                    processor_pixel_values.float()
+                    - clean_pixel_values.float()
+                ).abs().mean().item()
+            ),
+            processor_pixel_linf=float(
+                (
+                    processor_pixel_values.float()
+                    - clean_pixel_values.float()
+                ).abs().amax().item()
+            ),
         )
 
     def run(
@@ -764,7 +874,6 @@ class SourceActionResponseAuditor:
                 self._renderer.reset_texture()
                 clean_pixel_values: torch.Tensor = self._pixel_values(
                     clean_image,
-                    frame,
                 )
                 with torch.no_grad():
                     texture_parameter.copy_(reference)
@@ -777,12 +886,12 @@ class SourceActionResponseAuditor:
                 )
                 adversarial_pixel_values: torch.Tensor = self._pixel_values(
                     adversarial_image,
-                    frame,
                 )
                 sample: ActionResponseSample = self._sample(
                     frame=frame,
                     clean_pixel_values=clean_pixel_values,
                     adversarial_pixel_values=adversarial_pixel_values,
+                    processor_pixel_values=frame["processor_pixel_values"],
                 )
                 state_ids.append(frame["initial_state_id"])
                 step_indices.append(frame["collection_step_index"])

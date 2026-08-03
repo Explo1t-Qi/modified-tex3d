@@ -45,8 +45,11 @@ def test_response_sample_distinguishes_ce_improvement_from_decision_crossing() -
         symmetric_target_classes=target_classes,
         clean_generated_token_ids=torch.tensor([31754, 31764]),
         adversarial_generated_token_ids=torch.tensor([31754, 31979]),
+        processor_generated_token_ids=torch.tensor([31754, 31764]),
         clean_actions=np.array([0.0, 0.5]),
         adversarial_actions=np.array([0.0, -0.5]),
+        processor_pixel_mae=0.001,
+        processor_pixel_linf=0.01,
     )
 
     assert sample.adversarial_target_ce < sample.clean_target_ce
@@ -69,8 +72,11 @@ def test_response_result_saves_machine_readable_arrays_and_summary(
         symmetric_target_classes=torch.tensor([255]),
         clean_generated_token_ids=torch.tensor([31744]),
         adversarial_generated_token_ids=torch.tensor([31999]),
+        processor_generated_token_ids=torch.tensor([31744]),
         clean_actions=np.array([0.0]),
         adversarial_actions=np.array([0.25]),
+        processor_pixel_mae=0.0,
+        processor_pixel_linf=0.0,
     )
     result = SourceActionResponseResult(
         state_ids=np.array([10], dtype=np.int64),
@@ -87,6 +93,15 @@ def test_response_result_saves_machine_readable_arrays_and_summary(
     summary = json.loads(paths.json_path.read_text(encoding="utf-8"))
     assert summary["num_samples"] == 1
     assert summary["state_ids"] == [10]
+    assert (
+        summary["processor_equivalence"]["exact_token_match_fraction"]
+        == 1.0
+    )
+    assert (
+        summary["teacher_forced_first_token_consistency"]
+        ["clean_match_fraction"]
+        == 1.0
+    )
     assert (
         summary["greedy_generation"]
         ["states_with_any_token_change_fraction"]

@@ -55,6 +55,12 @@ class FakeTrainingConfig:
     unnorm_key: Optional[str] = "fake"
 
 
+class FakeImagePreprocessor:
+    """AttackTrainer 编排测试只验证依赖注入，不执行像素运算。"""
+
+    output_size: tuple[int, int] = (2, 2)
+
+
 class FakeArtifactStore:
     """记录 trainer 产生的路径请求和 live-test 视频。"""
 
@@ -202,6 +208,7 @@ def test_trainer_collects_optimizes_and_reuses_episode_runner_for_live_test(
         search_keywords=[["akita", "bowl"]],
         feature_objective="last_hidden",
         render_resolution=32,
+        image_preprocessor=FakeImagePreprocessor(),
     )
     fallback_state = object()
     first_state = object()
@@ -337,6 +344,7 @@ def test_trainer_runs_source_only_spectral_audit_and_skips_optimizer(
         runtime_assets=FakeRuntimeAssets(),
         search_keywords=[["akita", "bowl"]],
         feature_objective="siglip_patch",
+        image_preprocessor=FakeImagePreprocessor(),
     )
 
     loss_history = trainer.train(
@@ -446,6 +454,7 @@ def test_trainer_runs_action_response_audit_and_skips_optimizer(
         search_keywords=[["akita", "bowl"]],
         feature_objective="siglip_patch",
         feature_view_mode="primary_wrist",
+        image_preprocessor=FakeImagePreprocessor(),
     )
 
     loss_history = trainer.train(

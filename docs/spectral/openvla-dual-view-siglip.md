@@ -739,3 +739,70 @@ loss 以及历史 last-hidden 六通道路径。
 
 完成该修正后先做1状态 GPU smoke，再重新训练一个 K=256 源候选。只有修正后的
 源攻击仍弱，才继续评估 decision-margin loss 或部署 center-crop/轨迹覆盖问题。
+
+### Processor-equivalent 可微预处理实现
+
+修正已经实现为唯一的 `DifferentiableOpenVLAImageProcessor`：
+
+- 从 `model.config.timm_model_ids` 与真实 `processor.image_processor` 读取分支
+  顺序、输出尺寸、bicubic interpolation、antialias 和逐分支 mean/std；
+- 当前只接受经过核查的 `resize-naive` 双分支配置，其他 checkpoint 显式失败；
+- fused Action/last-hidden、独立 SigLIP、帧采集、动作响应诊断和源像素梯度诊断
+  共用该 interface；历史 `SigLIP→DINO` 手写拼接已从正式路径移除；
+- collector 的 clean action label 改为由同一可微输入生成，从构造上保证 clean
+  label 与优化 logits 属于同一视觉输入；同时额外保留真实 processor pixel
+  values，在 smoke 中独立比较，避免循环自证。
+
+CPU 回归为111 passed、1 skipped。使用当前真实 checkpoint 和固定随机256×256
+RGB 做无模型差分时，分支顺序解析为 DINOv2→SigLIP、SigLIP index=1；tensor
+bicubic 与 PIL processor 的 fused pixel-values MAE 为0.00463。随机高频输入上的
+L∞较大，因此不能只用像素误差放行，最终门槛仍是自然 LIBERO frame 的7/7 token。
+
+该修正有意改变 Action/last-hidden 的历史错误行为。此前所有 K/rho/迁移实验仍
+作为“旧预处理基线”保留，但其谱系数不能用来代表修正后的优化终点；正式比较
+必须重新训练纹理。先运行以下1状态 forward-only smoke，旧 K=256 系数只用于
+构造一张 adversarial 对照，不执行更新：
+
+```bash
+CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES=<gpu-id> \
+MUJOCO_GL=egl PYOPENGL_PLATFORM=egl TF_CPP_MIN_LOG_LEVEL=2 \
+TOKENIZERS_PARALLELISM=false PYTHONNOUSERSITE=1 PYTHONDONTWRITEBYTECODE=1 \
+PYTHONPATH="$PWD/openvla" \
+/home/xiaomengqi/miniconda3/envs/tex3d-openvla/bin/python \
+openvla/experiments/robot/libero/attack_openvla.py \
+  --pretrained_checkpoint /data/huangsimin/openvla-7b-finetuned-libero-spatial \
+  --unnorm_key libero_spatial_no_noops \
+  --task_suite_name libero_spatial \
+  --object_name akita_black_bowl \
+  --task_id 0 \
+  --num_trials_per_task 1 \
+  --enable_attack True \
+  --texture_parameterization spectral \
+  --spectral_basis_path experiments/spectral_basis/akita_black_bowl_k512.npz \
+  --spectral_basis_count 256 \
+  --feature_objective siglip_patch \
+  --feature_view_mode primary_wrist \
+  --source_action_response_audit_enabled True \
+  --source_action_response_reference_path experiments/logs/spectral-k256-gradient-norm-protection-source/attack_artifacts/spectral-k256-gradient-norm-protection-states0-9-EVAL-libero_spatial-2026_08_02-09_57_38/Ep0_Spectral_Coefficients.pt \
+  --attack_iters 1 \
+  --num_train_init_states 1 \
+  --train_init_state_ids 0 \
+  --eval_init_state_ids 10 \
+  --train_frames_per_state 1 \
+  --photometric_calib_frames 1 \
+  --live_test_enabled False \
+  --use_wandb False \
+  --local_log_dir experiments/logs/processor-equivalent-action-smoke \
+  --run_id_note processor-equivalent-state0-smoke
+```
+
+放行条件：
+
+1. `collector_vs_differentiable_clean` token Hamming 为0；
+2. 真实 processor 与可微预处理的 token Hamming 为0，即7/7一致；
+3. clean 和 adversarial 的 teacher-forced 首 token 与 greedy 首 token 均一致；
+4. 所有 CE/margin/action 数值有限，诊断结束后没有优化日志和 held-out rollout；
+5. XML、原纹理和 renderer 系数正常恢复。
+
+若第2项因 PIL/tensor bicubic 的微小差异失败，不回退通道顺序，而是先检查自然
+frame 的 top-2 token margin，再决定是否需要更贴近 PIL kernel 的可微 resize。

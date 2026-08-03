@@ -87,6 +87,30 @@ class FakeOptimizationModel:
         return SimpleNamespace(logits=logits, hidden_states=[hidden])
 
 
+class FakeImagePreprocessor:
+    """测试用 identity-resize 双分支预处理。"""
+
+    output_size: tuple[int, int] = (2, 2)
+    siglip_index: int = 1
+
+    def resize_rgb(self, image: torch.Tensor) -> torch.Tensor:
+        return image
+
+    def normalize_resized_branch(
+        self,
+        resized_image: torch.Tensor,
+        branch_index: int,
+    ) -> torch.Tensor:
+        del branch_index
+        return resized_image
+
+    def build_fused_pixel_values(
+        self,
+        image: torch.Tensor,
+    ) -> torch.Tensor:
+        return torch.cat((image, image), dim=1)
+
+
 class FakeSharedSigLIPFeaturizer(nn.Module):
     """把三通道均值作为一个 patch，并保留输入梯度。"""
 
@@ -211,8 +235,6 @@ def test_gradient_norm_protection_skips_feature_without_action_signal() -> None:
 
 def _training_frame() -> TrainingFrame:
     """构造一个具有有效 MVP 的最小训练帧。"""
-    zeros = torch.zeros((1, 3, 1, 1), dtype=torch.float32)
-    ones = torch.ones((1, 3, 1, 1), dtype=torch.float32)
     return {
         "bg_tensor": torch.zeros((1, 3, 2, 2), dtype=torch.float32),
         "bg_tensor_no_obj": None,
@@ -227,11 +249,10 @@ def _training_frame() -> TrainingFrame:
         "shared_texture_views": (),
         "initial_state_id": 0,
         "collection_step_index": 0,
-        "siglip_mean": zeros,
-        "siglip_std": ones,
-        "dino_mean": zeros,
-        "dino_std": ones,
-        "model_input_size": 2,
+        "processor_pixel_values": torch.zeros(
+            (1, 6, 2, 2),
+            dtype=torch.bfloat16,
+        ),
     }
 
 
@@ -319,6 +340,7 @@ def test_optimizer_uses_view_sampler_updates_texture_logs_and_schedules_callback
         cfg=FakeOptimizationConfig(),
         model=FakeOptimizationModel(),
         renderer=renderer,
+        image_preprocessor=FakeImagePreprocessor(),
         feature_objective="last_hidden",
         view_sampler=fake_view_sampler,
         frame_batch_sampler=fake_frame_batch_sampler,
@@ -382,6 +404,7 @@ def test_optimizer_uses_surface_normalized_update_for_new_adapter(
         cfg=FakeOptimizationConfig(attack_surface_step=0.02),
         model=FakeOptimizationModel(),
         renderer=renderer,
+        image_preprocessor=FakeImagePreprocessor(),
         feature_objective="last_hidden",
         view_sampler=surface_view_sampler,
         render_resolution=2,
@@ -429,6 +452,7 @@ def test_optimizer_applies_batch_gradient_norm_protection_before_surface_step(
         ),
         model=FakeOptimizationModel(),
         renderer=renderer,
+        image_preprocessor=FakeImagePreprocessor(),
         feature_objective="siglip_patch",
         frame_batch_sampler=fixed_two_frame_batch,
         render_resolution=2,
@@ -528,6 +552,7 @@ def test_siglip_objective_uses_three_channel_shared_features_and_backpropagates(
         ),
         model=model,
         renderer=renderer,
+        image_preprocessor=FakeImagePreprocessor(),
         feature_objective="siglip_patch",
         view_sampler=fake_view_sampler,
         render_resolution=2,
@@ -608,6 +633,7 @@ def test_dual_view_siglip_uses_primary_action_and_two_feature_views(
         cfg=FakeOptimizationConfig(alpha_action=0.0, alpha_feature=1.0),
         model=model,
         renderer=renderer,
+        image_preprocessor=FakeImagePreprocessor(),
         feature_objective="siglip_patch",
         feature_view_mode="primary_wrist",
         render_resolution=2,
@@ -725,6 +751,7 @@ def test_objective_gradient_audit_returns_unweighted_independent_gradients(
         ),
         model=model,
         renderer=renderer,
+        image_preprocessor=FakeImagePreprocessor(),
         feature_objective="siglip_patch",
         view_sampler=fake_view_sampler,
         render_resolution=2,

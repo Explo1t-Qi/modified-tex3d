@@ -88,6 +88,12 @@
   SigLIP→DINOv2、bilinear，实际把两种归一化图像送反编码器。当前优先建立
   processor-equivalent 的唯一可微预处理 interface，并以零扰动7/7 token一致为
   门槛；修正前不扫描K/rho、不修改target loss、不进入OFT。
+- Processor-equivalent 可微预处理已实现并迁移正式 OpenVLA 路径：配置来自真实
+  model/processor，顺序为DINOv2→SigLIP，resize为bicubic+antialias；collector
+  clean label、Action/last-hidden、Shared-SigLIP、动作响应和源像素梯度不再各自
+  拼接。真实 processor pixel values 会随 TrainingFrame 保留用于独立 smoke。
+  CPU全量111 passed、1 skipped；下一步只跑state0 forward-only，要求真实
+  processor/可微输入7/7 token一致后才重新训练K=256。
 - OpenVLA 第一版使用 LIBERO Spatial task 0 / `akita_black_bowl`，从 K=128
   个非恒定低频谱基开始；实现和命令见
   `docs/spectral/openvla-spectral-mvp.md`。

@@ -78,6 +78,25 @@ class FakeProcessor:
         )
 
 
+class FakeImagePreprocessor:
+    """测试用 identity-resize、DINO/SigLIP 双分支预处理。"""
+
+    output_size: tuple[int, int] = (2, 2)
+    siglip_index: int = 1
+
+    def build_fused_pixel_values(
+        self,
+        image: torch.Tensor,
+    ) -> torch.Tensor:
+        return torch.cat((image, image), dim=1)
+
+    def build_siglip_pixel_values(
+        self,
+        image: torch.Tensor,
+    ) -> torch.Tensor:
+        return image
+
+
 class FakeModel:
     """实现 collector 使用的生成与 hidden-state 前向 interface。"""
 
@@ -251,6 +270,7 @@ def test_collector_builds_typed_frame_calibrates_and_closes_environment(
         model=model,
         processor=processor,
         renderer=renderer,
+        image_preprocessor=FakeImagePreprocessor(),
         search_keywords=(("akita", "bowl"),),
         feature_objective="siglip_patch",
         render_resolution=2,
@@ -285,9 +305,7 @@ def test_collector_builds_typed_frame_calibrates_and_closes_environment(
     assert frame["initial_state_id"] == 17
     assert frame["collection_step_index"] == 0
     assert model.siglip_input_shapes == [(1, 3, 2, 2)]
-    assert frame["siglip_mean"].shape == (1, 3, 1, 1)
-    assert frame["dino_std"].shape == (1, 3, 1, 1)
-    assert frame["model_input_size"] == 2
+    assert frame["processor_pixel_values"].shape == (1, 6, 2, 2)
 
     assert processor.calls[0][0] == (
         "In: What action should the robot take to pick up the bowl?\nOut:"
@@ -396,6 +414,7 @@ def test_collector_builds_dual_views_with_all_shared_texture_instances(
         model=model,
         processor=FakeProcessor(),
         renderer=FakeLightingRenderer(),
+        image_preprocessor=FakeImagePreprocessor(),
         search_keywords=(("akita", "bowl"),),
         feature_objective="siglip_patch",
         feature_view_mode="primary_wrist",
