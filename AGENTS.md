@@ -94,8 +94,9 @@
   拼接。真实 processor pixel values 会随 TrainingFrame 保留用于独立 smoke。
   CPU全量111 passed、1 skipped。state0 forward-only GPU smoke 已通过：真实
   processor、collector 与可微输入均7/7 token一致，所有诊断量有限，运行时资产
-  恢复正常。下一步先跑一次真实 backward/update/bake 的单轮训练 smoke，通过后
-  重新训练K=256、states 0–9、5000轮正式源候选。
+  恢复正常。真实 backward/update/bake 单轮 smoke 也已通过：256×3谱系数全部
+  更新，Surface Step/Delta均为2/255，PNG、rollout和资产事务正常。下一步重新
+  训练K=256、rho=1.0、states 0–9、5000轮 processor-equivalent 正式源候选。
 - OpenVLA 第一版使用 LIBERO Spatial task 0 / `akita_black_bowl`，从 K=128
   个非恒定低频谱基开始；实现和命令见
   `docs/spectral/openvla-spectral-mvp.md`。

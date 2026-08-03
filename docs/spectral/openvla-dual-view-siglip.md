@@ -836,3 +836,71 @@ action 的 L2/L∞ 为 `0.2246/0.2231`；对称 target CE 从 `22.9691` 降至
 先做一次真正执行 backward、谱系数更新和 bake 的单轮训练 smoke；确认梯度、
 Surface Step、扰动预算和产物均正常后，再运行 K=256、states 0–9、5000轮的
 正式源模型训练。该顺序只增加一次低成本工程门槛，不构成新的超参数扫描。
+
+### Processor-equivalent 单轮更新 smoke 结果
+
+2026-08-03 使用与正式候选一致的 K=256、双视角 Shared-SigLIP 和 `rho=1.0`
+配置，在训练 state 0 上执行一次真实 backward/update/bake，并在 state 10 做一次
+held-out rollout。完整链路通过：
+
+| 指标 | 单轮结果 |
+| --- | ---: |
+| Total / Action / Feature loss | `1.914450 / 22.718719 / -0.089355` |
+| Primary / Wrist Feature loss | `-0.112305 / -0.066406` |
+| Weighted Action / Feature grad norm | `8.543282 / 8.434726` |
+| Feature/Action ratio | `0.987293` |
+| Feature scale | `1.000000` |
+| Action–Feature cosine | `0.035603` |
+| Actual Surface Step | `2/255` |
+| Max Surface Delta | `2/255` |
+
+ratio 小于 `rho=1.0`，所以本轮不缩放 Feature 梯度是预期行为。保存的 `[256,3]`
+谱系数全部768项非零、数值有限，绝对值最大为 `6.0751e-05`；loss history 也全部
+有限。`Ep0_UV_Map.png` 与最终 Active Texture 的 SHA-256 完全相同，相对 clean
+纹理的像素 L∞ 为2。state 10 rollout 成功，视频可解码为76帧、512×512、30 FPS；
+单个 episode 不用于评价攻击效果。退出后 LIBERO XML/原纹理为零 diff，且没有
+残留事务 backup。
+
+至此修正后的前向等价性和真实训练链路均已放行。正式候选继续沿用既定的
+K=256、`rho=1.0`、states 0–9、5000轮设置，但使用独立目录避免与修正前实验
+混合：
+
+```bash
+CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES=<gpu-id> \
+MUJOCO_GL=egl PYOPENGL_PLATFORM=egl TF_CPP_MIN_LOG_LEVEL=2 \
+TOKENIZERS_PARALLELISM=false PYTHONNOUSERSITE=1 PYTHONDONTWRITEBYTECODE=1 \
+PYTHONPATH="$PWD/openvla" \
+/home/xiaomengqi/miniconda3/envs/tex3d-openvla/bin/python \
+openvla/experiments/robot/libero/attack_openvla.py \
+  --pretrained_checkpoint /data/huangsimin/openvla-7b-finetuned-libero-spatial \
+  --unnorm_key libero_spatial_no_noops \
+  --task_suite_name libero_spatial \
+  --object_name akita_black_bowl \
+  --task_id 0 \
+  --num_trials_per_task 10 \
+  --enable_attack True \
+  --texture_parameterization spectral \
+  --spectral_basis_path experiments/spectral_basis/akita_black_bowl_k512.npz \
+  --spectral_basis_count 256 \
+  --feature_objective siglip_patch \
+  --feature_view_mode primary_wrist \
+  --alpha_action 0.1 \
+  --alpha_feature 4.0 \
+  --gradient_norm_protection_enabled True \
+  --feature_gradient_norm_ratio_limit 1.0 \
+  --attack_iters 5000 \
+  --num_train_init_states 10 \
+  --train_init_state_ids 0-9 \
+  --eval_init_state_ids 10-19 \
+  --train_frames_per_state 1 \
+  --num_frames_to_attack 10 \
+  --photometric_calib_frames 5 \
+  --live_test_enabled False \
+  --use_wandb False \
+  --local_log_dir experiments/logs/processor-equivalent-spectral-k256-source \
+  --run_id_note processor-equivalent-spectral-k256-states0-9
+```
+
+正式验收仍使用既定门槛：先检查5000轮数值、约束与产物，再看 held-out states
+10–19 是否至少3/10失败。达到门槛才进入 OFT；未达到则以新预处理下的动作响应
+重新诊断 target/margin，而不是回到旧预处理结果上继续调参。
