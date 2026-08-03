@@ -806,3 +806,33 @@ openvla/experiments/robot/libero/attack_openvla.py \
 
 若第2项因 PIL/tensor bicubic 的微小差异失败，不回退通道顺序，而是先检查自然
 frame 的 top-2 token margin，再决定是否需要更贴近 PIL kernel 的可微 resize。
+
+### Processor-equivalent GPU smoke 结果
+
+2026-08-03 在 Spatial task 0、state 0 上完成上述 forward-only smoke。结果产物为
+`processor-equivalent-action-smoke/.../Ep0_Source_Action_Response.{json,csv,npz}`，
+参考的旧 K=256 谱系数 SHA-256 为
+`333e67c673a13203b541a46b34dda9b1158c7fe096c37a3439ad78492d3c7fcb`。
+
+五项放行条件全部通过：
+
+- collector 可微 clean 与诊断中的可微 clean 为 7/7 token 一致；
+- 真实 processor 与可微预处理为 7/7 token 一致。两者 pixel values 的
+  MAE/L∞ 分别为 `0.003101/0.09375`，说明自然帧上的微小插值差异没有跨越
+  当前动作决策边界；
+- clean 和 adversarial 的 teacher-forced 首 token 都与对应 greedy 首 token
+  一致；
+- NPZ 中所有 CE、margin、action 与 token 数值有限；目录中没有梯度、loss、
+  新纹理或 held-out rollout 产物；
+- LIBERO 仓库中的 bowl XML 和原纹理均为零 diff，事务 backup 已删除。
+
+作为旁证，旧 K=256 纹理在修正后的输入上仍改变了 4/7 个 greedy token，连续
+action 的 L2/L∞ 为 `0.2246/0.2231`；对称 target CE 从 `22.9691` 降至
+`21.7731`，但 target argmax 仍为 0/7，平均 target-vs-best-other margin 为
+`-21.4219`。这些数值只表明旧纹理能扰动动作而未命中强对称 target，不能替代
+修正后重新优化得到的正式候选。
+
+因此 processor-equivalent 修正已通过真实 checkpoint 的最小 GPU 回归。下一步
+先做一次真正执行 backward、谱系数更新和 bake 的单轮训练 smoke；确认梯度、
+Surface Step、扰动预算和产物均正常后，再运行 K=256、states 0–9、5000轮的
+正式源模型训练。该顺序只增加一次低成本工程门槛，不构成新的超参数扫描。

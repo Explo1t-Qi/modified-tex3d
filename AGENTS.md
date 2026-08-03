@@ -92,8 +92,10 @@
   model/processor，顺序为DINOv2→SigLIP，resize为bicubic+antialias；collector
   clean label、Action/last-hidden、Shared-SigLIP、动作响应和源像素梯度不再各自
   拼接。真实 processor pixel values 会随 TrainingFrame 保留用于独立 smoke。
-  CPU全量111 passed、1 skipped；下一步只跑state0 forward-only，要求真实
-  processor/可微输入7/7 token一致后才重新训练K=256。
+  CPU全量111 passed、1 skipped。state0 forward-only GPU smoke 已通过：真实
+  processor、collector 与可微输入均7/7 token一致，所有诊断量有限，运行时资产
+  恢复正常。下一步先跑一次真实 backward/update/bake 的单轮训练 smoke，通过后
+  重新训练K=256、states 0–9、5000轮正式源候选。
 - OpenVLA 第一版使用 LIBERO Spatial task 0 / `akita_black_bowl`，从 K=128
   个非恒定低频谱基开始；实现和命令见
   `docs/spectral/openvla-spectral-mvp.md`。
