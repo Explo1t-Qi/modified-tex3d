@@ -82,6 +82,12 @@
   action L2/L∞。greedy 路径使用攻击训练的6通道预处理，不代表 rollout 的
   center-crop 输入；若训练输入动作已变化，先补部署预处理响应，再判断轨迹采样。
   详细命令和分支标准见双视角文档；GPU 结果出来前不修改 loss。
+- 2026-08-03 动作响应结果定位到更早的历史预处理失配：collector/processor
+  clean 与 Action loss 手工输入平均有4.7/7 token 不同。checkpoint 要求
+  DINOv2→SigLIP、bicubic+antialias，而历史 Action/last-hidden 路径使用
+  SigLIP→DINOv2、bilinear，实际把两种归一化图像送反编码器。当前优先建立
+  processor-equivalent 的唯一可微预处理 interface，并以零扰动7/7 token一致为
+  门槛；修正前不扫描K/rho、不修改target loss、不进入OFT。
 - OpenVLA 第一版使用 LIBERO Spatial task 0 / `akita_black_bowl`，从 K=128
   个非恒定低频谱基开始；实现和命令见
   `docs/spectral/openvla-spectral-mvp.md`。

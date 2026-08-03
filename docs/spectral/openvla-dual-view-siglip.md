@@ -686,3 +686,56 @@ openvla/experiments/robot/libero/attack_openvla.py \
 adv CE 是否下降以及 target argmax 比例；最后看 token/action 变化。只在这三层
 证据一致后决定是实现 untargeted decision-margin loss，还是补一项部署
 center-crop 响应；只有部署首步动作也明显变化，才转向轨迹关键帧采样。
+
+### 2026-08-03 源动作响应结果与预处理根因
+
+诊断完整采集 states 0–9、每个状态一帧，参考谱系数 SHA-256 为
+`333e67c673a13203b541a46b34dda9b1158c7fe096c37a3439ad78492d3c7fcb`。
+NPZ/CSV/JSON 均正常保存，运行没有进入优化或 rollout。
+
+| 指标 | 结果 |
+| --- | ---: |
+| collector clean vs 手工 clean 平均 token Hamming | 4.7 / 7 |
+| 两条 clean 路径完全一致的状态 | 1 / 10 |
+| clean→adv 平均 token Hamming | 5.2 / 7 |
+| 至少一个 token 改变的状态 | 9 / 10 |
+| 连续 action 平均 L2 / L∞ | 0.3764 / 0.2987 |
+| clean / adv 对称 target CE | 20.3550 / 19.5073 |
+| CE 平均下降 | 0.8478 |
+| adv 对称 target 成为 argmax | 0 / 70 |
+| adv target-best-other logit margin 均值 | -19.2012 |
+| adv token 等于对称 target | 1 / 70 |
+
+CE 确实下降约4.2%，也复现了正式训练最后阶段约19.5的 Action loss，但对称
+target 从未成为 action 子词表 argmax；其平均仍落后当前最佳类别19.2 logits。
+与此同时，错误训练输入上的 greedy token 和 action 已有显著变化，因此不能把
+弱 rollout 简单归因于“纹理没有改变任何单步动作”。
+
+更早且更确定的问题是 clean label 与 Action logits 使用了不同视觉预处理：
+
+1. collector 的 clean token 来自 checkpoint processor；其
+   `preprocessor_config.json` 和 `processing_prismatic.py` 按模型配置顺序先处理
+   DINOv2、再处理 SigLIP，并用 bicubic + antialias resize；
+2. 当前 `frame_collection.py` 与 `optimization.py` 的历史手工路径使用 bilinear
+   resize，并按 `SigLIP → DINOv2` 拼接；
+3. checkpoint `modeling_prismatic.py` 把前3通道送入 `featurizer`（DINOv2），
+   后3通道送入 `fused_featurizer`（SigLIP）。因此手工路径实际上把两种归一化
+   图像送反了视觉编码器。
+
+这解释了为什么零纹理下平均已有4.7/7 clean token 不一致，也意味着现有
+Action loss 在优化一个正常 OpenVLA 推理不会看到的输入。Shared-SigLIP Feature
+分支通过显式 SigLIP encoder 提取，未受到六通道交换影响；受影响的是 Action
+loss 以及历史 last-hidden 六通道路径。
+
+下一步不应先改对称 target、扫描 K/rho 或补 OFT。应先建立 processor-equivalent
+且保持可微的统一图像预处理，使零 Surface Delta 时满足以下回归门槛：
+
+- 手工/可微 pixel values 与 processor 输出的通道顺序、归一化和 resize 语义一致；
+- 同一 clean 图像生成的7个 action token 全部一致；
+- teacher-forced 首 action argmax 与 greedy 首 token 一致（若极小 BF16 tie
+  仍存在，必须同时保存 top-2 margin 解释）；
+- Action loss、正式训练与诊断共同调用同一个预处理 interface，禁止再次手写
+  两份六通道拼接。
+
+完成该修正后先做1状态 GPU smoke，再重新训练一个 K=256 源候选。只有修正后的
+源攻击仍弱，才继续评估 decision-margin loss 或部署 center-crop/轨迹覆盖问题。
