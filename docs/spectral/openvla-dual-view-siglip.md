@@ -904,3 +904,80 @@ openvla/experiments/robot/libero/attack_openvla.py \
 正式验收仍使用既定门槛：先检查5000轮数值、约束与产物，再看 held-out states
 10–19 是否至少3/10失败。达到门槛才进入 OFT；未达到则以新预处理下的动作响应
 重新诊断 target/margin，而不是回到旧预处理结果上继续调参。
+
+### Processor-equivalent K=256 正式源结果
+
+2026-08-03 的5000轮训练和 held-out states 10–19 均完整结束。10个 episode 全部
+成功，OpenVLA 任务成功率为100%、攻击成功率为0%，没有达到至少3/10失败的源
+门槛。修正前 rho=1.0 候选曾造成1/10失败；这次结果没有恢复源攻击强度，按既定
+规则不进入 OFT。
+
+训练和约束本身正常：
+
+| 指标 | 5000轮结果 |
+| --- | ---: |
+| Total loss 前100 / 后100轮均值 | `0.152382 / 0.135299` |
+| Action loss 前100 / 后100轮均值 | `20.502875 / 19.909253` |
+| Feature loss 前100 / 后100轮均值 | `-0.131617 / -0.159484` |
+| Feature/Action ratio 均值 | `2.752916` |
+| ratio 中位数 / 95%分位数 | `2.618605 / 3.257584` |
+| Feature scale 均值 | `0.367256` |
+| 保护触发次数 | `5000/5000` |
+| `ratio * scale` 最大值 | `1.00000032` |
+| Action–Feature cosine 均值 | `0.198215` |
+| cosine 为负的迭代比例 | `64.86%` |
+| Surface Step 超限次数 | `0/5000` |
+| Surface Delta 超限次数 | `0/5000` |
+
+最大 Surface Delta 在第80轮首次到达 `128/255`；共有3167轮处于预算边界附近，
+但最终曲面只有58/21263个顶点的任一 RGB 分量达到95%以上预算。因此“全表面
+大面积饱和”不是准确描述，更准确的是全局 L∞ 投影很早由少数极值顶点激活。
+最终曲面增量 mean-absolute/RMS 为 `0.07025/0.10650`；bake PNG 相对 clean 的
+像素 L∞ 为126、MAE为3.98。UV Map 与 Active Texture SHA-256 完全一致。
+
+所有5000行日志、loss history 和 `[256,3]` 谱系数均有限，768个系数均非零；
+10个 rollout 视频均可解码。退出后 LIBERO XML/原纹理为零 diff，且没有残留
+事务 backup。由此排除训练中断、空梯度、保护公式失效、预算越界、bake 丢失和
+运行时纹理未激活等工程解释。
+
+当前最小解释是：修正后的代理目标确实下降，但下降幅度没有把真实动作决策推到
+足以破坏任务的区域。下一步固定这份最终系数，在训练 states 0–9 上运行
+forward-only action-response；不更新纹理、不做 held-out rollout：
+
+```bash
+CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES=<gpu-id> \
+MUJOCO_GL=egl PYOPENGL_PLATFORM=egl TF_CPP_MIN_LOG_LEVEL=2 \
+TOKENIZERS_PARALLELISM=false PYTHONNOUSERSITE=1 PYTHONDONTWRITEBYTECODE=1 \
+PYTHONPATH="$PWD/openvla" \
+/home/xiaomengqi/miniconda3/envs/tex3d-openvla/bin/python \
+openvla/experiments/robot/libero/attack_openvla.py \
+  --pretrained_checkpoint /data/huangsimin/openvla-7b-finetuned-libero-spatial \
+  --unnorm_key libero_spatial_no_noops \
+  --task_suite_name libero_spatial \
+  --object_name akita_black_bowl \
+  --task_id 0 \
+  --num_trials_per_task 1 \
+  --enable_attack True \
+  --texture_parameterization spectral \
+  --spectral_basis_path experiments/spectral_basis/akita_black_bowl_k512.npz \
+  --spectral_basis_count 256 \
+  --feature_objective siglip_patch \
+  --feature_view_mode primary_wrist \
+  --source_action_response_audit_enabled True \
+  --source_action_response_reference_path experiments/logs/processor-equivalent-spectral-k256-source/attack_artifacts/processor-equivalent-spectral-k256-states0-9-EVAL-libero_spatial-2026_08_03-09_49_45/Ep0_Spectral_Coefficients.pt \
+  --attack_iters 1 \
+  --num_train_init_states 10 \
+  --train_init_state_ids 0-9 \
+  --eval_init_state_ids 10 \
+  --train_frames_per_state 1 \
+  --num_frames_to_attack 10 \
+  --photometric_calib_frames 5 \
+  --live_test_enabled False \
+  --use_wandb False \
+  --local_log_dir experiments/logs/processor-equivalent-k256-action-response \
+  --run_id_note processor-equivalent-k256-states0-9-action-response
+```
+
+该诊断只回答“最终纹理在优化所见的固定观测上是否真正改变动作决策”。如果
+greedy token/action 变化仍小，下一轮优先改进 decision-margin/target objective；
+如果训练观测变化显著但 rollout 仍0/10失败，再转向部署 center-crop 与轨迹覆盖。

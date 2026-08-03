@@ -95,8 +95,11 @@
   CPU全量111 passed、1 skipped。state0 forward-only GPU smoke 已通过：真实
   processor、collector 与可微输入均7/7 token一致，所有诊断量有限，运行时资产
   恢复正常。真实 backward/update/bake 单轮 smoke 也已通过：256×3谱系数全部
-  更新，Surface Step/Delta均为2/255，PNG、rollout和资产事务正常。下一步重新
-  训练K=256、rho=1.0、states 0–9、5000轮 processor-equivalent 正式源候选。
+  更新，Surface Step/Delta均为2/255，PNG、rollout和资产事务正常。K=256、
+  rho=1.0、states 0–9、5000轮 processor-equivalent 正式源候选也已完成，但
+  held-out states 10–19 为0/10攻击成功；训练数值、保护、预算、bake和资产事务
+  均正常。按门槛不进入OFT，下一步只对最终系数运行训练states 0–9的修正后
+  action-response，区分决策目标不足与部署/轨迹覆盖问题。
 - OpenVLA 第一版使用 LIBERO Spatial task 0 / `akita_black_bowl`，从 K=128
   个非恒定低频谱基开始；实现和命令见
   `docs/spectral/openvla-spectral-mvp.md`。
