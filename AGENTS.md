@@ -26,11 +26,13 @@
   当前唯一预处理 interface 使用显式 BPDA/STE：forward 为 checkpoint 精确的
   uint8+PIL 路径，backward 为连续 tensor bicubic surrogate。旧候选只作历史
   工程证据，不能代表修正后的科学基线。
-- 当前下一步只运行 states 0–9 BPDA forward-only：要求 processor pixel
-  MAE/L∞=`0/0`、10/10序列和70/70 token一致。通过后才运行真实单轮
-  backward/update/bake smoke，再重新训练一个 K=256、`rho=1.0` 源候选。
-- 新 BPDA 源候选在 held-out states 10–19 至少3/10失败才进入 OFT。在此之前
-  不修改 target loss，不扫描 K、rho 或 Feature weight，也不扩展消融框架。
+- states 0–9 BPDA forward-only 数值门槛已通过：processor pixel
+  MAE/L∞=`0/0`、10/10序列和70/70 token一致。下一步仍需运行真实单轮
+  backward/update/bake smoke；正式候选改为先讨论“谱自然性约束 + 选定顶点
+  全维优化”的最小设计，不再默认重跑纯 K=256、`rho=1.0`。
+- 新候选在 held-out states 10–19 至少3/10失败才进入 OFT。正式 rollout 前必须
+  明确训练与部署 center-crop 语义；在此之前不做 K、rho 或 Feature weight
+  网格扫描，也不扩展为完整消融框架。
 
 ## 谱方法长期不变量
 
@@ -109,7 +111,7 @@
 - GPU smoke 只在 GPU 可用且任务需要时运行。命令和验收标准见
   `docs/refactor/openvla-stage-1-baseline.md`。
 - 服务器实验结果通过 rsync 放入 Git 忽略的
-  `experiments/result_inbox/<run-id>/`；先检查 commit/config/hash/资产恢复，再更新
+  `experiments_inbox/<run-id>/`；先检查 commit/config/hash/资产恢复，再更新
   实验账本和正式文档。完整协作流程见
   `docs/development/collaboration-workflow.md`。
 - 历史实验目录 `/home/xiaomengqi/src/github/paper_code/tex3d` 只读使用；结果用于

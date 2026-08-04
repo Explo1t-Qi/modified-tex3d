@@ -26,7 +26,7 @@
 | 第一阶段直接迁移 | 未通过 | Geometry、K=128/K=256 谱纹理在 OFT states 10–19 上均为10/10成功 |
 | 共享特征与跨模型梯度诊断 | 已完成 | 共享 Feature 方向存在，Action 方向弱；OFT 腕部 Action 更强且与主视角近似正交 |
 | 双视角与动态范数保护 | 机制已实现，源门槛未通过 | 两者均未把 held-out 源攻击恢复到预设的3/10失败 |
-| OpenVLA 训练预处理正确性 | BPDA 代码完成，服务器门槛待验 | forward 使用 checkpoint 精确 uint8+PIL 路径，backward 使用连续 bicubic surrogate |
+| OpenVLA 训练预处理正确性 | BPDA forward 数值门槛已通过 | states 0–9 pixel MAE/L∞=`0/0`，10/10序列和70/70 token一致；真实 backward smoke 待验 |
 | BPDA 下源攻击基线 | 未建立 | 必须在多状态 processor 等价和单轮更新 smoke 后重新训练 |
 | BPDA 下 OFT 迁移信号 | 未开始 | 新源候选未过门槛前不得进入 OFT |
 | 无偏跨模型迁移与鲁棒性提升 | 未开始 | 需方法冻结后的新任务/第三模型与后续防御实验 |
@@ -66,11 +66,12 @@
 
 真实 Spatial checkpoint 的 CPU 差分记录为 fused pixel values MAE/L∞=`0/0`，
 输入梯度有限且非零；文档记录当时全量 CPU 回归为 `113 passed, 1 skipped`。
-该结果尚不能替代下面的服务器多状态和真实训练 smoke。
+服务器十状态 forward-only 已进一步通过数值门槛；它仍不能替代真实训练 smoke，
+也没有覆盖 rollout 的额外 center-crop。
 
 ## 下一实验门槛
 
-### Gate 1：十状态 BPDA forward-only
+### Gate 1：十状态 BPDA forward-only（数值门槛已通过）
 
 使用训练 states 0–9 和旧 K=256 系数作为 adversarial 探针，只检查 clean
 processor 等价性，不更新纹理，不评价旧候选的最终方法效果。
@@ -83,6 +84,14 @@ processor 等价性，不更新纹理，不评价旧候选的最终方法效果�
 - first-divergence 数量为0；
 - clean/processor teacher-first consistency 均为1；
 - 所有响应量有限，运行后资产完全恢复。
+
+2026-08-04 的服务器结果使用 states 0–9 和参考系数 SHA-256
+`3dedc68cab8841978353eb4ae50ae27c1f6c55b654fef295c4227b19af19df50`：
+pixel MAE/L∞=`0/0`，processor 与可微 clean 的 token Hamming=`0`，10/10
+序列与70/70 token一致，clean/processor teacher-first consistency均为`1.0`。
+adversarial teacher-first为`0.9`，对应预先声明的不纳入等价门槛的近 tie。
+同步 bundle 没有 stdout/stderr 或资产 hash，因此资产恢复仍只能依赖运行端确认，
+不把这一项写成已独立复核。
 
 命令见
 [`openvla-dual-view-siglip.md`](../spectral/openvla-dual-view-siglip.md)
@@ -97,15 +106,16 @@ Gate 1 通过后，验证 BPDA surrogate 能产生有限非零梯度，并检查
 - Max Surface Delta 不超过 `128/255`；
 - UV PNG、Active Texture、rollout 和 Runtime Asset Transaction 正常。
 
-### Gate 3：重新建立 BPDA K=256 源候选
+### Gate 3：建立 BPDA 下的新源候选
 
-前两项通过后，才运行一个 K=256、`rho=1.0`、train states 0–9、5000轮候选。
-held-out states 10–19 至少3/10失败才进入 OFT 开发期 rollout。未过门槛时先分析
-修正后 Action decision margin，不扫描 K、rho 或 Feature weight。
+前两项通过后，先冻结“谱自然性约束 + 选定顶点全维优化”的最小参数化、预算与
+顶点选择规则，再运行 train states 0–9 的单一候选。held-out states 10–19 至少
+3/10失败才进入 OFT 开发期 rollout。纯 K=256、`rho=1.0` 不再是自动下一候选；
+新设计尚未冻结前不写入正式实验队列。
 
 ## 当前禁止的捷径
 
-- 不在 Gate 1 前修改 target loss、扫描 K/rho/Feature weight 或进入 OFT；
+- 不在 Gate 2 和新参数化契约冻结前启动正式训练或进入 OFT；
 - 不把 OFT 梯度用于 source-only loss、选基或超参数选择；
 - 不把旧预处理候选的成功率当成 BPDA 修正后的基线；
 - 不因 total/Feature loss 更优就声称任务攻击或迁移更强；

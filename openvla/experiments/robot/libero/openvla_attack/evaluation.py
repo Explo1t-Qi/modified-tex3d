@@ -10,7 +10,6 @@
 from __future__ import annotations
 
 import sys
-import traceback
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional, Protocol, TypedDict
@@ -141,15 +140,16 @@ class LiberoEpisodeRunner:
         task_id: int,
         episode_index: int,
     ) -> RolloutResult:
-        """从指定初始状态运行一个 episode，并把异常收敛为失败结果。
+        """从指定初始状态运行一个 episode，运行异常直接向上层传播。
 
         当前行为约束：
 
         1. 先执行 ``cfg.num_steps_wait`` 个 dummy action。
         2. 每个策略步使用当前 observation 构造图像和机器人状态。
         3. OpenVLA gripper action 先二值化到 ``{-1, +1}``，再反转符号。
-        4. 单步异常打印 task/episode/step 上下文，并像原实现一样结束为失败。
-        5. 无论成功、失败或异常，环境都由本 module 关闭。
+        4. 正常达到最大步数才记作任务失败；策略、环境或预处理异常不得伪装成
+           攻击成功，必须使整个实验以非零状态失败。
+        5. 无论成功、任务失败或异常，环境都由本 module 关闭。
         """
         env: Any
         task_description: str
@@ -168,61 +168,58 @@ class LiberoEpisodeRunner:
             env.env.sim.forward()
 
             while step_index < self._max_steps + self._cfg.num_steps_wait:
-                try:
-                    if step_index < self._cfg.num_steps_wait:
-                        observation, _, _, _ = env.step(
-                            get_libero_dummy_action(self._cfg.model_family)
-                        )
-                        step_index += 1
-                        continue
-
-                    camera_image: np.ndarray
-                    policy_image: np.ndarray
-                    camera_image, policy_image = self._build_policy_image(
-                        observation,
+                if step_index < self._cfg.num_steps_wait:
+                    observation, _, _, _ = env.step(
+                        get_libero_dummy_action(self._cfg.model_family)
                     )
-                    replay_images.append(camera_image)
-
-                    # state: float array [8] = position(3) + axis-angle(3)
-                    # + gripper qpos(2)。
-                    robot_state: np.ndarray = np.concatenate(
-                        (
-                            observation["robot0_eef_pos"],
-                            quat2axisangle(
-                                observation["robot0_eef_quat"]
-                            ),
-                            observation["robot0_gripper_qpos"],
-                        )
-                    )
-                    policy_observation: PolicyObservation = {
-                        "full_image": policy_image,
-                        "state": robot_state,
-                    }
-                    action: np.ndarray = get_action(
-                        self._cfg,
-                        self._model,
-                        policy_observation,
-                        task_description,
-                        processor=self._processor,
-                    )
-                    action = normalize_gripper_action(
-                        action,
-                        binarize=True,
-                    )
-                    if self._cfg.model_family == "openvla":
-                        action = invert_gripper_action(action)
-
-                    observation, _, success, _ = env.step(action.tolist())
-                    if success:
-                        break
                     step_index += 1
-                except Exception as error:
-                    print(
-                        f"[ERROR] Task {task_id} Ep {episode_index} "
-                        f"step {step_index}: {error}"
+                    continue
+
+                camera_image: np.ndarray
+                policy_image: np.ndarray
+                camera_image, policy_image = self._build_policy_image(
+                    observation,
+                )
+                replay_images.append(camera_image)
+
+                # state: float array [8] = position(3) + axis-angle(3)
+                # + gripper qpos(2)。
+                robot_state: np.ndarray = np.concatenate(
+                    (
+                        observation["robot0_eef_pos"],
+                        quat2axisangle(
+                            observation["robot0_eef_quat"]
+                        ),
+                        observation["robot0_gripper_qpos"],
                     )
-                    traceback.print_exc()
+                )
+                policy_observation: PolicyObservation = {
+                    "full_image": policy_image,
+                    "state": robot_state,
+                }
+                action: np.ndarray = get_action(
+                    self._cfg,
+                    self._model,
+                    policy_observation,
+                    task_description,
+                    processor=self._processor,
+                )
+                action = normalize_gripper_action(
+                    action,
+                    binarize=True,
+                )
+                if self._cfg.model_family == "openvla":
+                    action = invert_gripper_action(action)
+
+                observation, _, success, _ = env.step(action.tolist())
+                if success:
                     break
+                step_index += 1
+        except Exception as error:
+            raise RuntimeError(
+                f"LIBERO rollout 运行异常：task={task_id}, "
+                f"episode={episode_index}, step={step_index}"
+            ) from error
         finally:
             env.close()
 

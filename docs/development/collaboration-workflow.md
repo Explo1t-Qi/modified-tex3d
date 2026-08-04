@@ -35,7 +35,7 @@
 | 当前状态 | `docs/status/openvla-spectral-current.md` | 当前结论、里程碑、唯一下一门槛和禁止捷径 |
 | 实验账本 | `docs/experiments/openvla-spectral-ledger.md` | 决策实验、结果、verdict 和 provenance 索引 |
 | 专题档案 | `docs/spectral/`、`docs/refactor/` | 完整命令、推理、逐状态结果和历史细节 |
-| 临时产物 | `experiments/result_inbox/` | rsync 回 WSL 的未跟踪 result bundle |
+| 临时产物 | `experiments_inbox/` | rsync 回 WSL 的 Git 忽略 result bundle |
 
 新任务只读取长期规则、当前状态和任务直接相关的专题文档。除非要追溯结论，不应
 每轮重新加载全部历史。
@@ -113,10 +113,10 @@ Codex 提供的实验交接至少包含：
 服务器实验不通过 Git 传输原始产物。用户使用 rsync 将精简 bundle 放入：
 
 ```text
-experiments/result_inbox/<run-id>/
+experiments_inbox/<run-id>/
 ```
 
-仓库已忽略整个 `/experiments/`。推荐 bundle 包含：
+仓库已忽略 `/experiments/` 与 `/experiments_inbox/`。推荐 bundle 包含：
 
 - `run_manifest.json`：commit、命令、配置、checkpoint、states、seed；
 - stdout/stderr；

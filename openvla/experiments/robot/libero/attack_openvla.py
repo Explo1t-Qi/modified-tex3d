@@ -245,7 +245,7 @@ def eval_libero(cfg: GenerateConfig) -> None:
                 f"{cfg.feature_gradient_norm_ratio_limit:.6f}"
             )
     total_episodes: int = 0
-    total_successes: int = 0
+    total_task_successes: int = 0
     video_resolution: int = 512
     episode_runner: LiberoEpisodeRunner = LiberoEpisodeRunner(
         cfg=cfg,
@@ -428,7 +428,7 @@ def eval_libero(cfg: GenerateConfig) -> None:
                     episode_index=episode_index,
                 )
                 if rollout_result.success:
-                    total_successes += 1
+                    total_task_successes += 1
 
                 total_episodes += 1
                 log_str: str = (
@@ -462,19 +462,37 @@ def eval_libero(cfg: GenerateConfig) -> None:
                 f"\nSOURCE-ONLY {diagnostic_description.upper()} COMPLETED\n"
             )
         else:
-            average_success_rate: float = (
-                total_successes / total_episodes
+            policy_task_success_rate: float = (
+                total_task_successes / total_episodes
+                if total_episodes > 0
+                else 0.0
+            )
+            total_task_failures: int = (
+                total_episodes - total_task_successes
+            )
+            attack_success_rate: float = (
+                total_task_failures / total_episodes
                 if total_episodes > 0
                 else 0.0
             )
             print(
                 f"\n[DONE] Episodes: {total_episodes} | "
-                f"Attack success rate: {average_success_rate:.2%}"
+                "Policy task success rate: "
+                f"{policy_task_success_rate:.2%}"
             )
             log_file.write(
-                "\nFINAL AVG SUCCESS RATE: "
-                f"{average_success_rate:.2%}\n"
+                "\nFINAL POLICY TASK SUCCESS RATE: "
+                f"{policy_task_success_rate:.2%}\n"
             )
+            if cfg.enable_attack:
+                print(
+                    "[DONE] Attack success rate: "
+                    f"{attack_success_rate:.2%}"
+                )
+                log_file.write(
+                    "FINAL ATTACK SUCCESS RATE: "
+                    f"{attack_success_rate:.2%}\n"
+                )
 
     finally:
         runtime_assets.close(context="Final cleanup")

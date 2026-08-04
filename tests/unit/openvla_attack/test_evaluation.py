@@ -10,6 +10,7 @@ from types import SimpleNamespace
 from typing import Optional
 
 import numpy as np
+import pytest
 from PIL import Image
 
 
@@ -193,3 +194,63 @@ def test_policy_input_and_replay_derive_from_same_mujoco_camera_frame(
         policy_image,
         np.asarray(Image.fromarray(camera_image).resize((2, 2))),
     )
+
+
+def test_episode_runner_propagates_policy_error_and_closes_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """运行异常不能伪装成可被计入攻击成功率的普通任务失败。"""
+    observation = {
+        "robot0_eef_pos": np.zeros(3, dtype=np.float32),
+        "robot0_eef_quat": np.array(
+            [1.0, 0.0, 0.0, 0.0], dtype=np.float32
+        ),
+        "robot0_gripper_qpos": np.zeros(2, dtype=np.float32),
+    }
+    env = FakeEnvironment(observation, successful_action_number=99)
+    camera_image = np.zeros((2, 2, 3), dtype=np.uint8)
+
+    monkeypatch.setattr(
+        evaluation,
+        "get_libero_env",
+        lambda task, model_family, resolution: (env, "pick up the bowl"),
+    )
+    monkeypatch.setattr(
+        evaluation,
+        "get_libero_image",
+        lambda current_observation, resolution: camera_image,
+    )
+    monkeypatch.setattr(evaluation, "get_image_resize_size", lambda cfg: 2)
+    monkeypatch.setattr(
+        evaluation,
+        "quat2axisangle",
+        lambda quaternion: np.zeros(3, dtype=np.float32),
+    )
+
+    def raise_policy_error(*args: object, **kwargs: object) -> np.ndarray:
+        del args, kwargs
+        raise RuntimeError("synthetic policy failure")
+
+    monkeypatch.setattr(evaluation, "get_action", raise_policy_error)
+
+    runner = LiberoEpisodeRunner(
+        cfg=FakeRolloutConfig(num_steps_wait=0),
+        model=SimpleNamespace(),
+        processor=object(),
+        video_resolution=2,
+        max_steps=1,
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match=r"task=0, episode=0, step=0",
+    ) as error_info:
+        runner.run(
+            task=object(),
+            initial_state=object(),
+            task_id=0,
+            episode_index=0,
+        )
+
+    assert str(error_info.value.__cause__) == "synthetic policy failure"
+    assert env.closed is True

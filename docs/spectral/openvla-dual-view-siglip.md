@@ -1092,3 +1092,27 @@ consistency 均为1，所有响应量有限。adversarial teacher/generation 在
 state 9 因 BF16 路径形状差异出现一次近 tie（teacher margin 仅0.125），因此继续
 记录但不把它混入 processor 等价门槛。通过后再做一次真实 backward/update/bake
 单轮 smoke；两项都通过后，才重新训练 BPDA K=256 正式候选。
+
+### 十状态 BPDA forward-only 结果
+
+2026-08-04 在代码 `85ba27f` 上完成了上述 states 0–9 诊断。参考 K=256 系数
+SHA-256 为
+`3dedc68cab8841978353eb4ae50ae27c1f6c55b654fef295c4227b19af19df50`，与同步到
+WSL 的文件一致。结果为：
+
+- processor fused pixel values MAE/L∞=`0/0`；
+- processor token Hamming均值=`0`，10/10序列和70/70 token完全一致；
+- first-divergence样本数=`0`；
+- clean/processor teacher-first consistency均为`1.0`；
+- clean→adv平均改变`3.6/7` token，8/10 states至少改变一个token；
+- adversarial teacher-first consistency=`0.9`，对应预先声明的近 tie，不属于
+  processor等价门槛。
+
+因此 Gate 1 的数值门槛通过。该 bundle 的 JSON SHA-256 为
+`780a71154897aff9bef0028bae192c8725f2c217bf0dde14a38a8cd90c60b046`。
+同步文件不含完整 stdout/stderr、运行 manifest 或资产 hash，因此这里不声称已
+独立复核 Runtime Asset Transaction；后续正式 bundle 应补齐这些 provenance。
+
+研究方向随后调整为用谱结构约束纹理自然性，并对选定顶点保留全维优化自由度。
+因此 Gate 2 仍用于验证 BPDA backward/update/bake，但 Gate 2 后不再自动重跑
+纯 K=256、`rho=1.0` 候选；先冻结新参数化、预算与顶点选择的最小契约。
