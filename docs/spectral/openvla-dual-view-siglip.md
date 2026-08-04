@@ -1018,3 +1018,77 @@ CPU 回归为112 passed、1 skipped。使用相同最终系数重跑上一节命
 gradient 结合的 BPDA/STE 预处理，再做多状态等价 smoke；若 margin 较大，则说明
 当前 tensor bicubic 近似本身不可接受，需要优先替换 forward kernel。只有部署
 输入门槛重新通过后，才根据 clean→adv 决策 margin 选择 target loss 或轨迹诊断。
+
+### Processor margin 结果与 BPDA/STE 修正
+
+10状态 margin audit 已完整结束。真实 processor 与连续 tensor resize 仍有4/10
+状态发生序列分叉；第一次分叉的平均动作维索引为 `1.25`（从0开始），可微路径与
+processor 的 top1−top2 margin 均值分别只有 `0.4375/0.15625`。真实 processor
+teacher argmax 在所有第一次分叉位置都与其 greedy token 一致。该结果支持预设的
+“PIL/tensor 微小插值差异翻转接近决策边界”假设，而不是生成随机性：同一输入路径
+的 collector/重生成仍为10/10一致。
+
+因此统一预处理现改为显式 BPDA/straight-through estimator：
+
+1. forward 把 ``[B,3,H,W]`` 合成 RGB clamp 到 ``[0,1]``，乘255后舍入成
+   uint8，再逐图调用与 checkpoint 相同的 PIL bicubic、ToTensor 和 Normalize；
+2. backward 不对离散 uint8/PIL 运算求导，而沿用连续 PyTorch bicubic+antialias
+   resize 的梯度；表达式为 ``exact + (surrogate - surrogate.detach())``；
+3. fused Action/last-hidden、主视角 SigLIP、腕部 SigLIP、帧采集、动作响应和源
+   像素梯度诊断全部通过同一个 interface；主视角 SigLIP 直接复用 fused 中的
+   checkpoint SigLIP 三通道，避免重复 CPU/GPU 同步。
+
+这里“exact”只指给定合成256×256 RGB 的 OpenVLA processor forward；它不表示
+可微 renderer 已经精确复刻 MuJoCo 光照，也不解决 rollout 额外 center-crop/轨迹
+覆盖问题。BPDA 梯度是有意采用的 surrogate，后续实验和论文描述必须明确标注。
+
+真实 Spatial checkpoint 的 CPU 差分使用3张固定随机 uint8 图像：fused
+``[3,6,224,224]`` 与真实 processor 逐值完全一致，整体和两个分支的
+MAE/L∞ 都为0；SigLIP slice 也逐值一致。对相同输入执行 backward 后，输入梯度
+shape 为 ``[3,3,256,256]``，全部有限且 L1 非零。全量 CPU 回归为
+113 passed、1 skipped。
+
+下一步先重跑10状态 forward-only audit。仍读取旧 K=256 系数作为 adversarial
+探针，但不更新它；本次唯一门槛是验证 clean processor forward，而不是评价这份
+旧系数的最终方法效果：
+
+```bash
+CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES=<gpu-id> \
+MUJOCO_GL=egl PYOPENGL_PLATFORM=egl TF_CPP_MIN_LOG_LEVEL=2 \
+TOKENIZERS_PARALLELISM=false PYTHONNOUSERSITE=1 PYTHONDONTWRITEBYTECODE=1 \
+PYTHONPATH="$PWD/openvla" \
+/home/xiaomengqi/miniconda3/envs/tex3d-openvla/bin/python \
+openvla/experiments/robot/libero/attack_openvla.py \
+  --pretrained_checkpoint /data/huangsimin/openvla-7b-finetuned-libero-spatial \
+  --unnorm_key libero_spatial_no_noops \
+  --task_suite_name libero_spatial \
+  --object_name akita_black_bowl \
+  --task_id 0 \
+  --num_trials_per_task 1 \
+  --enable_attack True \
+  --texture_parameterization spectral \
+  --spectral_basis_path experiments/spectral_basis/akita_black_bowl_k512.npz \
+  --spectral_basis_count 256 \
+  --feature_objective siglip_patch \
+  --feature_view_mode primary_wrist \
+  --source_action_response_audit_enabled True \
+  --source_action_response_reference_path experiments/logs/processor-equivalent-spectral-k256-source/attack_artifacts/processor-equivalent-spectral-k256-states0-9-EVAL-libero_spatial-2026_08_03-09_49_45/Ep0_Spectral_Coefficients.pt \
+  --attack_iters 1 \
+  --num_train_init_states 10 \
+  --train_init_state_ids 0-9 \
+  --eval_init_state_ids 10 \
+  --train_frames_per_state 1 \
+  --num_frames_to_attack 10 \
+  --photometric_calib_frames 5 \
+  --live_test_enabled False \
+  --use_wandb False \
+  --local_log_dir experiments/logs/bpda-k256-action-response-smoke \
+  --run_id_note bpda-k256-states0-9-action-response-smoke
+```
+
+放行要求：processor pixel MAE/L∞ 均为0、processor token Hamming 为0、10/10
+序列完全一致、first-divergence 数量为0，clean/processor 的 teacher-first
+consistency 均为1，所有响应量有限。adversarial teacher/generation 在旧审计的
+state 9 因 BF16 路径形状差异出现一次近 tie（teacher margin 仅0.125），因此继续
+记录但不把它混入 processor 等价门槛。通过后再做一次真实 backward/update/bake
+单轮 smoke；两项都通过后，才重新训练 BPDA K=256 正式候选。

@@ -6,8 +6,11 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
+import numpy as np
 import pytest
 import torch
+import torchvision.transforms.functional as TVF
+from PIL import Image
 
 
 LIBERO_EXPERIMENT_DIR = (
@@ -83,14 +86,21 @@ def test_fused_pixels_follow_checkpoint_dino_then_siglip_order() -> None:
 
     fused = preprocessor.build_fused_pixel_values(image)
 
+    # BPDA forward 先量化为部署 uint8；0.75 * 255 = 191.25，最近整数为191。
+    exact_rgb_value = 191.0 / 255.0
+    exact_rgb = torch.full((1, 3, 2, 2), exact_rgb_value)
     assert fused.shape == (1, 6, 2, 2)
     torch.testing.assert_close(
         fused[:, :3],
-        torch.full((1, 3, 2, 2), 0.75),
+        exact_rgb,
+        rtol=0.0,
+        atol=0.0,
     )
     torch.testing.assert_close(
         fused[:, 3:],
-        torch.full((1, 3, 2, 2), 0.5),
+        (exact_rgb - 0.5) / 0.5,
+        rtol=0.0,
+        atol=0.0,
     )
     torch.testing.assert_close(
         preprocessor.build_siglip_pixel_values(image),
@@ -98,6 +108,56 @@ def test_fused_pixels_follow_checkpoint_dino_then_siglip_order() -> None:
     )
     fused.sum().backward()
     assert image.grad is not None
+    assert float(image.grad.abs().sum()) > 0.0
+
+
+def test_bpda_forward_exactly_matches_uint8_pil_bicubic() -> None:
+    """非平凡图像的 forward 必须逐值等于 checkpoint PIL transform。"""
+    preprocessor = DifferentiableOpenVLAImageProcessor.from_checkpoint(
+        model=_model(),
+        processor=_processor(),
+    )
+    rgb_uint8 = np.asarray(
+        [
+            [[0, 255, 17], [255, 0, 33], [9, 240, 64], [128, 1, 250]],
+            [[250, 8, 0], [4, 127, 255], [200, 40, 80], [3, 251, 140]],
+            [[12, 19, 230], [222, 111, 5], [70, 180, 20], [244, 2, 199]],
+            [[255, 100, 1], [13, 220, 177], [99, 33, 255], [0, 199, 48]],
+        ],
+        dtype=np.uint8,
+    )
+    image = (
+        torch.from_numpy(rgb_uint8.copy())
+        .permute(2, 0, 1)
+        .unsqueeze(0)
+        .float()
+        .div(255.0)
+        .requires_grad_(True)
+    )
+    pil_resized = TVF.resize(
+        Image.fromarray(rgb_uint8),
+        size=(2, 2),
+        interpolation=Image.Resampling.BICUBIC,
+        antialias=True,
+    )
+    exact_rgb = TVF.to_tensor(pil_resized).unsqueeze(0)
+    expected_fused = torch.cat(
+        (exact_rgb, (exact_rgb - 0.5) / 0.5),
+        dim=1,
+    )
+
+    fused = preprocessor.build_fused_pixel_values(image)
+
+    torch.testing.assert_close(fused, expected_fused, rtol=0.0, atol=0.0)
+    torch.testing.assert_close(
+        preprocessor.build_siglip_pixel_values(image),
+        expected_fused[:, 3:],
+        rtol=0.0,
+        atol=0.0,
+    )
+    fused.square().mean().backward()
+    assert image.grad is not None
+    assert bool(torch.isfinite(image.grad).all())
     assert float(image.grad.abs().sum()) > 0.0
 
 

@@ -284,10 +284,6 @@ class AttackOptimizer:
                     adversarial_image
                 )
             )
-            resized_image: torch.Tensor = (
-                self._image_preprocessor.resize_rgb(adversarial_image)
-            )
-
             with autocast(dtype=torch.bfloat16):
                 outputs: Any = self._model(
                     input_ids=frame["clean_output_ids"],
@@ -306,7 +302,7 @@ class AttackOptimizer:
             feature_losses.append(
                 self._compute_feature_loss(
                     frame=frame,
-                    resized_image=resized_image,
+                    fused_pixel_values=pixel_values,
                     model_outputs=outputs,
                 )
             )
@@ -324,7 +320,7 @@ class AttackOptimizer:
         self,
         *,
         frame: TrainingFrame,
-        resized_image: torch.Tensor,
+        fused_pixel_values: torch.Tensor,
         model_outputs: Any,
     ) -> torch.Tensor:
         """计算当前配置指定的负特征距离。
@@ -349,28 +345,41 @@ class AttackOptimizer:
                 "请使用相同 feature objective 重新采集训练帧"
             )
         return self._compute_siglip_feature_loss(
-            resized_image=resized_image,
+            normalized_siglip=self._siglip_from_fused(
+                fused_pixel_values
+            ),
             clean_siglip_features=clean_siglip_features,
         )
+
+    def _siglip_from_fused(
+        self,
+        fused_pixel_values: torch.Tensor,
+    ) -> torch.Tensor:
+        """从 ``[B,3*num_branches,H,W]`` 取 checkpoint SigLIP 分支。"""
+        channel_start: int = 3 * self._image_preprocessor.siglip_index
+        channel_end: int = channel_start + 3
+        if fused_pixel_values.ndim != 4 or (
+            fused_pixel_values.shape[1] < channel_end
+        ):
+            raise RuntimeError(
+                "fused pixel values 缺少 SigLIP 三通道："
+                f"shape={tuple(fused_pixel_values.shape)}, "
+                f"index={self._image_preprocessor.siglip_index}"
+            )
+        return fused_pixel_values[:, channel_start:channel_end]
 
     def _compute_siglip_feature_loss(
         self,
         *,
-        resized_image: torch.Tensor,
+        normalized_siglip: torch.Tensor,
         clean_siglip_features: torch.Tensor,
     ) -> torch.Tensor:
         """计算一个相机视角的 Shared-SigLIP 负 MSE。"""
-        normalized_adversarial_siglip: torch.Tensor = (
-            self._image_preprocessor.normalize_resized_branch(
-                resized_image,
-                self._image_preprocessor.siglip_index,
-            )
-        ).to(torch.bfloat16)
         with autocast(dtype=torch.bfloat16):
             adversarial_siglip_features: torch.Tensor = (
                 extract_siglip_patch_features(
                     self._model,
-                    normalized_adversarial_siglip,
+                    normalized_siglip.to(torch.bfloat16),
                 )
             )
         if (
@@ -409,7 +418,6 @@ class AttackOptimizer:
             )
 
         adversarial_by_name: dict[str, torch.Tensor] = {}
-        resized_by_name: dict[str, torch.Tensor] = {}
         for view_name in ("primary", "wrist"):
             adversarial_image: torch.Tensor = (
                 build_multi_instance_view_sample(
@@ -419,11 +427,7 @@ class AttackOptimizer:
                 )
             )
             adversarial_by_name[view_name] = adversarial_image
-            resized_by_name[view_name] = (
-                self._image_preprocessor.resize_rgb(adversarial_image)
-            )
 
-        primary_resized: torch.Tensor = resized_by_name["primary"]
         primary_pixel_values: torch.Tensor = (
             self._image_preprocessor.build_fused_pixel_values(
                 adversarial_by_name["primary"]
@@ -445,9 +449,16 @@ class AttackOptimizer:
         ] = {}
         feature_view_name: SharedTextureViewName
         for feature_view_name in ("primary", "wrist"):
+            normalized_siglip: torch.Tensor = (
+                self._siglip_from_fused(primary_pixel_values)
+                if feature_view_name == "primary"
+                else self._image_preprocessor.build_siglip_pixel_values(
+                    adversarial_by_name[feature_view_name]
+                )
+            )
             feature_loss_by_name[feature_view_name] = (
                 self._compute_siglip_feature_loss(
-                    resized_image=resized_by_name[feature_view_name],
+                    normalized_siglip=normalized_siglip,
                     clean_siglip_features=view_by_name[feature_view_name][
                         "clean_siglip_features"
                     ],

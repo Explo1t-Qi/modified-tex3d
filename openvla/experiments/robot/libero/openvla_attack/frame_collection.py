@@ -438,10 +438,14 @@ class TrainingFrameCollector:
                 if self._feature_objective == "siglip_patch":
                     # 共享目标直接进入 checkpoint 配置标识的 SigLIP 分支，不走
                     # 历史 6 通道手工拼接，避免 DINO/SigLIP 顺序错误。
+                    siglip_channel_start: int = (
+                        3 * self._image_preprocessor.siglip_index
+                    )
                     normalized_clean_siglip: torch.Tensor = (
-                        self._image_preprocessor.build_siglip_pixel_values(
-                            background
-                        ).to(torch.bfloat16)
+                        clean_pixel_values[
+                            :,
+                            siglip_channel_start : siglip_channel_start + 3,
+                        ].to(torch.bfloat16)
                     )
                     clean_siglip_features = (
                         extract_siglip_patch_features(

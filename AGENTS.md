@@ -100,9 +100,13 @@
   held-out states 10–19 为0/10攻击成功；训练数值、保护、预算、bake和资产事务
   均正常。按门槛不进入OFT。最终系数的训练states 0–9 action-response 首轮显示
   可微clean→adv平均改变3.6/7 token，但真实processor与可微clean只有6/10序列
-  完全一致，不能直接归因target或轨迹。诊断已补充三条路径的top1−top2 margin
-  和第一次processor分叉信息；下一步用相同系数短重跑，再决定是否采用
-  PIL/uint8 forward + tensor-gradient 的BPDA/STE。
+  完全一致，不能直接归因target或轨迹。margin audit 显示第一次分叉处可微/
+  processor top1−top2 margin 均值仅0.4375/0.15625，支持接近tie被微小插值差异
+  翻转。统一预处理现已采用显式BPDA/STE：forward为uint8+PIL checkpoint精确
+  路径，backward为连续tensor bicubic代理；Action/last-hidden/双视角SigLIP共用。
+  真实checkpoint CPU逐值差分为MAE/L∞=0，输入梯度有限非零，CPU全量
+  113 passed、1 skipped。下一步先跑states 0–9 forward-only，要求10/10序列和
+  70/70 token一致，再做真实单轮更新smoke。
 - OpenVLA 第一版使用 LIBERO Spatial task 0 / `akita_black_bowl`，从 K=128
   个非恒定低频谱基开始；实现和命令见
   `docs/spectral/openvla-spectral-mvp.md`。

@@ -110,6 +110,12 @@ class FakeImagePreprocessor:
     ) -> torch.Tensor:
         return torch.cat((image, image), dim=1)
 
+    def build_siglip_pixel_values(
+        self,
+        image: torch.Tensor,
+    ) -> torch.Tensor:
+        return image
+
 
 class FakeSharedSigLIPFeaturizer(nn.Module):
     """把三通道均值作为一个 patch，并保留输入梯度。"""

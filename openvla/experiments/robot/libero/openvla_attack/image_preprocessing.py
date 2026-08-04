@@ -3,12 +3,15 @@
 OpenVLA 的 fused vision backbone 不是“任意两个三通道 tensor 的拼接”。六通道
 顺序、每个分支的 mean/std、resize interpolation 和 antialias 都由 checkpoint
 processor 定义，并与 ``model.config.timm_model_ids`` 一一对应。本模块从这两个
-真实对象构造不可变 specification，再用 PyTorch tensor 运算完成同语义预处理，
-使 renderer RGB 到 Action/Feature loss 的梯度保持连续。
+真实对象构造不可变 specification，再组合精确 PIL forward 与 PyTorch surrogate
+gradient，使 renderer RGB 到 Action/Feature loss 的梯度保持连续。
 
-当前第一版只接受 OpenVLA Spatial checkpoint 使用的 ``resize-naive``、两个
-相同输出尺寸、bicubic+antialias 配置。遇到其他 checkpoint 时显式失败，禁止
-静默退回历史手写顺序。
+当前实现只接受 OpenVLA Spatial checkpoint 使用的 ``resize-naive``、两个相同
+输出尺寸、bicubic+antialias 配置。forward 先把合成 RGB 按部署语义量化成
+uint8，再调用 PIL bicubic；backward 则使用连续 PyTorch tensor resize 的梯度，
+即显式的 BPDA/straight-through estimator。这样模型实际看到的像素与真实
+processor 一致，同时 renderer 仍能收到有意义的代理梯度。遇到其他 checkpoint
+时显式失败，禁止静默退回历史手写顺序。
 """
 
 from __future__ import annotations
@@ -16,8 +19,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Protocol, Sequence
 
+import numpy as np
 import torch
 import torch.nn.functional as F
+import torchvision.transforms.functional as TVF
+from numpy.typing import NDArray
+from PIL import Image
 
 
 RGBStatistics = tuple[float, float, float]
@@ -91,6 +98,9 @@ class DifferentiableOpenVLAImageProcessor:
     ``branches`` 的顺序与 ``timm_model_ids`` 和真实 processor 完全一致。当前
     checkpoint 中是 ``DINOv2 → SigLIP``，但实现不硬编码这个位置；SigLIP
     单分支由 model ID 动态定位。
+
+    这里的“可微”指 BPDA：PIL/uint8 路径决定 forward 数值，tensor bicubic
+    路径只提供 backward surrogate。它不是在声称 PIL resize 本身可微。
     """
 
     branches: tuple[VisionBranchPreprocessing, ...]
@@ -229,7 +239,12 @@ class DifferentiableOpenVLAImageProcessor:
         )
 
     def resize_rgb(self, rgb_images: torch.Tensor) -> torch.Tensor:
-        """bicubic+antialias resize，输入/输出均为 float NCHW RGB。"""
+        """返回 backward 使用的连续 bicubic+antialias surrogate。
+
+        输入/输出均为 float NCHW RGB。正式模型 forward 不应直接使用本方法的
+        返回值，而应调用 ``build_fused_pixel_values`` 或
+        ``build_siglip_pixel_values``，由它们组合精确 PIL forward 与代理梯度。
+        """
         if rgb_images.ndim != 4 or rgb_images.shape[1] != 3:
             raise ValueError(
                 "OpenVLA RGB 输入必须为 [batch,3,height,width]，收到 "
@@ -246,6 +261,76 @@ class DifferentiableOpenVLAImageProcessor:
             align_corners=False,
             antialias=self.antialias,
         )
+
+    def _exact_pil_resized_rgb(
+        self,
+        rgb_images: torch.Tensor,
+    ) -> torch.Tensor:
+        """执行无梯度的部署 uint8→PIL bicubic forward。
+
+        Args:
+            rgb_images: float ``[B,3,H,W]``，通常位于 GPU，值域应为
+                ``[0,1]``。越界值先 clamp；乘255后舍入到最近整数，与纹理 PNG
+                bake 和 LIBERO policy uint8 输入语义一致。
+
+        Returns:
+            与输入同 device/dtype 的 ``[B,3,Hout,Wout]``。该 tensor 本身不
+            携带梯度，调用方必须通过 ``_bpda_forward`` 接入 surrogate。
+        """
+        if rgb_images.ndim != 4 or rgb_images.shape[1] != 3:
+            raise ValueError(
+                "OpenVLA RGB 输入必须为 [batch,3,height,width]，收到 "
+                f"{tuple(rgb_images.shape)}"
+            )
+        if not torch.is_floating_point(rgb_images):
+            raise ValueError("OpenVLA RGB 输入必须为浮点 tensor")
+        # rgb_uint8_nhwc: CPU uint8 [B,H,W,3]。round 使用 ties-to-even，和
+        # NumPy rint 纹理 bake 一致；clean uint8/255 输入可无损往返。
+        rgb_uint8_nhwc: NDArray[np.uint8] = (
+            rgb_images.detach()
+            .clamp(0.0, 1.0)
+            .mul(255.0)
+            .round()
+            .to(torch.uint8)
+            .permute(0, 2, 3, 1)
+            .contiguous()
+            .cpu()
+            .numpy()
+        )
+        exact_images: list[torch.Tensor] = []
+        image_array: NDArray[np.uint8]
+        for image_array in rgb_uint8_nhwc:
+            pil_image: Image.Image = Image.fromarray(
+                image_array,
+                mode="RGB",
+            )
+            resized_image: Image.Image = TVF.resize(
+                pil_image,
+                size=self.output_size,
+                interpolation=Image.Resampling.BICUBIC,
+                max_size=None,
+                antialias=self.antialias,
+            )
+            exact_images.append(TVF.to_tensor(resized_image))
+        exact_batch: torch.Tensor = torch.stack(exact_images, dim=0)
+        return exact_batch.to(
+            device=rgb_images.device,
+            dtype=rgb_images.dtype,
+        )
+
+    @staticmethod
+    def _bpda_forward(
+        exact_forward: torch.Tensor,
+        surrogate: torch.Tensor,
+    ) -> torch.Tensor:
+        """forward 取 exact、backward 对 surrogate 求导。"""
+        if exact_forward.shape != surrogate.shape:
+            raise ValueError(
+                "BPDA exact/surrogate shape 不一致："
+                f"{tuple(exact_forward.shape)} != {tuple(surrogate.shape)}"
+            )
+        # 括号内 forward 严格为零；autograd 只保留 surrogate 的梯度。
+        return exact_forward + (surrogate - surrogate.detach())
 
     def normalize_resized_branch(
         self,
@@ -273,21 +358,35 @@ class DifferentiableOpenVLAImageProcessor:
         self,
         rgb_images: torch.Tensor,
     ) -> torch.Tensor:
-        """按 checkpoint 分支顺序返回 ``[B,6,Hout,Wout]``。"""
-        resized_rgb: torch.Tensor = self.resize_rgb(rgb_images)
-        normalized_branches: tuple[torch.Tensor, ...] = tuple(
-            self.normalize_resized_branch(resized_rgb, branch_index)
+        """按 checkpoint 分支顺序返回 BPDA ``[B,6,Hout,Wout]``。"""
+        surrogate_rgb: torch.Tensor = self.resize_rgb(rgb_images)
+        exact_rgb: torch.Tensor = self._exact_pil_resized_rgb(rgb_images)
+        surrogate_branches: tuple[torch.Tensor, ...] = tuple(
+            self.normalize_resized_branch(surrogate_rgb, branch_index)
             for branch_index in range(len(self.branches))
         )
-        return torch.cat(normalized_branches, dim=1)
+        exact_branches: tuple[torch.Tensor, ...] = tuple(
+            self.normalize_resized_branch(exact_rgb, branch_index)
+            for branch_index in range(len(self.branches))
+        )
+        return self._bpda_forward(
+            torch.cat(exact_branches, dim=1),
+            torch.cat(surrogate_branches, dim=1),
+        )
 
     def build_siglip_pixel_values(
         self,
         rgb_images: torch.Tensor,
     ) -> torch.Tensor:
-        """返回模型配置所指 SigLIP 分支 ``[B,3,Hout,Wout]``。"""
-        resized_rgb: torch.Tensor = self.resize_rgb(rgb_images)
-        return self.normalize_resized_branch(
-            resized_rgb,
+        """返回模型配置所指 SigLIP BPDA 分支 ``[B,3,Hout,Wout]``。"""
+        surrogate_rgb: torch.Tensor = self.resize_rgb(rgb_images)
+        exact_rgb: torch.Tensor = self._exact_pil_resized_rgb(rgb_images)
+        surrogate_siglip: torch.Tensor = self.normalize_resized_branch(
+            surrogate_rgb,
             self.siglip_index,
         )
+        exact_siglip: torch.Tensor = self.normalize_resized_branch(
+            exact_rgb,
+            self.siglip_index,
+        )
+        return self._bpda_forward(exact_siglip, surrogate_siglip)
