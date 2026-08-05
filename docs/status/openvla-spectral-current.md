@@ -69,6 +69,12 @@
 服务器十状态 forward-only 已进一步通过数值门槛；它仍不能替代真实训练 smoke，
 也没有覆盖 rollout 的额外 center-crop。
 
+实验记账在 `25b82b4` 修正：策略、环境或预处理异常现在使 rollout 直接失败，
+不能再伪装成攻击成功；最终日志分别报告 policy task success 与 attack success。
+服务器定向回归为 `3 passed, 6 warnings in 20.34s`，warning 均来自第三方依赖；
+同步日志 SHA-256 为
+`8838eaee7227c9548770955fe9982a3d6afa4f9892ccd67ae716cfd624f6716b`。
+
 ## 下一实验门槛
 
 ### Gate 1：十状态 BPDA forward-only（数值门槛已通过）
