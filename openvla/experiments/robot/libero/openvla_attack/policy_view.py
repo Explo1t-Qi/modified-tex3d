@@ -5,19 +5,28 @@
 Pillow bicubic 缩放为 checkpoint 期望的 224×224 uint8 canvas；录像分辨率变化
 不得隐式改变该结果。
 
-本模块只处理 center crop 之前的确定性 uint8 resize，不导入 LIBERO、模型或
-TensorFlow，因而可以在 WSL 的最小 CPU 环境中独立测试。Deployment Effective
-View Transform 将在后续纵切中消费这里的输出。
+本模块不导入 LIBERO 或模型，可以在 WSL CPU 环境中独立测试。纯 numpy helper
+固定 exact uint8 stages；:class:`DifferentiablePolicyViewTransform` 再将同一
+Pillow/TensorFlow forward 与 PyTorch surrogate 组合为 BPDA，供后续 collector、
+coverage 与 Attack Training 共用。
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Final
 
 import numpy as np
+import torch
+import torch.nn.functional as torch_functional
 from numpy.typing import NDArray
 from PIL import Image
+
+from experiments.robot.openvla_image_transform import (
+    CenterCropSpecification,
+    deployment_center_crop_uint8,
+    torch_center_crop_float,
+)
 
 
 POLICY_SOURCE_RESOLUTION: Final[int] = 512
@@ -44,6 +53,37 @@ class PolicyPreCropSpecification:
             raise ValueError("policy source resolution 必须为正数")
         if self.canvas_resolution <= 0:
             raise ValueError("policy canvas resolution 必须为正数")
+
+
+@dataclass(frozen=True)
+class DeploymentViewSpecification:
+    """Policy Source 到 Effective View 的完整不可变空间契约。"""
+
+    policy_canvas: PolicyPreCropSpecification = field(
+        default_factory=PolicyPreCropSpecification
+    )
+    center_crop: CenterCropSpecification = field(
+        default_factory=CenterCropSpecification
+    )
+
+    def __post_init__(self) -> None:
+        if (
+            self.policy_canvas.canvas_resolution
+            != self.center_crop.input_resolution
+        ):
+            raise ValueError(
+                "Policy Pre-Crop Canvas resolution 与 center-crop input "
+                "resolution 必须一致"
+            )
+
+
+@dataclass(frozen=True)
+class ExactDeploymentViewStages:
+    """完整 deployment spatial path 的三个 uint8 HWC RGB stage。"""
+
+    source_rgb: NDArray[np.uint8]
+    pre_crop_rgb: NDArray[np.uint8]
+    effective_view_rgb: NDArray[np.uint8]
 
 
 def resize_policy_pre_crop_canvas(
@@ -113,3 +153,191 @@ def resize_policy_pre_crop_canvas(
     ):
         raise RuntimeError("Pillow policy canvas resize 返回了意外 shape")
     return canvas_rgb
+
+
+def build_exact_deployment_view_stages(
+    source_rgb: NDArray[np.uint8],
+    *,
+    specification: DeploymentViewSpecification,
+) -> ExactDeploymentViewStages:
+    """构造 rollout 真值路径的三个可保存 uint8 RGB stage。
+
+    顺序固定为 Policy Source → Pillow RGB bicubic Pre-Crop Canvas → TensorFlow
+    center crop Effective View。每个返回数组都是独立、可写、C-contiguous 的
+    uint8 HWC RGB，避免审计保存时被调用方后续原地修改。
+    """
+
+    pre_crop_rgb: NDArray[np.uint8] = resize_policy_pre_crop_canvas(
+        source_rgb,
+        specification=specification.policy_canvas,
+    )
+    effective_view_rgb: NDArray[np.uint8] = deployment_center_crop_uint8(
+        pre_crop_rgb,
+        specification=specification.center_crop,
+    )
+    return ExactDeploymentViewStages(
+        source_rgb=np.array(
+            source_rgb,
+            dtype=np.uint8,
+            copy=True,
+            order="C",
+        ),
+        pre_crop_rgb=np.array(
+            pre_crop_rgb,
+            dtype=np.uint8,
+            copy=True,
+            order="C",
+        ),
+        effective_view_rgb=np.array(
+            effective_view_rgb,
+            dtype=np.uint8,
+            copy=True,
+            order="C",
+        ),
+    )
+
+
+@dataclass(frozen=True)
+class DifferentiablePolicyViewTransform:
+    """完整 Deployment View 的 exact-forward / surrogate-backward BPDA。
+
+    输入是连续 float32 NCHW Policy Source，shape 为
+    ``[batch_size, 3, source_resolution, source_resolution]``。forward 先量化为
+    uint8，再逐样本调用 :func:`build_exact_deployment_view_stages`；backward
+    使用 PyTorch bicubic+antialias 生成 Pre-Crop Canvas，再调用 Gate 2C 已通过
+    的 center-crop surrogate。
+
+    该 interface 只生成未归一化的 [0,1] Effective View；checkpoint fused
+    normalization 仍由 ``DifferentiableOpenVLAImageProcessor`` 负责。
+    """
+
+    specification: DeploymentViewSpecification = field(
+        default_factory=DeploymentViewSpecification
+    )
+
+    def _validate_source(self, source_nchw: torch.Tensor) -> None:
+        if not isinstance(source_nchw, torch.Tensor):
+            raise TypeError("Policy Source 必须是 torch.Tensor")
+        if source_nchw.dtype != torch.float32:
+            raise TypeError(
+                "Policy Source BPDA 必须使用 float32，收到 "
+                f"{source_nchw.dtype}"
+            )
+        expected_tail: tuple[int, int, int] = (
+            3,
+            self.specification.policy_canvas.source_resolution,
+            self.specification.policy_canvas.source_resolution,
+        )
+        if (
+            source_nchw.ndim != 4
+            or tuple(source_nchw.shape[1:]) != expected_tail
+        ):
+            raise ValueError(
+                "Policy Source shape 与 specification 不一致："
+                f"{tuple(source_nchw.shape)}，期望尾部 {expected_tail}"
+            )
+        if source_nchw.shape[0] <= 0:
+            raise ValueError("Policy Source batch 不得为空")
+
+    @staticmethod
+    def _bpda_forward(
+        exact_forward: torch.Tensor,
+        surrogate: torch.Tensor,
+    ) -> torch.Tensor:
+        if exact_forward.shape != surrogate.shape:
+            raise ValueError(
+                "Policy View BPDA exact/surrogate shape 不一致："
+                f"{tuple(exact_forward.shape)} != {tuple(surrogate.shape)}"
+            )
+        return exact_forward + (surrogate - surrogate.detach())
+
+    def _exact_batches(
+        self,
+        source_nchw: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """返回 float32 NCHW exact pre-crop/effective-view batch。"""
+
+        source_uint8_nhwc: NDArray[np.uint8] = (
+            source_nchw.detach()
+            .clamp(0.0, 1.0)
+            .mul(255.0)
+            .round()
+            .to(torch.uint8)
+            .permute(0, 2, 3, 1)
+            .contiguous()
+            .cpu()
+            .numpy()
+        )
+        exact_stages: tuple[ExactDeploymentViewStages, ...] = tuple(
+            build_exact_deployment_view_stages(
+                source_rgb,
+                specification=self.specification,
+            )
+            for source_rgb in source_uint8_nhwc
+        )
+
+        def to_source_tensor(
+            images: tuple[NDArray[np.uint8], ...],
+        ) -> torch.Tensor:
+            stacked_nhwc: NDArray[np.uint8] = np.stack(images, axis=0)
+            return (
+                torch.from_numpy(stacked_nhwc)
+                .permute(0, 3, 1, 2)
+                .to(device=source_nchw.device, dtype=torch.float32)
+                .div(255.0)
+            )
+
+        return (
+            to_source_tensor(
+                tuple(stage.pre_crop_rgb for stage in exact_stages)
+            ),
+            to_source_tensor(
+                tuple(stage.effective_view_rgb for stage in exact_stages)
+            ),
+        )
+
+    def _surrogate_pre_crop_canvas(
+        self,
+        source_nchw: torch.Tensor,
+    ) -> torch.Tensor:
+        """返回连续 PyTorch bicubic+antialias Policy Canvas。"""
+
+        canvas_resolution = (
+            self.specification.policy_canvas.canvas_resolution
+        )
+        return torch_functional.interpolate(
+            source_nchw,
+            size=(canvas_resolution, canvas_resolution),
+            mode="bicubic",
+            align_corners=False,
+            antialias=True,
+        )
+
+    def build_pre_crop_canvas(
+        self,
+        source_nchw: torch.Tensor,
+    ) -> torch.Tensor:
+        """返回 exact-forward、surrogate-backward 的 float32 NCHW Canvas。"""
+
+        self._validate_source(source_nchw)
+        exact_pre_crop, _ = self._exact_batches(source_nchw)
+        surrogate_pre_crop = self._surrogate_pre_crop_canvas(source_nchw)
+        return self._bpda_forward(exact_pre_crop, surrogate_pre_crop)
+
+    def build_effective_view(
+        self,
+        source_nchw: torch.Tensor,
+    ) -> torch.Tensor:
+        """返回完整 exact-forward、surrogate-backward Effective View。"""
+
+        self._validate_source(source_nchw)
+        _, exact_effective_view = self._exact_batches(source_nchw)
+        surrogate_pre_crop = self._surrogate_pre_crop_canvas(source_nchw)
+        surrogate_effective_view = torch_center_crop_float(
+            surrogate_pre_crop,
+            specification=self.specification.center_crop,
+        )
+        return self._bpda_forward(
+            exact_effective_view,
+            surrogate_effective_view,
+        )
