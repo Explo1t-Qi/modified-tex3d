@@ -43,16 +43,20 @@
 | 2026-08-03 | 十状态 margin audit | 首次分叉处 tensor/processor margin均值 `0.4375/0.15625` | 未测 | 支持近 tie 被插值差异翻转，决定使用精确 PIL forward BPDA | [双视角](../spectral/openvla-dual-view-siglip.md) |
 | 2026-08-04 | PIL-forward BPDA CPU 差分 | fused/分支 MAE/L∞=`0/0`，输入梯度有限非零；记录为113 passed、1 skipped | 未测 | 代码侧放行；十状态 GPU forward-only 尚未运行 | [当前状态](../status/openvla-spectral-current.md) |
 | 2026-08-04 | 十状态 BPDA forward-only | pixel MAE/L∞=`0/0`，10/10序列、70/70 token一致；clean/processor teacher-first均为1 | 未测 | processor等价数值门槛通过；bundle未含stdout/stderr与资产hash | [双视角](../spectral/openvla-dual-view-siglip.md) |
+| 2026-08-07 | Gate 2C center-crop forward/VJP | 5类forward逐值相等；5类VJP最坏relative L2=`5.43e-8`、最小cosine=`0.999999999998` | OFT不参与 | WSL与服务器10/10 case通过；正式冻结`relative_L2<=1e-5`、`cosine>=0.99999` | [当前状态](../status/openvla-spectral-current.md) |
 
 ## 当前待执行队列
 
 | 顺序 | 候选 | 前置条件 | 通过标准 | 未通过时 |
 |---:|---|---|---|---|
-| 1（已通过） | states 0–9 BPDA forward-only | 当前 HEAD 的服务器环境 | pixel MAE/L∞=0，10/10序列、70/70 token一致 | 已达到数值门槛 |
-| 2 | BPDA 单轮 backward/update/bake | 队列1通过 | 梯度有限非零、系数更新、Surface/asset约束通过 | 定位 surrogate 或训练数据流 |
-| 3 | 谱自然性约束 + 选定顶点全维优化源候选 | 队列2通过且设计契约冻结 | held-out states 10–19至少3/10失败 | 先归因参数化/目标/部署输入，不做无依据网格扫描 |
-| 4 | OFT开发期 rollout | 队列3通过 | 旧0/10迁移基线上至少出现2/10失败信号 | 记录机制失败，不包装为迁移提升 |
-| 5 | 新任务/第三模型无偏验证 | 方法和超参数冻结 | 预注册门槛 | 区分开发期选择偏差与真实迁移 |
+| 1（已通过） | Gate 1P processor forward equivalence | states 0–9、服务器环境 | pixel MAE/L∞=0，10/10序列、70/70 token一致 | 已达到数值门槛 |
+| 2（已通过） | Gate 2C center-crop forward/VJP | 10个冻结CPU case | 全部case通过正式relative L2/cosine门槛 | 已达到数值门槛 |
+| 3 | Gate 1D deployment-path forward equivalence | 共享Policy Canvas与Effective View实现 | 逐阶段RGB、processor tensor、action sequence/token完全一致 | 定位deployment exact path |
+| 4 | Gate 2E backward/update/bake smoke | Gate 1D与2C通过 | 梯度有限非零、参数更新、Surface/asset约束通过 | 定位两层surrogate或训练数据流 |
+| 5 | Visibility/Coverage/Compositor与Gate 2R | Gate 2E通过 | 对齐、偏序、零delta与renderer-to-bake response Gates通过 | 停止Seed Audit，修复基础证据链 |
+| 6 | 谱自然性约束 + Fixed Vertex Support源候选 | 全部基础Gate通过 | held-out states 10–19至少3/10失败 | 先归因参数化/目标/部署输入，不做无依据网格扫描 |
+| 7 | OFT开发期 rollout | 队列6通过 | 旧0/10迁移基线上至少出现2/10失败信号 | 记录机制失败，不包装为迁移提升 |
+| 8 | 新任务/第三模型无偏验证 | 方法和超参数冻结 | 预注册门槛 | 区分开发期选择偏差与真实迁移 |
 
 ## 新实验登记模板
 

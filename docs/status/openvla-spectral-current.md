@@ -1,7 +1,7 @@
 # OpenVLA 谱纹理当前状态
 
-更新时间：2026-08-04
-代码基线：`771907c`（文档重组前的最新功能提交）
+更新时间：2026-08-07
+功能代码基线：`2bb6ce7`；服务器 Gate 2C 复核基线：`f39525a`
 
 本文是 OpenVLA 谱纹理研究的**当前状态入口**。新一轮开发应先读本文，再按需
 进入专题文档；不要从长篇实验时间线推测当前优先级。历史实验索引见
@@ -26,7 +26,8 @@
 | 第一阶段直接迁移 | 未通过 | Geometry、K=128/K=256 谱纹理在 OFT states 10–19 上均为10/10成功 |
 | 共享特征与跨模型梯度诊断 | 已完成 | 共享 Feature 方向存在，Action 方向弱；OFT 腕部 Action 更强且与主视角近似正交 |
 | 双视角与动态范数保护 | 机制已实现，源门槛未通过 | 两者均未把 held-out 源攻击恢复到预设的3/10失败 |
-| OpenVLA 训练预处理正确性 | BPDA forward 数值门槛已通过 | states 0–9 pixel MAE/L∞=`0/0`，10/10序列和70/70 token一致；真实 backward smoke 待验 |
+| OpenVLA processor 预处理正确性 | Gate 1P 已通过 | states 0–9 pixel MAE/L∞=`0/0`，10/10序列和70/70 token一致 |
+| Deployment Effective View 几何 | Gate 2C 已通过 | WSL与服务器10/10 center-crop forward/VJP case通过；Gate 1D与2E仍待验 |
 | BPDA 下源攻击基线 | 未建立 | 必须在多状态 processor 等价和单轮更新 smoke 后重新训练 |
 | BPDA 下 OFT 迁移信号 | 未开始 | 新源候选未过门槛前不得进入 OFT |
 | 无偏跨模型迁移与鲁棒性提升 | 未开始 | 需方法冻结后的新任务/第三模型与后续防御实验 |
@@ -62,18 +63,22 @@
 - collector clean label、Action/last-hidden、主/腕部 Shared-SigLIP、源动作响应
   和源像素梯度诊断共享该 interface；
 - 这里的“精确”只指给定合成 RGB 的 processor forward，不表示 nvdiffrast 已
-  精确复刻 MuJoCo 光照，也不解决 rollout center-crop 或轨迹覆盖。
+  精确复刻 MuJoCo 光照；center crop 由下述独立 Deployment Path module 负责，
+  轨迹覆盖仍不属于 processor 的职责。
 
-当前代码还存在一个已定位的部署路径缺口：rollout 的 `get_vla_action()` 在
-checkpoint processor 之前执行 TensorFlow `crop_scale = 0.9` 的 center crop 并
-resize 回 `224 x 224`，而上述可微训练路径尚未包含这层变换。因此现有数值结果
-只能证明 processor-level equivalence，不能证明完整 deployment-path equivalence。
+`b7d61cb` 起，正式 rollout 的 policy 输入不再由录像分辨率隐式决定：固定从
+同一 MuJoCo observation 生成 512×512 Policy Source，再用显式 Pillow RGB
+bicubic 得到 224×224 Policy Pre-Crop Canvas。`a2efb7f` 起，唯一
+`CenterCropSpecification` 同时定义 TensorFlow uint8 exact forward 与 PyTorch
+float32 surrogate，`get_vla_action()` 已改为调用 exact helper；`2bb6ce7` 又补齐
+Gate 2C 审计和显式 TF 像素坐标/插值顺序。
 
-进一步追踪当前代码与重构前 `b4c2e7c` 后确认：正式 rollout 长期使用
-`get_libero_image(..., 512)` 后再以 PIL RGB bicubic resize 到 `224 x 224`，训练
-帧则使用 `get_libero_image(..., 256)` 后直接进入 processor。这是继承的
-train–deployment 输入差异。第一版参考部署语义因此是 `512 -> 224`，direct 224
-尚未证明等价，不能作为无行为变化的简化。
+当前剩余缺口不再是 crop 定义缺失，而是 collector、Seed Audit 和 Attack
+Training 尚未端到端消费这一完整 Deployment Path。Gate 1D 仍需在真实 states
+0–9 对照 rollout 的逐阶段 RGB、processor tensor 和 action token；Gate 2E 仍需
+证明梯度穿过 center-crop 与 processor 两层 BPDA 后能更新 Surface Delta、完成
+bake 并恢复资产。因此不得把 Gate 2C 解释为完整 deployment equivalence 或
+真实 attack backward 已通过。
 
 真实 Spatial checkpoint 的 CPU 差分记录为 fused pixel values MAE/L∞=`0/0`，
 输入梯度有限且非零；文档记录当时全量 CPU 回归为 `113 passed, 1 skipped`。
@@ -123,26 +128,40 @@ pre-crop canvas、center-crop 后 uint8 RGB、checkpoint fused pixel values、�
 action sequence 和逐 action token 一致；同时保存各阶段图像、数值误差、token
 差异及资产 hash。Gate 1P 的历史结果继续保留，但不得替代本项。
 
-### Gate 2C：center-crop surrogate VJP equivalence（WSL 通过，服务器待复核）
+### Gate 2C：center-crop surrogate VJP equivalence（已通过）
 
 在进入 GPU smoke 前，使用 TensorFlow float `crop_and_resize` 作为 oracle，验证
 PyTorch crop surrogate 的 forward 空间坐标与输入 RGB VJP。固定 crop box 不参与
 优化，因此不验证 box 梯度。
 
 `2bb6ce7` 已实现 schema `openvla-gate-2c-v1` 的确定性 CPU 审计，覆盖五类
-forward 图案和五类 VJP 上游梯度。WSL 环境 TensorFlow `2.15.0`、PyTorch
-`2.2.0+cu121` 的 10/10 case 均通过候选门槛；forward 五类的 relative L2 与
-max-absolute error 均为 0，VJP 最坏 relative L2=`5.423894851315424e-08`、最小
-cosine=`0.9999999999978721`、最大 max-absolute error=`4.76837158203125e-07`。
-权威 JSONL 位于 Git 忽略的
+forward 图案和五类 VJP 上游梯度。WSL 参考运行的 10/10 case 通过；其权威
+JSONL 位于 Git 忽略的
 `experiments_inbox/20260807-gate2c-2bb6ce7/center_crop_metrics.jsonl`，SHA-256
 为 `8b045d34b7af9d2bf72c57c9e1574966ded40285d38ac4d909448571641e6e53`。
 
 诊断同时发现 TF/PyTorch 的 float32 `sqrt(0.9)` 相差 1 ULP；直接各自开方会使
 稀疏 impulse 的 relative L2 约为 `2e-5`。当前 surrogate 改为复用 TensorFlow
 计算出的固定 float32 box，并显式复现 TF pixel coordinate 与 x→y 双线性插值
-顺序；没有放宽预注册候选值。考虑服务器 framework build 仍可能不同，正式
-Gate 2C 与数值门槛只在服务器 OpenVLA 环境复现后冻结。
+顺序；没有放宽预注册候选值。
+
+2026-08-07 服务器 OpenVLA 环境在 commit
+`f39525a8436bd65f5162727f5e610f7f5de5a60e` 上完成独立复核。同步 JSONL 共
+10 行，case 名唯一且完整，全部 commit/schema/shape/dtype/crop 字段一致；日志
+与权威表分别同步为 `experiments_inbox/gate2c.log` 和
+`experiments_inbox/center_crop_metrics.jsonl`。日志
+声明的 SHA-256 与文件实算值均为
+`492b7f1d486ce9375e46341a7dd6983e77b51238f90b5f05ab7ae3a99f79dc46`，日志本身
+SHA-256 为 `72697458783c262120b11d7b131b8089e2b4efd50a3e934e43496d0b981eccf2`。
+服务器 TensorFlow/PyTorch/NumPy 版本为 `2.15.0/2.2.0+cu121/1.26.4`；五类
+forward 的 relative L2 与 max-absolute error 均为 0，五类 VJP 最坏 relative
+L2=`5.425248973361878e-08`、最小 cosine=`0.9999999999978721`、最大 max-absolute
+error=`4.76837158203125e-07`。
+
+因此正式冻结 Gate 2C 门槛为 `relative_L2 <= 1e-5` 且
+`cosine >= 0.99999`，`max_abs` 继续只作诊断；本次 5/5 VJP case 均以明显余量
+通过。framework build、crop specification 或 surrogate 实现变化时必须重跑，
+当前结果不替代尚未完成的 Gate 1D 或 Gate 2E。
 
 ### Gate 2E：deployment-path end-to-end backward/update/bake smoke
 
@@ -609,19 +628,17 @@ cosine      = cosine_similarity(g_pt, g_tf)
 max_abs     = ||g_pt - g_tf||_inf
 ```
 
-预注册但尚未正式冻结的候选门槛为
-`relative_L2_candidate <= 1e-5`、`cosine_candidate >= 0.99999`；`max_abs`
-第一轮只作诊断。跨框架 float32 结果实际测出前，不得把候选值写成已通过的正式
-门槛；若结果卡在候选附近，先检查 dtype、坐标顺序、像素中心、边界和
-`align_corners` 语义，不得只为通过测试放宽阈值。
+服务器 Gate 2C 证据通过后正式门槛冻结为 `relative_L2 <= 1e-5`、
+`cosine >= 0.99999`；`max_abs` 只作诊断。若未来 framework 或实现变化后的结果
+卡在门槛附近，必须先检查 dtype、坐标顺序、像素中心、边界、固定 box 常量和
+插值运算顺序，不得只为通过测试放宽阈值。
 
 确定性测试集必须同时覆盖 forward 与 VJP。forward 使用横/纵空间 ramp、
 checker、中心及 crop 边界附近 impulse、固定种子随机 RGB，以暴露坐标交换、
 半像素偏移与边界错误。由于固定 bilinear crop 对输入是线性算子，VJP 不依赖
 输入图案，所以 VJP 必须改用多种固定上游梯度：横/纵 ramp、中心/边界/角点
 impulse 与固定种子随机梯度。每个 case 均记录 shape、dtype、seed 和三项误差；
-只有所有 case 明显优于候选值且 forward 坐标证据无异常后，才通过新决策正式
-冻结 Gate 2C 数值门槛。
+本次服务器 10-case 证据满足这一要求；case 集合不得在后续复核中删减。
 
 已冻结的第四十五项设计决定：训练、Support Seed Gradient Audit、coverage 与
 rollout 必须共享唯一的 `224 x 224` Policy Pre-Crop Canvas，但第一版不得把它

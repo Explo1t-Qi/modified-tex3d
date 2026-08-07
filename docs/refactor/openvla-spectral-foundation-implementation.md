@@ -8,9 +8,9 @@
 输入、可见性、coverage、renderer surrogate 与 bake response 均有可复查证据；
 不以 rollout 攻击成功率作为本轮完成条件。
 
-尚需真实审计后冻结的候选值包括 `A_obs_min`、renderer recall、Gate 2C 数值
-门槛和 Gate 2R 的更强方向门槛。实现不得为了让某个 state 或 support 通过而
-调整这些候选值。
+尚需真实审计后冻结的候选值包括 `A_obs_min`、renderer recall 和 Gate 2R 的
+更强方向门槛。Gate 2C 数值门槛已由 WSL 与服务器证据冻结。实现不得为了让
+某个 state 或 support 通过而调整其余候选值。
 
 ## 实施进度（2026-08-07）
 
@@ -20,7 +20,8 @@
   deployment path 和 PyTorch float32 surrogate，并让 `get_vla_action()` 消费
   同一 exact helper；
 - `2bb6ce7`：补齐 Gate 2C 的五类 forward 图案、五类 VJP 上游梯度和权威
-  JSONL 审计。WSL 参考环境 10/10 case 通过，服务器 OpenVLA 环境复核仍待运行；
+  JSONL 审计。WSL 参考环境与 commit `f39525a` 的服务器 OpenVLA 环境均为
+  10/10 case 通过，Gate 2C 已正式通过；
 - 尚未完成 Gate 1D、Gate 2E，也未开始 Visibility/Coverage/Compositor。
 
 Gate 2C 实现过程中发现 TensorFlow 2.15 CPU 与 PyTorch 2.2 CPU 对
@@ -61,7 +62,7 @@ TensorFlow oracle 产生的两个 float32 常量，并显式复现 pixel coordin
 2. 根据预注册流程冻结 `A_obs_min` 与 renderer recall；
 3. Gate 2R 的 R/G/B `2/255` renderer-to-bake response；
 4. 生成权威 JSONL、无 pickle NPZ、派生 CSV 和逐 case 图；
-5. 根据审计分布决定 Gate 2C/2R 剩余阈值，不回看 support 成败调门槛。
+5. 根据审计分布决定 Gate 2R 剩余阈值，不回看 support 成败调门槛。
 
 ## 阶段 4：Support 与训练候选
 
