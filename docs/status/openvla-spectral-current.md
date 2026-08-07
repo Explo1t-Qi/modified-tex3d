@@ -119,7 +119,7 @@ adversarial teacher-first为`0.9`，对应预先声明的不纳入等价门槛�
 [`openvla-dual-view-siglip.md`](../spectral/openvla-dual-view-siglip.md)
 “Processor margin 结果与 BPDA/STE 修正”一节。
 
-### Gate 1D：十状态 deployment-path forward equivalence（待实现/运行）
+### Gate 1D：十状态 deployment-path forward equivalence（采集待实现/运行）
 
 在 Gate 1P 基础上，把参考 `512 -> 224` Policy Pre-Crop Canvas 和
 `crop_scale = 0.9` Deployment Effective View Transform 纳入 exact forward 与
@@ -127,6 +127,13 @@ BPDA 路径。使用 states 0–9 对照现有 rollout `get_vla_action()`，必�
 pre-crop canvas、center-crop 后 uint8 RGB、checkpoint fused pixel values、完整
 action sequence 和逐 action token 一致；同时保存各阶段图像、数值误差、token
 差异及资产 hash。Gate 1P 的历史结果继续保留，但不得替代本项。
+
+截至 `9fc1d48`，三个 exact uint8 RGB stage、完整空间 BPDA 与权威逐 state
+schema 已实现并由 CPU 单元测试保护。schema 对 Pre-Crop RGB、Effective RGB、
+processor fused pixel values、全部 action token 和连续 action 使用严格零误差
+判定，并显式拒绝 states 0–9 的缺行、重复或额外行。当前仍缺真实 LIBERO/OpenVLA
+采集 runner 和服务器 10-state 证据，因此 Gate 1D 仍是“未通过”，不得因纯计算
+基础已完成而提前进入 Gate 2E。
 
 ### Gate 2C：center-crop surrogate VJP equivalence（已通过）
 

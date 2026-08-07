@@ -22,7 +22,13 @@
 - `2bb6ce7`：补齐 Gate 2C 的五类 forward 图案、五类 VJP 上游梯度和权威
   JSONL 审计。WSL 参考环境与 commit `f39525a` 的服务器 OpenVLA 环境均为
   10/10 case 通过，Gate 2C 已正式通过；
-- 尚未完成 Gate 1D、Gate 2E，也未开始 Visibility/Coverage/Compositor。
+- `5e67938`：建立 512 Policy Source、224 Pre-Crop Canvas 和 Effective View
+  的三个 exact uint8 stage，以及覆盖前两层空间变换的 float32 BPDA；
+- `9fc1d48`：冻结 Gate 1D 的逐 state `openvla-gate-1d-v1` 判定 schema。RGB、
+  processor tensor、全部 action token 和连续 action 采用严格零误差 Gate，汇总
+  层拒绝缺失、重复或额外 state；
+- Gate 1D 真实 states 0–9 采集 runner 尚待接入，Gate 2E 尚未开始，也未开始
+  Visibility/Coverage/Compositor。
 
 Gate 2C 实现过程中发现 TensorFlow 2.15 CPU 与 PyTorch 2.2 CPU 对
 `sqrt(float32(0.9))` 的结果相差 1 ULP；稀疏 impulse 会把它放大为约 `2e-5`
