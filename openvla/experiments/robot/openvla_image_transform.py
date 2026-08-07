@@ -19,11 +19,11 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
+from functools import lru_cache
 
 import numpy as np
 import tensorflow as tf
 import torch
-import torch.nn.functional as torch_functional
 from numpy.typing import NDArray
 
 
@@ -60,9 +60,9 @@ def _validate_tensorflow_image(
 ) -> int:
     """校验 float HWC/NHWC TensorFlow 输入并返回静态 rank。"""
 
-    if not image.dtype.is_floating:
+    if image.dtype != tf.float32:
         raise TypeError(
-            "TensorFlow center-crop 输入必须为浮点 tensor，收到 "
+            "TensorFlow center-crop oracle 输入必须为 float32 tensor，收到 "
             f"{image.dtype.name}"
         )
     rank: int | None = image.shape.rank
@@ -102,6 +102,27 @@ def _validate_tensorflow_image(
     return rank
 
 
+@lru_cache(maxsize=16)
+def _tensorflow_float32_crop_box(crop_area: float) -> tuple[float, float]:
+    """返回由 TensorFlow float32 真值路径计算的 ``(start, end)``。
+
+    TensorFlow 2.15 CPU 与 PyTorch 2.2 CPU 对 ``sqrt(float32(0.9))`` 的最后一位
+    舍入并不相同。稀疏 impulse 的 relative L2 会放大这一个 ULP 的 box 差异。
+    crop box 本来就是固定的非学习参数，因此在构造 PyTorch sampling weights
+    时复用 oracle 产生的两个 float32 常量，既保持跨框架几何一致，也不引入
+    TensorFlow 到训练 autograd graph。
+    """
+
+    crop_area_tensor = tf.constant(crop_area, dtype=tf.float32)
+    side_scale = tf.sqrt(crop_area_tensor)
+    offset = (tf.constant(1.0, dtype=tf.float32) - side_scale) / tf.constant(
+        2.0,
+        dtype=tf.float32,
+    )
+    box_end = offset + side_scale
+    return float(offset.numpy()), float(box_end.numpy())
+
+
 def tensorflow_center_crop_float(
     image: tf.Tensor,
     *,
@@ -110,7 +131,7 @@ def tensorflow_center_crop_float(
     """使用 checkpoint 精确 TensorFlow 语义执行中心裁剪和 resize。
 
     Args:
-        image: 浮点 HWC 或 NHWC tensor，shape 尾部为
+        image: float32 HWC 或 NHWC tensor，shape 尾部为
             ``[input_resolution, input_resolution, 3]``。数值通常位于 [0, 1]，
             但本函数不做 clip，以保留线性算子及其真实梯度。
         specification: 输入尺寸、输出尺寸和裁剪面积。
@@ -120,8 +141,8 @@ def tensorflow_center_crop_float(
         ``[output_resolution, output_resolution]``。
 
     ``tf.image.crop_and_resize`` 的归一化 box 端点映射到输入像素中心 0 与
-    ``input_resolution - 1``。输出采样包含两个端点；这个坐标约定也是
-    PyTorch surrogate 使用 ``align_corners=True`` 的原因。
+    ``input_resolution - 1``。输出采样包含两个端点；PyTorch surrogate 会
+    直接复现该像素坐标与双线性插值顺序。
     """
 
     rank: int = _validate_tensorflow_image(
@@ -237,7 +258,7 @@ def torch_center_crop_float(
     """使用 PyTorch 可微 surrogate 复现 TensorFlow center-crop 几何。
 
     Args:
-        image_nchw: 浮点 tensor，语义为连续 RGB，shape 为
+        image_nchw: float32 tensor，语义为连续 RGB，shape 为
             ``[batch_size, 3, input_resolution, input_resolution]``，device
             与 dtype 由调用方决定。
         specification: 输入尺寸、输出尺寸和裁剪面积。
@@ -252,9 +273,9 @@ def torch_center_crop_float(
 
     if not isinstance(image_nchw, torch.Tensor):
         raise TypeError("PyTorch center-crop 输入必须是 torch.Tensor")
-    if not image_nchw.is_floating_point():
+    if image_nchw.dtype != torch.float32:
         raise TypeError(
-            "PyTorch center-crop 输入必须为浮点 tensor，收到 "
+            "PyTorch center-crop surrogate 输入必须为 float32 tensor，收到 "
             f"{image_nchw.dtype}"
         )
     if image_nchw.ndim != 4:
@@ -273,30 +294,101 @@ def torch_center_crop_float(
             f"{tuple(image_nchw.shape)}，期望尾部为 {expected_tail}"
         )
 
-    batch_size: int = image_nchw.shape[0]
-    theta: torch.Tensor = torch.zeros(
-        (batch_size, 2, 3),
-        dtype=image_nchw.dtype,
-        device=image_nchw.device,
+    coordinate_dtype: torch.dtype = torch.float32
+    coordinate_device: torch.device = image_nchw.device
+    two = torch.tensor(
+        2.0,
+        dtype=coordinate_dtype,
+        device=coordinate_device,
     )
-    side_scale: float = math.sqrt(specification.crop_area)
-    theta[:, 0, 0] = side_scale
-    theta[:, 1, 1] = side_scale
-    output_shape: tuple[int, int, int, int] = (
-        batch_size,
-        3,
-        specification.output_resolution,
-        specification.output_resolution,
+    box_start_value: float
+    box_end_value: float
+    box_start_value, box_end_value = _tensorflow_float32_crop_box(
+        specification.crop_area
     )
-    sampling_grid: torch.Tensor = torch_functional.affine_grid(
-        theta,
-        size=output_shape,
-        align_corners=True,
+    box_start = torch.tensor(
+        box_start_value,
+        dtype=coordinate_dtype,
+        device=coordinate_device,
     )
-    return torch_functional.grid_sample(
-        image_nchw,
-        sampling_grid,
-        mode="bilinear",
-        padding_mode="zeros",
-        align_corners=True,
+    box_end = torch.tensor(
+        box_end_value,
+        dtype=coordinate_dtype,
+        device=coordinate_device,
     )
+
+    def build_pixel_coordinates(output_resolution: int) -> torch.Tensor:
+        """按 TF CropAndResize CPU kernel 的运算顺序构造像素坐标。"""
+
+        input_extent = torch.tensor(
+            specification.input_resolution - 1,
+            dtype=coordinate_dtype,
+            device=coordinate_device,
+        )
+        if output_resolution == 1:
+            return ((box_start + box_end) / two * input_extent)[None]
+        output_extent = torch.tensor(
+            output_resolution - 1,
+            dtype=coordinate_dtype,
+            device=coordinate_device,
+        )
+        coordinate_scale = (
+            (box_end - box_start) * input_extent / output_extent
+        )
+        output_indices = torch.arange(
+            output_resolution,
+            dtype=coordinate_dtype,
+            device=coordinate_device,
+        )
+        return box_start * input_extent + output_indices * coordinate_scale
+
+    pixel_coordinates = build_pixel_coordinates(
+        specification.output_resolution
+    )
+    lower_indices = torch.floor(pixel_coordinates).to(dtype=torch.long)
+    upper_indices = torch.ceil(pixel_coordinates).to(dtype=torch.long)
+    lower_indices = torch.clamp(
+        lower_indices,
+        min=0,
+        max=specification.input_resolution - 1,
+    )
+    upper_indices = torch.clamp(
+        upper_indices,
+        min=0,
+        max=specification.input_resolution - 1,
+    )
+    lerp = pixel_coordinates - lower_indices.to(dtype=coordinate_dtype)
+
+    # 正方形中心 crop 的 x/y 坐标相同。下面显式复现 TensorFlow kernel 的
+    # x-linear interpolation 后 y-linear interpolation 顺序。相比 affine_grid +
+    # grid_sample，这也避免了 normalized→pixel 的第二次坐标舍入；高频 checker
+    # 和 impulse case 对一个 ULP 的坐标差异非常敏感。
+    top_left = image_nchw[
+        :,
+        :,
+        lower_indices[:, None],
+        lower_indices[None, :],
+    ]
+    top_right = image_nchw[
+        :,
+        :,
+        lower_indices[:, None],
+        upper_indices[None, :],
+    ]
+    bottom_left = image_nchw[
+        :,
+        :,
+        upper_indices[:, None],
+        lower_indices[None, :],
+    ]
+    bottom_right = image_nchw[
+        :,
+        :,
+        upper_indices[:, None],
+        upper_indices[None, :],
+    ]
+    x_lerp = lerp[None, None, None, :]
+    y_lerp = lerp[None, None, :, None]
+    top = top_left + (top_right - top_left) * x_lerp
+    bottom = bottom_left + (bottom_right - bottom_left) * x_lerp
+    return top + (bottom - top) * y_lerp

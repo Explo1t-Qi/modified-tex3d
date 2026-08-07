@@ -19,6 +19,11 @@ from experiments.robot.openvla_image_transform import (  # noqa: E402
     tensorflow_center_crop_float,
     torch_center_crop_float,
 )
+from experiments.robot.openvla_image_transform_audit import (  # noqa: E402
+    CENTER_CROP_AUDIT_SCHEMA_VERSION,
+    run_center_crop_equivalence_audit,
+    write_center_crop_audit_jsonl,
+)
 
 
 def _spatial_ramp(size: int) -> np.ndarray:
@@ -94,6 +99,30 @@ def test_torch_center_crop_forward_matches_tensorflow_float_geometry() -> None:
     )
 
 
+def test_torch_center_crop_preserves_batch_order() -> None:
+    """多 state/view batch 不得在显式 gather 中发生维度或顺序混淆。"""
+    first = _spatial_ramp(9)
+    second = np.ascontiguousarray(first[::-1, ::-1])
+    source_nhwc = np.stack((first, second), axis=0)
+    specification = CenterCropSpecification(
+        input_resolution=9,
+        output_resolution=7,
+        crop_area=0.9,
+    )
+
+    tensorflow_output = tensorflow_center_crop_float(
+        tf.convert_to_tensor(source_nhwc),
+        specification=specification,
+    ).numpy()
+    source_nchw = torch.from_numpy(source_nhwc).permute(0, 3, 1, 2)
+    torch_output = torch_center_crop_float(
+        source_nchw,
+        specification=specification,
+    ).permute(0, 2, 3, 1).detach().numpy()
+
+    np.testing.assert_array_equal(torch_output, tensorflow_output)
+
+
 def test_torch_center_crop_input_vjp_matches_tensorflow() -> None:
     source_hwc = _spatial_ramp(9)
     upstream_hwc = np.random.default_rng(17).standard_normal(
@@ -149,3 +178,47 @@ def test_torch_center_crop_input_vjp_matches_tensorflow() -> None:
 
     assert relative_l2 <= 1e-5
     assert cosine >= 0.99999
+
+
+def test_center_crop_audit_covers_frozen_cases_and_candidate_thresholds(
+    tmp_path: Path,
+) -> None:
+    """Gate 2C 必须覆盖冻结图案并留下逐 case JSONL 证据。"""
+    specification = CenterCropSpecification(
+        input_resolution=224,
+        output_resolution=224,
+        crop_area=0.9,
+    )
+
+    results = run_center_crop_equivalence_audit(
+        specification=specification,
+    )
+
+    assert {result["case_name"] for result in results} == {
+        "forward_spatial_ramp",
+        "forward_checkerboard",
+        "forward_center_impulse",
+        "forward_crop_boundary_impulse",
+        "forward_random_rgb",
+        "vjp_spatial_ramp",
+        "vjp_center_impulse",
+        "vjp_boundary_impulse",
+        "vjp_corner_impulse",
+        "vjp_random",
+    }
+    assert all(
+        result["schema_version"] == CENTER_CROP_AUDIT_SCHEMA_VERSION
+        for result in results
+    )
+    assert all(result["candidate_pass"] for result in results)
+    assert all(result["relative_l2"] <= 1e-5 for result in results)
+    assert all(result["cosine"] >= 0.99999 for result in results)
+
+    output_path = tmp_path / "center_crop_metrics.jsonl"
+    output_sha256 = write_center_crop_audit_jsonl(
+        results,
+        output_path=output_path,
+    )
+    lines = output_path.read_text(encoding="utf-8").splitlines()
+    assert len(lines) == len(results)
+    assert len(output_sha256) == 64
