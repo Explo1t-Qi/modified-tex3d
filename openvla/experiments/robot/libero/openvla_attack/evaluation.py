@@ -15,7 +15,6 @@ from pathlib import Path
 from typing import Any, Optional, Protocol, TypedDict
 
 import numpy as np
-from PIL import Image
 
 
 # 直接执行 attack_openvla.py 与从测试导入本 module 时，Python 提供的搜索路径
@@ -38,6 +37,12 @@ from robot_utils import (  # noqa: E402
     get_image_resize_size,
     invert_gripper_action,
     normalize_gripper_action,
+)
+
+from .policy_view import (  # noqa: E402
+    POLICY_SOURCE_RESOLUTION,
+    PolicyPreCropSpecification,
+    resize_policy_pre_crop_canvas,
 )
 
 
@@ -78,7 +83,7 @@ class RolloutResult:
 
     success: bool
     task_description: str
-    # uint8 HWC，高分辨率 MuJoCo 相机帧。策略输入由同一帧确定性 resize 得到。
+    # uint8 HWC，高分辨率 MuJoCo 相机帧；它不定义 policy 输入分辨率。
     replay_images: list[np.ndarray]
 
 
@@ -109,26 +114,38 @@ class LiberoEpisodeRunner:
         self,
         observation: LiberoObservation,
     ) -> tuple[np.ndarray, np.ndarray]:
-        """从同一 MuJoCo 相机帧构造录像图像与模型 RGB 输入。
+        """从同一 observation 独立构造录像图像与 Policy Pre-Crop Canvas。
 
         Returns:
             ``(camera_image, policy_image)``，两者均为 uint8 HWC。
             ``camera_image`` shape 为
             ``[video_resolution, video_resolution, 3]``，直接用于录像；
             ``policy_image`` shape 为
-            ``[model_input_size, model_input_size, 3]``，是前者的确定性 resize，
-            直接写入 OpenVLA observation。
+            ``[model_input_size, model_input_size, 3]``，固定从 512 policy-source
+            RGB 显式 bicubic resize 得到，直接写入 OpenVLA observation。
+            当录像也为 512 时只复用同一 source 数组作为缓存；改变录像分辨率
+            不得改变 policy canvas。
         """
         # camera_image: uint8 HWC, [video_resolution, video_resolution, 3]。
         camera_image: np.ndarray = get_libero_image(
             observation,
             self._video_resolution,
         )
-        model_input_size: int = get_image_resize_size(self._cfg)
-        policy_image: np.ndarray = np.asarray(
-            Image.fromarray(camera_image).resize(
-                (model_input_size, model_input_size)
+        policy_source_image: np.ndarray = (
+            camera_image
+            if self._video_resolution == POLICY_SOURCE_RESOLUTION
+            else get_libero_image(
+                observation,
+                POLICY_SOURCE_RESOLUTION,
             )
+        )
+        model_input_size: int = get_image_resize_size(self._cfg)
+        policy_image: np.ndarray = resize_policy_pre_crop_canvas(
+            policy_source_image,
+            specification=PolicyPreCropSpecification(
+                source_resolution=POLICY_SOURCE_RESOLUTION,
+                canvas_resolution=model_input_size,
+            ),
         )
         return camera_image, policy_image
 
@@ -156,7 +173,9 @@ class LiberoEpisodeRunner:
         env, task_description = get_libero_env(
             task,
             self._cfg.model_family,
-            resolution=self._video_resolution,
+            # 环境 observation 分辨率属于固定 policy-source 契约；录像只从
+            # 同一 observation 派生，不得反向改变模型看到的像素来源。
+            resolution=POLICY_SOURCE_RESOLUTION,
         )
 
         success: bool = False

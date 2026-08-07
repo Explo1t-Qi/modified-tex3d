@@ -89,12 +89,23 @@ def test_episode_runner_preserves_wait_observation_action_and_cleanup_flow(
     }
     env = FakeEnvironment(observation)
     camera_image = np.full((2, 2, 3), 127, dtype=np.uint8)
+    policy_source_image = np.full((512, 512, 3), 127, dtype=np.uint8)
     policy_observations: list[dict[str, np.ndarray]] = []
+    environment_resolutions: list[int] = []
+
+    def fake_get_libero_env(
+        task: object,
+        model_family: str,
+        resolution: int,
+    ) -> tuple[FakeEnvironment, str]:
+        del task, model_family
+        environment_resolutions.append(resolution)
+        return env, "pick up the bowl"
 
     monkeypatch.setattr(
         evaluation,
         "get_libero_env",
-        lambda task, model_family, resolution: (env, "pick up the bowl"),
+        fake_get_libero_env,
     )
     monkeypatch.setattr(
         evaluation,
@@ -104,7 +115,9 @@ def test_episode_runner_preserves_wait_observation_action_and_cleanup_flow(
     monkeypatch.setattr(
         evaluation,
         "get_libero_image",
-        lambda current_observation, resolution: camera_image,
+        lambda current_observation, resolution: (
+            policy_source_image if resolution == 512 else camera_image
+        ),
     )
     monkeypatch.setattr(evaluation, "get_image_resize_size", lambda cfg: 2)
     monkeypatch.setattr(
@@ -148,6 +161,7 @@ def test_episode_runner_preserves_wait_observation_action_and_cleanup_flow(
     assert result.task_description == "pick up the bowl"
     assert len(result.replay_images) == 1
     assert result.replay_images[0] is camera_image
+    assert environment_resolutions == [512]
     assert env.forward_calls == 1
     assert env.closed is True
     assert env.actions[0] == [0.0] * 7
@@ -163,20 +177,38 @@ def test_episode_runner_preserves_wait_observation_action_and_cleanup_flow(
     assert policy_observations[0]["full_image"].shape == (2, 2, 3)
 
 
-def test_policy_input_and_replay_derive_from_same_mujoco_camera_frame(
+def test_policy_canvas_is_independent_from_replay_resolution(
     monkeypatch,
 ) -> None:
-    """录像保留高分辨率源帧，策略只对该帧执行确定性 resize。"""
+    """录像分辨率变化不能改变固定 512 policy-source 语义。"""
     observation = {
         "robot0_eef_pos": np.zeros(3, dtype=np.float32),
         "robot0_eef_quat": np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32),
         "robot0_gripper_qpos": np.zeros(2, dtype=np.float32),
     }
-    camera_image = np.arange(4 * 4 * 3, dtype=np.uint8).reshape(4, 4, 3)
+    replay_image = np.zeros((4, 4, 3), dtype=np.uint8)
+    policy_source_image = np.arange(
+        512 * 512 * 3,
+        dtype=np.uint8,
+    ).reshape(512, 512, 3)
+    requested_resolutions: list[int] = []
+
+    def fake_get_libero_image(
+        current_observation: object,
+        resolution: int,
+    ) -> np.ndarray:
+        del current_observation
+        requested_resolutions.append(resolution)
+        if resolution == 4:
+            return replay_image
+        if resolution == 512:
+            return policy_source_image
+        raise AssertionError(f"unexpected resolution: {resolution}")
+
     monkeypatch.setattr(
         evaluation,
         "get_libero_image",
-        lambda current_observation, resolution: camera_image,
+        fake_get_libero_image,
     )
     monkeypatch.setattr(evaluation, "get_image_resize_size", lambda cfg: 2)
 
@@ -189,11 +221,62 @@ def test_policy_input_and_replay_derive_from_same_mujoco_camera_frame(
     )
     replay_image, policy_image = runner._build_policy_image(observation)
 
-    assert replay_image is camera_image
+    assert replay_image.shape == (4, 4, 3)
+    assert requested_resolutions == [4, 512]
     np.testing.assert_array_equal(
         policy_image,
-        np.asarray(Image.fromarray(camera_image).resize((2, 2))),
+        np.asarray(
+            Image.fromarray(policy_source_image).resize(
+                (2, 2),
+                resample=Image.Resampling.BICUBIC,
+            )
+        ),
     )
+
+
+def test_policy_canvas_reuses_replay_array_at_reference_resolution(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """录像恰为 512 时可以缓存复用，但仍输出独立 policy canvas。"""
+    observation = {
+        "robot0_eef_pos": np.zeros(3, dtype=np.float32),
+        "robot0_eef_quat": np.array(
+            [1.0, 0.0, 0.0, 0.0],
+            dtype=np.float32,
+        ),
+        "robot0_gripper_qpos": np.zeros(2, dtype=np.float32),
+    }
+    policy_source_image = np.full((512, 512, 3), 91, dtype=np.uint8)
+    requested_resolutions: list[int] = []
+
+    def fake_get_libero_image(
+        current_observation: object,
+        resolution: int,
+    ) -> np.ndarray:
+        del current_observation
+        requested_resolutions.append(resolution)
+        assert resolution == 512
+        return policy_source_image
+
+    monkeypatch.setattr(
+        evaluation,
+        "get_libero_image",
+        fake_get_libero_image,
+    )
+    monkeypatch.setattr(evaluation, "get_image_resize_size", lambda cfg: 2)
+
+    runner = LiberoEpisodeRunner(
+        cfg=FakeRolloutConfig(num_steps_wait=0),
+        model=SimpleNamespace(),
+        processor=object(),
+        video_resolution=512,
+        max_steps=1,
+    )
+    replay_image, policy_image = runner._build_policy_image(observation)
+
+    assert replay_image is policy_source_image
+    assert requested_resolutions == [512]
+    assert policy_image.shape == (2, 2, 3)
 
 
 def test_episode_runner_propagates_policy_error_and_closes_environment(
@@ -209,6 +292,7 @@ def test_episode_runner_propagates_policy_error_and_closes_environment(
     }
     env = FakeEnvironment(observation, successful_action_number=99)
     camera_image = np.zeros((2, 2, 3), dtype=np.uint8)
+    policy_source_image = np.zeros((512, 512, 3), dtype=np.uint8)
 
     monkeypatch.setattr(
         evaluation,
@@ -218,7 +302,9 @@ def test_episode_runner_propagates_policy_error_and_closes_environment(
     monkeypatch.setattr(
         evaluation,
         "get_libero_image",
-        lambda current_observation, resolution: camera_image,
+        lambda current_observation, resolution: (
+            policy_source_image if resolution == 512 else camera_image
+        ),
     )
     monkeypatch.setattr(evaluation, "get_image_resize_size", lambda cfg: 2)
     monkeypatch.setattr(
