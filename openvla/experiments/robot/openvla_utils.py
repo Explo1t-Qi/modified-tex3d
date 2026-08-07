@@ -17,6 +17,12 @@ from prismatic.extern.hf.configuration_prismatic import OpenVLAConfig
 from prismatic.extern.hf.modeling_prismatic import OpenVLAForActionPrediction
 from prismatic.extern.hf.processing_prismatic import PrismaticImageProcessor, PrismaticProcessor
 
+from experiments.robot.openvla_image_transform import (
+    CenterCropSpecification,
+    deployment_center_crop_uint8,
+    tensorflow_center_crop_float,
+)
+
 # Initialize important constants and pretty-printing mode in NumPy.
 ACTION_DIM = 7
 DATE = time.strftime("%Y_%m_%d")
@@ -145,50 +151,44 @@ def get_processor(cfg):
     return processor
 
 
-def crop_and_resize(image, crop_scale, batch_size):
+def crop_and_resize(
+    image: tf.Tensor,
+    crop_scale: float,
+    batch_size: int,
+) -> tf.Tensor:
+    """兼容旧调用名，委托给共享的 TensorFlow center-crop 实现。
+
+    历史接口固定输出 224×224，并单独传入 ``batch_size``。新代码应直接使用
+    :func:`tensorflow_center_crop_float` 和显式 specification；保留此 wrapper
+    只是为了避免仓库外的 evaluation 脚本立即失效。
     """
-    Center-crops an image to have area `crop_scale` * (original image area), and then resizes back
-    to original size. We use the same logic seen in the `dlimp` RLDS datasets wrapper to avoid
-    distribution shift at test time.
 
-    Args:
-        image: TF Tensor of shape (batch_size, H, W, C) or (H, W, C) and datatype tf.float32 with
-               values between [0,1].
-        crop_scale: The area of the center crop with respect to the original image.
-        batch_size: Batch size.
-    """
-    # Convert from 3D Tensor (H, W, C) to 4D Tensor (batch_size, H, W, C)
-    assert image.shape.ndims == 3 or image.shape.ndims == 4
-    expanded_dims = False
-    if image.shape.ndims == 3:
-        image = tf.expand_dims(image, axis=0)
-        expanded_dims = True
+    if image.shape.rank not in (3, 4):
+        raise ValueError("crop_and_resize 输入必须为 HWC 或 NHWC tensor")
+    input_height: int | None = image.shape[-3]
+    input_width: int | None = image.shape[-2]
+    if input_height is None or input_width is None:
+        raise ValueError("兼容 crop_and_resize 需要静态空间尺寸")
+    if input_height != input_width:
+        raise ValueError("兼容 crop_and_resize 只支持正方形输入")
 
-    # Get height and width of crop
-    new_heights = tf.reshape(tf.clip_by_value(tf.sqrt(crop_scale), 0, 1), shape=(batch_size,))
-    new_widths = tf.reshape(tf.clip_by_value(tf.sqrt(crop_scale), 0, 1), shape=(batch_size,))
-
-    # Get bounding box representing crop
-    height_offsets = (1 - new_heights) / 2
-    width_offsets = (1 - new_widths) / 2
-    bounding_boxes = tf.stack(
-        [
-            height_offsets,
-            width_offsets,
-            height_offsets + new_heights,
-            width_offsets + new_widths,
-        ],
-        axis=1,
+    actual_batch_size: int | None = (
+        1 if image.shape.rank == 3 else image.shape[0]
     )
-
-    # Crop and then resize back up
-    image = tf.image.crop_and_resize(image, bounding_boxes, tf.range(batch_size), (224, 224))
-
-    # Convert back to 3D Tensor (H, W, C)
-    if expanded_dims:
-        image = image[0]
-
-    return image
+    if actual_batch_size is not None and actual_batch_size != batch_size:
+        raise ValueError(
+            "显式 batch_size 与 image 不一致："
+            f"{batch_size} != {actual_batch_size}"
+        )
+    specification = CenterCropSpecification(
+        input_resolution=input_height,
+        output_resolution=224,
+        crop_area=float(crop_scale),
+    )
+    return tensorflow_center_crop_float(
+        image,
+        specification=specification,
+    )
 
 
 def get_vla_action(vla, processor, base_vla_name, obs, task_label, unnorm_key, center_crop=False):
@@ -200,25 +200,22 @@ def get_vla_action(vla, processor, base_vla_name, obs, task_label, unnorm_key, c
     # IMPORTANT: Let's say crop scale == 0.9. To get the new height and width (post-crop), multiply
     #            the original height and width by sqrt(0.9) -- not 0.9!
     if center_crop:
-        batch_size = 1
-        crop_scale = 0.9
-
-        # Convert to TF Tensor and record original data type (should be tf.uint8)
-        image = tf.convert_to_tensor(np.array(image))
-        orig_dtype = image.dtype
-
-        # Convert to data type tf.float32 and values between [0,1]
-        image = tf.image.convert_image_dtype(image, tf.float32)
-
-        # Crop and then resize back to original size
-        image = crop_and_resize(image, crop_scale, batch_size)
-
-        # Convert back to original data type
-        image = tf.clip_by_value(image, 0, 1)
-        image = tf.image.convert_image_dtype(image, orig_dtype, saturate=True)
-
-        # Convert back to PIL Image
-        image = Image.fromarray(image.numpy())
+        image_array = np.asarray(image, dtype=np.uint8)
+        if image_array.shape[0] != image_array.shape[1]:
+            raise ValueError(
+                "OpenVLA center-crop 要求正方形 Policy Pre-Crop Canvas，收到 "
+                f"{image_array.shape}"
+            )
+        specification = CenterCropSpecification(
+            input_resolution=image_array.shape[0],
+            output_resolution=224,
+            crop_area=0.9,
+        )
+        image_array = deployment_center_crop_uint8(
+            image_array,
+            specification=specification,
+        )
+        image = Image.fromarray(image_array)
         image = image.convert("RGB")
 
     # Build VLA prompt
