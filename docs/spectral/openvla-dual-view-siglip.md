@@ -1108,11 +1108,14 @@ WSL 的文件一致。结果为：
 - adversarial teacher-first consistency=`0.9`，对应预先声明的近 tie，不属于
   processor等价门槛。
 
-因此 Gate 1 的数值门槛通过。该 bundle 的 JSON SHA-256 为
+因此后续命名为 Gate 1P 的 processor-level equivalence 数值门槛通过；该结果
+没有覆盖 rollout 在 processor 之前执行的 `crop_scale=0.9` center crop，不能
+解释为完整 deployment-path equivalence。该 bundle 的 JSON SHA-256 为
 `780a71154897aff9bef0028bae192c8725f2c217bf0dde14a38a8cd90c60b046`。
 同步文件不含完整 stdout/stderr、运行 manifest 或资产 hash，因此这里不声称已
 独立复核 Runtime Asset Transaction；后续正式 bundle 应补齐这些 provenance。
 
 研究方向随后调整为用谱结构约束纹理自然性，并对选定顶点保留全维优化自由度。
-因此 Gate 2 仍用于验证 BPDA backward/update/bake，但 Gate 2 后不再自动重跑
+因此新增 Gate 1D 验证完整 deployment-path forward equivalence，Gate 2 仍用于
+验证该完整路径的 BPDA backward/update/bake；Gate 2 后不再自动重跑
 纯 K=256、`rho=1.0` 候选；先冻结新参数化、预算与顶点选择的最小契约。
