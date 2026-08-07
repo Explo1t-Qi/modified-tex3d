@@ -12,6 +12,24 @@
 门槛和 Gate 2R 的更强方向门槛。实现不得为了让某个 state 或 support 通过而
 调整这些候选值。
 
+## 实施进度（2026-08-07）
+
+- `b7d61cb`：固定 512 Policy Source，将 224 Policy Pre-Crop Canvas 与录像
+  分辨率解耦；
+- `a2efb7f`：建立共享 `CenterCropSpecification`、TensorFlow exact uint8
+  deployment path 和 PyTorch float32 surrogate，并让 `get_vla_action()` 消费
+  同一 exact helper；
+- `2bb6ce7`：补齐 Gate 2C 的五类 forward 图案、五类 VJP 上游梯度和权威
+  JSONL 审计。WSL 参考环境 10/10 case 通过，服务器 OpenVLA 环境复核仍待运行；
+- 尚未完成 Gate 1D、Gate 2E，也未开始 Visibility/Coverage/Compositor。
+
+Gate 2C 实现过程中发现 TensorFlow 2.15 CPU 与 PyTorch 2.2 CPU 对
+`sqrt(float32(0.9))` 的结果相差 1 ULP；稀疏 impulse 会把它放大为约 `2e-5`
+的 relative L2。实现没有放宽候选门槛，而是让固定 PyTorch crop box 复用
+TensorFlow oracle 产生的两个 float32 常量，并显式复现 pixel coordinate 与
+双线性插值顺序。修正后 WSL 最坏 VJP relative L2 为 `5.4239e-8`、最小 cosine
+为 `0.9999999999978721`、最大绝对误差为 `4.7684e-7`。
+
 ## 阶段 1：Deployment Path
 
 按行为保持式纵切依次完成：

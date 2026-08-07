@@ -123,11 +123,26 @@ pre-crop canvas、center-crop 后 uint8 RGB、checkpoint fused pixel values、�
 action sequence 和逐 action token 一致；同时保存各阶段图像、数值误差、token
 差异及资产 hash。Gate 1P 的历史结果继续保留，但不得替代本项。
 
-### Gate 2C：center-crop surrogate VJP equivalence（待实现/运行）
+### Gate 2C：center-crop surrogate VJP equivalence（WSL 通过，服务器待复核）
 
 在进入 GPU smoke 前，使用 TensorFlow float `crop_and_resize` 作为 oracle，验证
 PyTorch crop surrogate 的 forward 空间坐标与输入 RGB VJP。固定 crop box 不参与
-优化，因此不验证 box 梯度。正式数值阈值须根据第四十四项的确定性测试产物冻结。
+优化，因此不验证 box 梯度。
+
+`2bb6ce7` 已实现 schema `openvla-gate-2c-v1` 的确定性 CPU 审计，覆盖五类
+forward 图案和五类 VJP 上游梯度。WSL 环境 TensorFlow `2.15.0`、PyTorch
+`2.2.0+cu121` 的 10/10 case 均通过候选门槛；forward 五类的 relative L2 与
+max-absolute error 均为 0，VJP 最坏 relative L2=`5.423894851315424e-08`、最小
+cosine=`0.9999999999978721`、最大 max-absolute error=`4.76837158203125e-07`。
+权威 JSONL 位于 Git 忽略的
+`experiments_inbox/20260807-gate2c-2bb6ce7/center_crop_metrics.jsonl`，SHA-256
+为 `8b045d34b7af9d2bf72c57c9e1574966ded40285d38ac4d909448571641e6e53`。
+
+诊断同时发现 TF/PyTorch 的 float32 `sqrt(0.9)` 相差 1 ULP；直接各自开方会使
+稀疏 impulse 的 relative L2 约为 `2e-5`。当前 surrogate 改为复用 TensorFlow
+计算出的固定 float32 box，并显式复现 TF pixel coordinate 与 x→y 双线性插值
+顺序；没有放宽预注册候选值。考虑服务器 framework build 仍可能不同，正式
+Gate 2C 与数值门槛只在服务器 OpenVLA 环境复现后冻结。
 
 ### Gate 2E：deployment-path end-to-end backward/update/bake smoke
 
