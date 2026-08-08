@@ -2,7 +2,7 @@
 
 更新时间：2026-08-08
 当前 Visibility/Coverage/Compositor 功能代码基线：
-`24daa8d835bd3fa5eadd6d3e0b180e56575b793f`
+`74d6e17005404899d58c2e1461b0056e07b59712`
 服务器 Gate 2E 复核基线：
 `de880cee6ddabd827bfcb2c35340f0eec09fa687`
 
@@ -31,7 +31,7 @@
 | 双视角与动态范数保护 | 机制已实现，源门槛未通过 | 两者均未把 held-out 源攻击恢复到预设的3/10失败 |
 | OpenVLA processor 预处理正确性 | Gate 1P 已通过 | states 0–9 pixel MAE/L∞=`0/0`，10/10序列和70/70 token一致 |
 | Deployment Effective View 与训练反传 | Gate 1D、2C、2E已通过 | 完整forward零误差；crop VJP对齐；五级梯度、单轮更新、bake/rollout/资产恢复通过 |
-| Visibility/Coverage/Compositor | 纯契约与真实audit runner已实现，state 0 smoke未运行 | 连续evidence、严格segmentation、四状态、raster correspondence、Delta compositor与静止事务已有CPU回归；待服务器验证真实backend |
+| Visibility/Coverage/Compositor | 真实backend state 0 smoke已通过，states 0–9待运行 | 两视角均valid且recall>0.999；segmentation/raster/静止事务/NPZ复算通过；结构判定器40/64位bug已修复 |
 | BPDA 下源攻击基线 | 未建立 | Gate 2R与新参数化契约通过后才运行首个新候选 |
 | BPDA 下 OFT 迁移信号 | 未开始 | 新源候选未过门槛前不得进入 OFT |
 | 无偏跨模型迁移与鲁棒性提升 | 未开始 | 需方法冻结后的新任务/第三模型与后续防御实验 |
@@ -195,10 +195,33 @@ VLA 权重，不修改纹理；它在同一静止事务中采集 Primary 与 wri
 proxy 的 segmentation、全部共享纹理实例 renderer raster，并保存可复算 NPZ、
 mask/overlay、拓扑/资产/事务 hash。
 
-下一步先运行 state 0 GPU smoke 验证真实 segmentation schema、nvdiffrast
-triangle/barycentric 与静止事务，再扩展到 states 0–9。候选
-`A_obs_min=1e-3` 与 `recall_min=0.95` 仍未冻结；即使结构判定通过，也必须人工
-检查 overlay、precision/IoU 和 recall 分布后才能冻结。
+候选 `A_obs_min=1e-3` 与 `recall_min=0.95` 仍未冻结；即使结构判定通过，
+也必须人工检查 overlay、precision/IoU 和 recall 分布后才能冻结。
+
+服务器随后在 commit `bf941d9d7f5b74ca97b2e04be45cab81a750ad6a`
+完成 state 0 GPU smoke。MuJoCo backend 为 mujoco `3.2.3`、robosuite `1.4.1`，
+严格 `[512,512,2]` segmentation schema、两个共享纹理实例、真实 triangle ID/
+barycentric、全 Support `w=1` 与静止事务均通过。Primary 与 wrist proxy 均为
+`valid`：
+
+- Primary：`A_obs=0.0235737465`、recall=`0.9994029801`、
+  precision=`0.9979350885`、IoU=`0.9973405310`；
+- wrist proxy：`A_obs=0.0325257730`、recall=`0.9998668607`、
+  precision近1、IoU=`0.9998668607`；第二个实例在该 wrist view 中不可观测，
+  没有被错误判成 alignment failure；
+- transaction 前后 fingerprint 完全相同，time/qpos/qvel 与两个实例 pose 的
+  差异均为0；overlay 几乎完全为黄色重合。
+
+WSL 重新验证全部 artifact hash，并以 `allow_pickle=False` 加载两个 NPZ；复算
+recall/precision/IoU 与 JSONL 误差小于 `2e-7`。权威 JSONL SHA-256 为
+`bb9ba80fa40a8e95df968986faa82fafe8a23794fab3907950ab491c64172a3d`。
+
+本次命令最终非零退出的唯一原因不是 alignment，而是 schema 判定器错误地用
+64位 SHA-256 长度检查40位 Git commit，产生
+`invalid_or_mixed_code_commit`。commit `74d6e17` 已拆分两种 hash 校验并新增
+“64位 SHA-256 不得冒充 Git commit”回归测试；相关本地定向回归为
+`72 passed`。旧 state 0 manifest 的 false 结论不改写，保留为该 bookkeeping
+bug 的原始证据。下一步直接运行修正版 states 0–9 audit。
 
 WSL 复核没有只读取 manifest 判定：已重新验证 50 张 stage PNG 的数组 hash、
 10 个 `allow_pickle=False` NPZ 的 processor/token/action 数组以及全部零误差条件。
