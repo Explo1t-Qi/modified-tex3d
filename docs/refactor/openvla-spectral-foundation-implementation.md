@@ -31,8 +31,9 @@
   配置/权重 inventory、task/object、state fingerprints、framework 版本、完整
   deployment config 和命令；逐 state 保存 exact/candidate PNG、无 pickle NPZ
   与权威 JSONL；
-- Gate 1D 服务器运行尚待执行，Gate 2E 尚未开始，也未开始
-  Visibility/Coverage/Compositor。
+- commit `802733e` 的服务器 Gate 1D 为10/10 states、70/70 token及所有 hard
+  L∞=0；WSL 已从50张 PNG 和10个 NPZ 独立复算，Gate 1D 正式通过；
+- Gate 2E 尚未开始，也未开始 Visibility/Coverage/Compositor。
 
 Gate 2C 实现过程中发现 TensorFlow 2.15 CPU 与 PyTorch 2.2 CPU 对
 `sqrt(float32(0.9))` 的结果相差 1 ULP；稀疏 impulse 会把它放大为约 `2e-5`

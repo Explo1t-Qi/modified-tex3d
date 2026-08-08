@@ -1,7 +1,7 @@
 # OpenVLA 谱纹理当前状态
 
 更新时间：2026-08-07
-功能代码基线：`2bb6ce7`；服务器 Gate 2C 复核基线：`f39525a`
+功能代码基线：`546440a`；服务器 Gate 1D 复核基线：`802733e`
 
 本文是 OpenVLA 谱纹理研究的**当前状态入口**。新一轮开发应先读本文，再按需
 进入专题文档；不要从长篇实验时间线推测当前优先级。历史实验索引见
@@ -27,7 +27,7 @@
 | 共享特征与跨模型梯度诊断 | 已完成 | 共享 Feature 方向存在，Action 方向弱；OFT 腕部 Action 更强且与主视角近似正交 |
 | 双视角与动态范数保护 | 机制已实现，源门槛未通过 | 两者均未把 held-out 源攻击恢复到预设的3/10失败 |
 | OpenVLA processor 预处理正确性 | Gate 1P 已通过 | states 0–9 pixel MAE/L∞=`0/0`，10/10序列和70/70 token一致 |
-| Deployment Effective View 几何 | Gate 2C 已通过 | WSL与服务器10/10 center-crop forward/VJP case通过；Gate 1D与2E仍待验 |
+| Deployment Effective View 几何 | Gate 1D与2C已通过 | 10/10 deployment states、70/70 token及全部RGB/processor/action零误差；Gate 2E待验 |
 | BPDA 下源攻击基线 | 未建立 | 必须在多状态 processor 等价和单轮更新 smoke 后重新训练 |
 | BPDA 下 OFT 迁移信号 | 未开始 | 新源候选未过门槛前不得进入 OFT |
 | 无偏跨模型迁移与鲁棒性提升 | 未开始 | 需方法冻结后的新任务/第三模型与后续防御实验 |
@@ -119,7 +119,7 @@ adversarial teacher-first为`0.9`，对应预先声明的不纳入等价门槛�
 [`openvla-dual-view-siglip.md`](../spectral/openvla-dual-view-siglip.md)
 “Processor margin 结果与 BPDA/STE 修正”一节。
 
-### Gate 1D：十状态 deployment-path forward equivalence（待服务器运行）
+### Gate 1D：十状态 deployment-path forward equivalence（已通过）
 
 在 Gate 1P 基础上，把参考 `512 -> 224` Policy Pre-Crop Canvas 和
 `crop_scale = 0.9` Deployment Effective View Transform 纳入 exact forward 与
@@ -137,8 +137,26 @@ processor fused pixel values、全部 action token 和连续 action 使用严格
 run-level manifest 强制绑定 checkpoint 配置与权重 name/size inventory、task/object、
 原始 state fingerprints、Pillow/TensorFlow/PyTorch/NumPy 版本、完整 deployment
 configuration 和复现命令；逐 state 另存 exact/candidate stage PNG、无 pickle NPZ
-和权威 JSONL。当前仍缺服务器 10-state 证据，因此 Gate 1D 仍是“未通过”，不得
-提前进入 Gate 2E。
+和权威 JSONL。
+
+2026-08-08 服务器在 commit
+`802733e30b26c0b1103244cc0ed3d553de99f46a` 上完成 states 0–9 审计：10/10
+states 通过，Pre-Crop、Effective View、processor fused pixel values 和连续
+action 的 worst L∞ 均为0，70/70 action token一致，无缺失、重复或额外 state。
+权威 JSONL SHA-256 为
+`bf1a86903ee63cfc3fa0eee0ff533b049f96999a24781d2fe3163fe88d4cd235`，manifest
+SHA-256 为 `b8d3856dc3159f3ba575dd6a121b1fe2e24ee38824b7a2cd8c6bcd363344f760`，
+日志 SHA-256 为 `5a7ca87bf9cc9791603ccdb6ec380ec01b4d9093a74a6eef432e59586d6c4ec2`。
+同步文件位于 `experiments_inbox/deployment_forward_metrics.jsonl`、
+`experiments_inbox/deployment_forward_manifest.json` 和
+`experiments_inbox/gate1d.log`。
+
+WSL 复核没有只读取 manifest 判定：已重新验证 50 张 stage PNG 的数组 hash、
+10 个 `allow_pickle=False` NPZ 的 processor/token/action 数组以及全部零误差条件。
+checkpoint 与 LIBERO 资产原文件只存在服务器，不能在 WSL 重算内容 hash；其
+配置 hash、权重 name/size inventory、物体资产 hash、task/object 和10个 state
+fingerprint 已完整绑定。日志中的 wandb/robosuite/Gym warning 均发生在正式
+采集前，未改变 Gate 数据或判定。因此 Gate 1D 正式通过，下一门槛为 Gate 2E。
 
 ### Gate 2C：center-crop surrogate VJP equivalence（已通过）
 
