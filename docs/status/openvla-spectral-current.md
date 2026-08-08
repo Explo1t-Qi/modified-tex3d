@@ -1,7 +1,9 @@
 # OpenVLA 谱纹理当前状态
 
 更新时间：2026-08-08
-功能代码基线与服务器 Gate 2E 复核基线：
+当前 Visibility/Coverage/Compositor 功能代码基线：
+`590d766a017cf0756bb799c085b5bf7efd1922ed`
+服务器 Gate 2E 复核基线：
 `de880cee6ddabd827bfcb2c35340f0eec09fa687`
 
 本文是 OpenVLA 谱纹理研究的**当前状态入口**。新一轮开发应先读本文，再按需
@@ -29,6 +31,7 @@
 | 双视角与动态范数保护 | 机制已实现，源门槛未通过 | 两者均未把 held-out 源攻击恢复到预设的3/10失败 |
 | OpenVLA processor 预处理正确性 | Gate 1P 已通过 | states 0–9 pixel MAE/L∞=`0/0`，10/10序列和70/70 token一致 |
 | Deployment Effective View 与训练反传 | Gate 1D、2C、2E已通过 | 完整forward零误差；crop VJP对齐；五级梯度、单轮更新、bake/rollout/资产恢复通过 |
+| Visibility/Coverage/Compositor | 纯计算契约已实现，真实审计未运行 | 连续evidence、严格segmentation、四状态、raster correspondence、Delta compositor与静止事务已有CPU回归；待服务器验证真实backend |
 | BPDA 下源攻击基线 | 未建立 | Gate 2R与新参数化契约通过后才运行首个新候选 |
 | BPDA 下 OFT 迁移信号 | 未开始 | 新源候选未过门槛前不得进入 OFT |
 | 无偏跨模型迁移与鲁棒性提升 | 未开始 | 需方法冻结后的新任务/第三模型与后续防御实验 |
@@ -75,10 +78,10 @@ float32 surrogate，`get_vla_action()` 已改为调用 exact helper；`2bb6ce7` 
 Gate 2C 审计和显式 TF 像素坐标/插值顺序。
 
 Gate 1D 通过后，commit `0399c8f` 已让 collector 与 Attack Training 端到端消费
-同一完整 Deployment Path；Seed Audit 仍被基础 Gate 阻断。Gate 2E 的严格 schema
-和 runner 已实现，但尚待服务器证明梯度穿过 center-crop 与 processor 两层 BPDA
-后能更新 Surface Delta、完成 bake/rollout 并恢复资产。因此不得把代码实现完成
-解释为真实 attack backward 已通过。
+同一完整 Deployment Path；Seed Audit 仍被基础 Gate 阻断。Gate 2E 已由服务器
+证明梯度穿过 center-crop 与 processor 两层 BPDA 后能更新 Surface Delta、完成
+bake/rollout 并恢复资产，完整证据见下文。当前阻断项已转为真实
+Visibility/Alignment audit、零 Surface Delta compositor Gate 与 Gate 2R。
 
 真实 Spatial checkpoint 的 CPU 差分记录为 fused pixel values MAE/L∞=`0/0`，
 输入梯度有限且非零；文档记录当时全量 CPU 回归为 `113 passed, 1 skipped`。
@@ -150,6 +153,35 @@ SHA-256 为 `b8d3856dc3159f3ba575dd6a121b1fe2e24ee38824b7a2cd8c6bcd363344f760`�
 同步文件位于 `experiments_inbox/deployment_forward_metrics.jsonl`、
 `experiments_inbox/deployment_forward_manifest.json` 和
 `experiments_inbox/gate1d.log`。
+
+### Visibility/Coverage/Compositor 实现检查点（真实审计前）
+
+从 `af5b91e` 到 `590d766` 已按冻结决策建立以下相互独立、可在 CPU 复核的
+契约：
+
+- `coverage_evidence.py`：512 source 上逐实例预乘证据，经非负 area
+  downsampling 与统一 center crop 后才聚合；输入和每级输出均检查
+  `0 <= alpha*w <= alpha`；
+- `visibility_segmentation.py` 与 `visibility_capture.py`：只接受显式
+  `[object_type, object_id]` segmentation，递归建立 body→geom→instance 映射，
+  并用静止事务检查 time/qpos/qvel 与目标 pose；二维裸 ID 不再兼容；
+- `visibility_evidence.py`：严格区分 `not_observable`、
+  `insufficient_observation`、`invalid_alignment` 和 `valid`，并使可观测小实例
+  的 recall 失败不能被 union 指标掩盖；
+- `renderer_correspondence.py`：按 nvdiffrast 的 one-based triangle ID 与
+  `(u,v,1-u-v)` face-corner 顺序生成 barycentric `w_S`，背景另带 invalid
+  mask；三个 corner one-hot、empty/all/subset/background 不变量已有测试；
+- `visibility_compositing.py`：实现 MuJoCo front-most alpha 控制的 renderer
+  delta composition，零 delta 恒等、多实例求和与实例顺序无关、clean renderer
+  分支必须断开梯度；
+- renderer 现可显式返回同一次 rasterization 的 adv/clean/mask/raw raster，
+  多实例编排层强制公开 mask 与 triangle-ID valid mask 逐值一致。
+
+截至该检查点，相关本地 CPU 定向回归为 `64 passed`；另有 12 项 renderer
+interface 测试通过仅用于导入的 nvdiffrast stub。后者不代表真实 CUDA
+rasterization 已验证。下一步先在服务器运行完整无 GPU 回归，再实现并运行
+states 0–9 Visibility/Alignment audit；候选 `A_obs_min=1e-3` 与
+`recall_min=0.95` 仍未冻结。
 
 WSL 复核没有只读取 manifest 判定：已重新验证 50 张 stage PNG 的数组 hash、
 10 个 `allow_pickle=False` NPZ 的 processor/token/action 数组以及全部零误差条件。
