@@ -31,7 +31,7 @@
 | 双视角与动态范数保护 | 机制已实现，源门槛未通过 | 两者均未把 held-out 源攻击恢复到预设的3/10失败 |
 | OpenVLA processor 预处理正确性 | Gate 1P 已通过 | states 0–9 pixel MAE/L∞=`0/0`，10/10序列和70/70 token一致 |
 | Deployment Effective View 与训练反传 | Gate 1D、2C、2E已通过 | 完整forward零误差；crop VJP对齐；五级梯度、单轮更新、bake/rollout/资产恢复通过 |
-| Visibility/Coverage/Compositor | Visibility/Alignment已通过；Compositor零delta代码完成、待真实运行；Gate 2R待实现 | 20/20对齐证据通过；零delta Gate已有严格schema、NPZ与states 0–9 runner |
+| Visibility/Coverage/Compositor | Visibility/Alignment与Compositor零delta均已通过；Gate 2R待实现 | 20/20对齐证据、10/10零delta states与70/70 action token通过 |
 | BPDA 下源攻击基线 | 未建立 | Gate 2R与新参数化契约通过后才运行首个新候选 |
 | BPDA 下 OFT 迁移信号 | 未开始 | 新源候选未过门槛前不得进入 OFT |
 | 无偏跨模型迁移与鲁棒性提升 | 未开始 | 需方法冻结后的新任务/第三模型与后续防御实验 |
@@ -250,9 +250,9 @@ state 2、7 Primary 及 state 3 wrist union overlay，差异仅位于抗锯齿�
 `c992fcd0e866840851467662e8a5ff8f43b2bc0cd66c46621150b1a3bf5b4a1f`。
 因此从 commit `3b51f27` 起正式冻结 `A_obs_min=1e-3` 与
 `recall_min=0.95`；类名 `VisibilityThresholdCandidates` 仅为历史 schema
-兼容保留，默认值已是正式门槛。零 Surface Delta compositor Gate 的代码已完成，
-下一步是服务器真实运行；通过后再实现并运行 Gate 2R，仍不得提前运行 Support
-Seed Gradient Audit。
+兼容保留，默认值已是正式门槛。零 Surface Delta compositor Gate 随后也已完成
+并通过，证据见下文；当前下一步为 Gate 2R，仍不得提前运行 Support Seed
+Gradient Audit。
 
 WSL 复核没有只读取 manifest 判定：已重新验证 50 张 stage PNG 的数组 hash、
 10 个 `allow_pickle=False` NPZ 的 processor/token/action 数组以及全部零误差条件。
@@ -341,7 +341,7 @@ pytest 日志 SHA-256 分别为
 因此 Gate 2E 正式通过；唯一下一阶段为 Visibility/Coverage/Compositor 与
 Gate 2R，不得提前运行 Support Seed Audit 或正式候选。
 
-### 零 Surface Delta Compositor Gate（代码完成，待服务器运行）
+### 零 Surface Delta Compositor Gate（已通过）
 
 commit `5dcec04` 建立纯 CPU 判定层 `openvla-compositor-zero-delta-v1`；commit
 `1884eb7` 增加真实 states 0–9 runner。它只使用 source OpenVLA Primary 视角，
@@ -365,58 +365,31 @@ Gate 对每个原始 state 严格要求：
 每个 state 保存一个 `allow_pickle=False` 可加载的 NPZ、clean/composited RGB、
 MuJoCo alpha 图和完整 SHA-256 inventory；唯一权威长表为
 `compositor_zero_delta_metrics.jsonl`，manifest 必须绑定其 SHA-256。WSL 定向
-回归为 `22 passed`；服务器定向回归同样为 `22 passed in 1.06s`，同步日志
-SHA-256 为
-`76614c2c6f128aca9516c283424a670890936f188aed56f3064e8f5fb73fd572`。
-该 pytest 日志没有包含命令前单独打印的 `git rev-parse HEAD`，因此只接受为数值
-回归证据；真实 Gate 命令必须另外保存并核对 `commit.log`。扩大本地测试集合时
-仅因当前环境缺少 nvdiffrast 与 LIBERO 而在 collection 阶段停止，没有发现新增
-断言失败。
+回归为 `22 passed`；服务器定向回归同样为 `22 passed in 1.06s`。第一次 GPU
+运行虽然数值通过，但 `commit.log=7e2ff16` 与命令参数/JSONL 中的 `1884eb7`
+冲突，因此明确拒绝，没有事后修改产物。
 
-服务器必须先同步到完整 commit
-`1884eb7500283eea9f3bcf8793a4410cd1396b87`，再运行：
+服务器随后在实际 checkout
+`7e2ff161451eb57e515be350ba69019284c4e879` 上重新运行。`commit.log`、manifest、
+全部10行 JSONL 与保存命令一致；10/10 states、70/70 action token 通过，raw、
+Pre-Crop、Effective View、processor pixels、连续 action、renderer delta、逐实例
+delta、total delta 与 saturation 的最坏 L∞ 均为0。clean renderer 全部断图，
+joint-visible pixel 范围为 `[5416,5734]`；Surface 参数梯度 L2 范围为
+`[82.4309581,87.0276452]`、L∞ 范围为 `[2.1930928,2.5591207]`，每个 state
+有 `[25173,26013]` 个非零项。全部 static transaction 前后 fingerprint 相同。
 
-```bash
-set -euo pipefail
-COMPOSITOR_RUN_DIR=/tmp/openvla-compositor-zero-delta-1884eb7
-mkdir -p "$COMPOSITOR_RUN_DIR"
-git rev-parse HEAD | tee "$COMPOSITOR_RUN_DIR/commit.log"
-test "$(git rev-parse HEAD)" = 1884eb7500283eea9f3bcf8793a4410cd1396b87
-CUDA_VISIBLE_DEVICES='' PYTHONDONTWRITEBYTECODE=1 TF_CPP_MIN_LOG_LEVEL=3 \
-  NUMBA_CACHE_DIR=/tmp/tex3d-numba-cache \
-  /home/xiaomengqi/miniconda3/envs/tex3d-openvla/bin/python -m pytest -q \
-  tests/unit/openvla_attack/test_compositor_zero_delta_audit.py \
-  tests/unit/openvla_attack/test_visibility_compositing.py \
-  tests/unit/openvla_attack/test_instance_renderer_evidence.py \
-  tests/unit/openvla_attack/test_deployment_forward_audit.py \
-  2>&1 | tee "$COMPOSITOR_RUN_DIR/pytest-compositor-zero-delta.log"
-```
+WSL 又独立验证60个 artifact SHA-256，使用 `allow_pickle=False` 加载10个 NPZ，
+逐值复算所有等价数组、joint-visible counts 与梯度有限/非零统计，失败项为空。
+权威 commit/pytest/GPU log/JSONL/manifest SHA-256 分别为：
 
-定向回归通过后运行真实 Gate：
+- `5691e28bdcd72a250df2af08d89db647c95e4386c22bfb9dd3027dd57507b404`；
+- `76614c2c6f128aca9516c283424a670890936f188aed56f3064e8f5fb73fd572`；
+- `5c59b8edd7d1adc439e99ff779b37ba1a637c68be2e208fb040e969d0fbe06d3`；
+- `2a9c330e80df0381ebc88f922da6400438cf05d9949703356c15f14424dd87f6`；
+- `6a2429f941071ceee8c91a2a6abc414e062bc3db5bdb264e0c1291798eafb579`。
 
-```bash
-set -euo pipefail
-COMPOSITOR_RUN_DIR=/tmp/openvla-compositor-zero-delta-1884eb7
-git rev-parse HEAD | tee "$COMPOSITOR_RUN_DIR/commit.log"
-test "$(git rev-parse HEAD)" = 1884eb7500283eea9f3bcf8793a4410cd1396b87
-CUDA_VISIBLE_DEVICES=0 PYTHONDONTWRITEBYTECODE=1 TF_CPP_MIN_LOG_LEVEL=3 \
-  NUMBA_CACHE_DIR=/tmp/tex3d-numba-cache \
-  /home/xiaomengqi/miniconda3/envs/tex3d-openvla/bin/python \
-  openvla/experiments/robot/libero/openvla_attack/diagnose_compositor_zero_delta.py \
-  --pretrained_checkpoint /data/huangsimin/openvla-7b-finetuned-libero-spatial \
-  --output_dir "$COMPOSITOR_RUN_DIR" \
-  --code_commit 1884eb7500283eea9f3bcf8793a4410cd1396b87 \
-  --task_suite_name libero_spatial \
-  --task_id 0 \
-  --object_name akita_black_bowl \
-  --state_ids 0-9 \
-  --num_steps_wait 10 \
-  --unnorm_key libero_spatial_no_noops \
-  2>&1 | tee "$COMPOSITOR_RUN_DIR/compositor-zero-delta.log"
-```
-
-完成后同步整个 `$COMPOSITOR_RUN_DIR`，不能只同步 stdout。Gate 通过前，当前状态
-仍是“代码完成、真实证据待验收”，不得进入 Gate 2R 或 Seed Audit。
+因此零 Surface Delta Compositor Gate 正式通过。下一步只允许实现和运行 Gate
+2R；在 Gate 2R 通过前仍不得进入 Support Seed Gradient Audit。
 
 ### Gate 2R：renderer-to-bake response（待实现/运行）
 

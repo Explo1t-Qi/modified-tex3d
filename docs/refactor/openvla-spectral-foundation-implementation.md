@@ -50,8 +50,11 @@
   静止事务、state 集合完整性和 artifact SHA-256；
 - `1884eb7`：实现 states 0–9 真实零 Surface Delta runner，在 MuJoCo alpha 与
   renderer mask 的 joint-visible 路径上验证有限非零 Surface 参数梯度，并保存
-  权威 JSONL、manifest、无 pickle NPZ 与便读图。代码已完成，服务器 Gate 尚未
-  运行，不能记为通过。
+  权威 JSONL、manifest、无 pickle NPZ 与便读图；
+- 服务器在 `7e2ff16` 上完成 provenance 修正后的正式重跑：10/10 states、70/70
+  action token、全部 forward stage 与 renderer delta 严格零误差，joint-visible
+  Surface 参数梯度有限非零；WSL 独立复算60个 artifact 和10个 NPZ 后正式接受。
+  第一次数值通过但 commit 字段冲突的 bundle 保持拒绝，不作事后修补。
 
 Gate 2C 实现过程中发现 TensorFlow 2.15 CPU 与 PyTorch 2.2 CPU 对
 `sqrt(float32(0.9))` 的结果相差 1 ULP；稀疏 impulse 会把它放大为约 `2e-5`
