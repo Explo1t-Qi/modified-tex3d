@@ -48,6 +48,11 @@ from .optimization import (
     OptimizationConfig,
     OptimizationRenderer,
 )
+from .policy_view import (
+    POLICY_SOURCE_RESOLUTION,
+    DifferentiablePolicyViewTransform,
+    build_policy_view_transform,
+)
 from .runtime_assets import RuntimeAssetTransaction
 from .scene import SearchKeywords
 from .spectral_gradient_audit import (
@@ -63,7 +68,7 @@ from .source_action_response import (
 )
 
 
-DEFAULT_RENDER_RESOLUTION: Final[int] = 256
+DEFAULT_RENDER_RESOLUTION: Final[int] = POLICY_SOURCE_RESOLUTION
 
 
 class AttackTrainingConfig(
@@ -142,6 +147,17 @@ class AttackTrainer:
                 processor=processor,
             )
         )
+        model_input_height, model_input_width = (
+            self._image_preprocessor.output_size
+        )
+        if model_input_height != model_input_width:
+            raise ValueError("OpenVLA deployment view 要求正方形模型输入")
+        self._policy_view_transform: DifferentiablePolicyViewTransform = (
+            build_policy_view_transform(
+                source_resolution=render_resolution,
+                model_input_resolution=model_input_height,
+            )
+        )
 
         self._optimizer: AttackOptimizer = AttackOptimizer(
             cfg=cfg,
@@ -151,6 +167,7 @@ class AttackTrainer:
             feature_objective=feature_objective,
             feature_view_mode=feature_view_mode,
             render_resolution=render_resolution,
+            policy_view_transform=self._policy_view_transform,
         )
         self._live_episode_runner: LiberoEpisodeRunner = (
             LiberoEpisodeRunner(
@@ -209,6 +226,7 @@ class AttackTrainer:
             feature_objective=self._feature_objective,
             feature_view_mode=self._feature_view_mode,
             render_resolution=self._render_resolution,
+            policy_view_transform=self._policy_view_transform,
         )
         frame_pool: list[TrainingFrame] = frame_collector.collect(
             task=task,

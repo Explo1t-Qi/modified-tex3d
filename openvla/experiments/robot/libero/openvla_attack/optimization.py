@@ -46,6 +46,11 @@ from .gradient_protection import (
 )
 from .image_preprocessing import DifferentiableOpenVLAImageProcessor
 from .objective import get_attack_loss
+from .policy_view import (
+    DifferentiableDeploymentViewStages,
+    DifferentiablePolicyViewTransform,
+    build_policy_view_transform,
+)
 from .spectral_gradient_audit import ObjectiveParameterGradients
 from .texture_parameterization import SurfaceStepStats
 from .vision_features import (
@@ -227,7 +232,10 @@ class AttackOptimizer:
         frame_batch_sampler: FrameBatchSampler = (
             sample_uniform_frame_batch
         ),
-        render_resolution: int = 256,
+        render_resolution: int = 512,
+        policy_view_transform: Optional[
+            DifferentiablePolicyViewTransform
+        ] = None,
     ) -> None:
         self._cfg: OptimizationConfig = cfg
         self._model: OptimizationModel = model
@@ -249,6 +257,25 @@ class AttackOptimizer:
             frame_batch_sampler
         )
         self._render_resolution: int = render_resolution
+        model_input_height, model_input_width = image_preprocessor.output_size
+        if model_input_height != model_input_width:
+            raise ValueError("OpenVLA deployment view 要求正方形模型输入")
+        self._policy_view_transform = (
+            policy_view_transform
+            if policy_view_transform is not None
+            else build_policy_view_transform(
+                source_resolution=render_resolution,
+                model_input_resolution=model_input_height,
+            )
+        )
+        if (
+            self._policy_view_transform.specification.policy_canvas
+            .source_resolution
+            != render_resolution
+        ):
+            raise ValueError(
+                "renderer resolution 与 Policy Source specification 不一致"
+            )
         # 双视角真实运行时只打印一次分视角诊断，既能确认 wrist 分支确实接入
         # loss，又避免数千次优化迭代把日志淹没。该状态不参与任何数值计算。
         self._dual_view_diagnostics_logged: bool = False
@@ -277,11 +304,16 @@ class AttackOptimizer:
 
         adversarial_image: torch.Tensor
         for adversarial_image in adversarial_views:
+            deployment_stages: DifferentiableDeploymentViewStages = (
+                self._policy_view_transform.build_stages(
+                    adversarial_image
+                )
+            )
             # fused pixel values: float [1,6,Hmodel,Wmodel]，顺序、归一化、
             # bicubic+antialias resize 均由 checkpoint specification 唯一决定。
             pixel_values: torch.Tensor = (
                 self._image_preprocessor.build_fused_pixel_values(
-                    adversarial_image
+                    deployment_stages.effective_view
                 )
             )
             with autocast(dtype=torch.bfloat16):
@@ -428,9 +460,16 @@ class AttackOptimizer:
             )
             adversarial_by_name[view_name] = adversarial_image
 
+        effective_by_name: dict[str, torch.Tensor] = {
+            view_name: self._policy_view_transform.build_effective_view(
+                source_image
+            )
+            for view_name, source_image in adversarial_by_name.items()
+        }
+
         primary_pixel_values: torch.Tensor = (
             self._image_preprocessor.build_fused_pixel_values(
-                adversarial_by_name["primary"]
+                effective_by_name["primary"]
             )
         )
         with autocast(dtype=torch.bfloat16):
@@ -453,7 +492,7 @@ class AttackOptimizer:
                 self._siglip_from_fused(primary_pixel_values)
                 if feature_view_name == "primary"
                 else self._image_preprocessor.build_siglip_pixel_values(
-                    adversarial_by_name[feature_view_name]
+                    effective_by_name[feature_view_name]
                 )
             )
             feature_loss_by_name[feature_view_name] = (

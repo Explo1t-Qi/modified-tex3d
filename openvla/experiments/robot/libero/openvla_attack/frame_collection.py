@@ -42,6 +42,9 @@ from robot_utils import (  # noqa: E402
     invert_gripper_action,
     normalize_gripper_action,
 )
+from experiments.robot.openvla_utils import (  # noqa: E402
+    ensure_trailing_empty_token,
+)
 
 from .action_codec import (
     FloatingArray,
@@ -51,6 +54,11 @@ from .action_codec import (
 from .compositing import MultiInstanceViewFrame, TextureRenderInstance
 from .configuration import FeatureObjectiveKind, FeatureViewModeKind
 from .image_preprocessing import DifferentiableOpenVLAImageProcessor
+from .policy_view import (
+    DifferentiableDeploymentViewStages,
+    DifferentiablePolicyViewTransform,
+    build_policy_view_transform,
+)
 from .scene import (
     SearchKeywords,
     TargetBodyPose,
@@ -214,7 +222,10 @@ class TrainingFrameCollector:
         search_keywords: SearchKeywords,
         feature_objective: FeatureObjectiveKind,
         feature_view_mode: FeatureViewModeKind = "primary",
-        render_resolution: int = 256,
+        render_resolution: int = 512,
+        policy_view_transform: Optional[
+            DifferentiablePolicyViewTransform
+        ] = None,
     ) -> None:
         self._cfg: FrameCollectionConfig = cfg
         self._model: TrainingModel = model
@@ -243,6 +254,22 @@ class TrainingFrameCollector:
                 "checkpoint processor 输出尺寸与 OpenVLA policy 配置不一致："
                 f"{self._image_preprocessor.output_size} != "
                 f"{(expected_input_size, expected_input_size)}"
+            )
+        self._policy_view_transform = (
+            policy_view_transform
+            if policy_view_transform is not None
+            else build_policy_view_transform(
+                source_resolution=render_resolution,
+                model_input_resolution=expected_input_size,
+            )
+        )
+        if (
+            self._policy_view_transform.specification.policy_canvas
+            .source_resolution
+            != render_resolution
+        ):
+            raise ValueError(
+                "collector resolution 与 Policy Source specification 不一致"
             )
 
     def _build_frame(
@@ -391,10 +418,26 @@ class TrainingFrameCollector:
             )
             calibration_count += 1
 
-        # processor 和可微实现都从同一份原始 uint8 RGB 开始，各自负责 resize。
-        # 保存 processor 输出用于 smoke 比较；训练 clean label 与梯度则统一使用
-        # image_preprocessor，确保零纹理时 label/logits 属于同一视觉输入。
-        clean_image: Image.Image = Image.fromarray(camera_image)
+        # clean label 与攻击路径共享完整 Deployment Effective View。processor
+        # 接收 exact uint8 effective RGB；可微实现接收同一 stage 的 BPDA tensor。
+        clean_deployment_stages: DifferentiableDeploymentViewStages = (
+            self._policy_view_transform.build_stages(background)
+        )
+        clean_effective_view: torch.Tensor = (
+            clean_deployment_stages.effective_view
+        )
+        clean_effective_uint8: np.ndarray = (
+            clean_effective_view.detach()
+            .clamp(0.0, 1.0)
+            .mul(255.0)
+            .round()
+            .to(torch.uint8)[0]
+            .permute(1, 2, 0)
+            .contiguous()
+            .cpu()
+            .numpy()
+        )
+        clean_image: Image.Image = Image.fromarray(clean_effective_uint8)
         prompt: str = (
             "In: What action should the robot take to "
             f"{task_description.lower()}?\nOut:"
@@ -403,13 +446,16 @@ class TrainingFrameCollector:
             prompt,
             images=clean_image,
         ).to(self._model.device)
+        ensure_trailing_empty_token(clean_inputs)
         if "pixel_values" not in clean_inputs:
             raise RuntimeError("OpenVLA processor 输出缺少 pixel_values")
         processor_pixel_values: torch.Tensor = clean_inputs[
             "pixel_values"
         ].to(torch.bfloat16).detach()
         clean_pixel_values: torch.Tensor = (
-            self._image_preprocessor.build_fused_pixel_values(background)
+            self._image_preprocessor.build_fused_pixel_values(
+                clean_effective_view
+            )
             .to(torch.bfloat16)
         )
         clean_inputs["pixel_values"] = clean_pixel_values
@@ -460,7 +506,10 @@ class TrainingFrameCollector:
                             )
                         normalized_wrist_siglip: torch.Tensor = (
                             self._image_preprocessor
-                            .build_siglip_pixel_values(wrist_background)
+                            .build_siglip_pixel_values(
+                                self._policy_view_transform
+                                .build_effective_view(wrist_background)
+                            )
                             .to(torch.bfloat16)
                         )
                         wrist_clean_siglip_features = (

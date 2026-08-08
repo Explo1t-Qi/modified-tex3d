@@ -151,7 +151,8 @@ def test_differentiable_policy_view_uses_exact_forward_and_surrogate_gradient(
         source_uint8,
         specification=specification,
     )
-    actual_pre_crop = transform.build_pre_crop_canvas(source_nchw)
+    differentiable_stages = transform.build_stages(source_nchw)
+    actual_pre_crop = differentiable_stages.pre_crop_canvas
     expected_pre_crop_float = (
         torch.from_numpy(exact_stages.pre_crop_rgb)
         .permute(2, 0, 1)
@@ -166,7 +167,7 @@ def test_differentiable_policy_view_uses_exact_forward_and_surrogate_gradient(
         atol=0,
     )
 
-    actual = transform.build_effective_view(source_nchw)
+    actual = differentiable_stages.effective_view
     expected = exact_stages.effective_view_rgb
     expected_float = (
         torch.from_numpy(expected)
@@ -192,7 +193,15 @@ def test_differentiable_policy_view_uses_exact_forward_and_surrogate_gradient(
         actual.numel(),
         dtype=torch.float32,
     ).reshape_as(actual)
+    actual_pre_crop.retain_grad()
+    actual.retain_grad()
     torch.sum(actual * upstream).backward()
+    assert actual.grad is not None
+    assert bool(torch.isfinite(actual.grad).all())
+    assert float(actual.grad.abs().max()) > 0.0
+    assert actual_pre_crop.grad is not None
+    assert bool(torch.isfinite(actual_pre_crop.grad).all())
+    assert float(actual_pre_crop.grad.abs().max()) > 0.0
     assert source_nchw.grad is not None
     assert tuple(source_nchw.grad.shape) == (1, 3, 8, 8)
     assert bool(torch.isfinite(source_nchw.grad).all())

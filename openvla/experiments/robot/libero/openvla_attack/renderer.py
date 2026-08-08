@@ -16,10 +16,12 @@
 from __future__ import annotations
 
 import os
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import (
     Any,
+    Iterator,
     Literal,
     Optional,
     Sequence,
@@ -66,6 +68,32 @@ class AdversarialTextureLoadResult:
     source_kind: Literal["parameter", "baked_texture"]
     max_absolute_delta: float
     nonzero_percentage: float
+
+
+@dataclass
+class SurfaceDeltaGradientCapture:
+    """一次受控 forward 中实际进入 renderer 的 Surface Delta tensors。
+
+    Gate 2E 在 backward 后读取这些非叶子 tensor 的 ``.grad``。普通训练默认
+    不启用捕获，因此不会额外保留中间梯度或延长 autograd graph 生命周期。
+    """
+
+    tensors: list[Tensor]
+
+    def summed_gradient(self) -> Tensor:
+        """按 renderer 调用累加同 shape 梯度并返回 detach tensor。"""
+
+        if not self.tensors:
+            raise RuntimeError("Surface Delta 捕获没有记录任何 renderer forward")
+        gradients: list[Tensor] = []
+        for tensor in self.tensors:
+            if tensor.grad is None:
+                raise RuntimeError("捕获的 Surface Delta 没有 backward 梯度")
+            gradients.append(tensor.grad.detach())
+        reference_shape = gradients[0].shape
+        if any(gradient.shape != reference_shape for gradient in gradients):
+            raise RuntimeError("多次 renderer 调用的 Surface Delta shape 不一致")
+        return torch.stack(gradients, dim=0).sum(dim=0)
 
 
 def resolve_position_offset(
@@ -364,6 +392,24 @@ class DifferentiableRenderer(nn.Module):
         self.shadow_strength: float = 0.15
         self.shadow_gamma: float = 1.8
         self.min_light: float = 0.16
+        self._surface_delta_gradient_capture: Optional[
+            SurfaceDeltaGradientCapture
+        ] = None
+
+    @contextmanager
+    def capture_surface_delta_gradients(
+        self,
+    ) -> Iterator[SurfaceDeltaGradientCapture]:
+        """仅在 ``with`` 范围捕获实际渲染路径的 Surface Delta 梯度。"""
+
+        if self._surface_delta_gradient_capture is not None:
+            raise RuntimeError("Surface Delta 梯度捕获不能嵌套")
+        capture = SurfaceDeltaGradientCapture(tensors=[])
+        self._surface_delta_gradient_capture = capture
+        try:
+            yield capture
+        finally:
+            self._surface_delta_gradient_capture = None
 
     def _sample_uv_texture_at_vertices(self) -> Tensor:
         """从原始 UV texture 采样每个几何顶点的 RGB。
@@ -460,8 +506,22 @@ class DifferentiableRenderer(nn.Module):
     def get_surface_delta(self) -> Tensor:
         """返回与 renderer 顶点对齐的 float ``[V, 3]`` Surface Delta。"""
         if self.surface_parameterization is not None:
-            return self.surface_parameterization.render_delta()
-        return torch.tanh(self.adv_noise) * self.epsilon
+            surface_delta: Tensor = (
+                self.surface_parameterization.render_delta()
+            )
+        else:
+            surface_delta = torch.tanh(self.adv_noise) * self.epsilon
+        capture: Optional[SurfaceDeltaGradientCapture] = (
+            self._surface_delta_gradient_capture
+        )
+        if (
+            capture is not None
+            and torch.is_grad_enabled()
+            and surface_delta.requires_grad
+        ):
+            surface_delta.retain_grad()
+            capture.tensors.append(surface_delta)
+        return surface_delta
 
     def step_surface_parameterization_(
         self,

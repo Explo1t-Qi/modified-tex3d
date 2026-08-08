@@ -33,6 +33,32 @@ POLICY_SOURCE_RESOLUTION: Final[int] = 512
 POLICY_PRE_CROP_RESOLUTION: Final[int] = 224
 
 
+def build_policy_view_transform(
+    *,
+    source_resolution: int,
+    model_input_resolution: int,
+) -> "DifferentiablePolicyViewTransform":
+    """按显式 source/model 尺寸构造统一 deployment transform。
+
+    正式运行固定为 ``512→224``；参数化尺寸只用于无 LIBERO 单元测试和未来
+    checkpoint 尺寸校验，crop area 仍与 OpenVLA 部署语义固定为 ``0.9``。
+    """
+
+    return DifferentiablePolicyViewTransform(
+        DeploymentViewSpecification(
+            policy_canvas=PolicyPreCropSpecification(
+                source_resolution=source_resolution,
+                canvas_resolution=model_input_resolution,
+            ),
+            center_crop=CenterCropSpecification(
+                input_resolution=model_input_resolution,
+                output_resolution=model_input_resolution,
+                crop_area=0.9,
+            ),
+        )
+    )
+
+
 @dataclass(frozen=True)
 class PolicyPreCropSpecification:
     """Policy Pre-Crop Canvas 的不可变空间 specification。
@@ -84,6 +110,21 @@ class ExactDeploymentViewStages:
     source_rgb: NDArray[np.uint8]
     pre_crop_rgb: NDArray[np.uint8]
     effective_view_rgb: NDArray[np.uint8]
+
+
+@dataclass(frozen=True)
+class DifferentiableDeploymentViewStages:
+    """完整 BPDA deployment path 的两个可微 NCHW RGB stage。
+
+    ``pre_crop_canvas`` 与 ``effective_view`` 的 forward 分别逐值等于
+    Pillow resize 和 TensorFlow center crop 的 uint8 部署结果（再除以255）；
+    backward 则沿 PyTorch bicubic resize 与 Gate 2C crop surrogate 回到
+    Policy Source。Gate 2E 可对两个非叶子 tensor 调用 ``retain_grad``，从而
+    分别验证 crop 前后的梯度，而不需要重新构造另一张 autograd graph。
+    """
+
+    pre_crop_canvas: torch.Tensor
+    effective_view: torch.Tensor
 
 
 def resize_policy_pre_crop_canvas(
@@ -319,10 +360,41 @@ class DifferentiablePolicyViewTransform:
     ) -> torch.Tensor:
         """返回 exact-forward、surrogate-backward 的 float32 NCHW Canvas。"""
 
+        return self.build_stages(source_nchw).pre_crop_canvas
+
+    def build_stages(
+        self,
+        source_nchw: torch.Tensor,
+    ) -> DifferentiableDeploymentViewStages:
+        """在同一 autograd graph 中返回 Pre-Crop 与 Effective View。
+
+        center-crop surrogate 读取已经做过第一层 BPDA 的
+        ``pre_crop_canvas``。因此该中间 tensor 的 forward 是 Pillow exact，
+        对 source 的 backward 是 PyTorch resize surrogate；其 ``.grad`` 又能
+        直接表示来自 center crop/checkpoint processor 的上游信号。
+        """
+
         self._validate_source(source_nchw)
-        exact_pre_crop, _ = self._exact_batches(source_nchw)
+        exact_pre_crop, exact_effective_view = self._exact_batches(
+            source_nchw
+        )
         surrogate_pre_crop = self._surrogate_pre_crop_canvas(source_nchw)
-        return self._bpda_forward(exact_pre_crop, surrogate_pre_crop)
+        pre_crop_canvas = self._bpda_forward(
+            exact_pre_crop,
+            surrogate_pre_crop,
+        )
+        surrogate_effective_view = torch_center_crop_float(
+            pre_crop_canvas,
+            specification=self.specification.center_crop,
+        )
+        effective_view = self._bpda_forward(
+            exact_effective_view,
+            surrogate_effective_view,
+        )
+        return DifferentiableDeploymentViewStages(
+            pre_crop_canvas=pre_crop_canvas,
+            effective_view=effective_view,
+        )
 
     def build_effective_view(
         self,
@@ -330,14 +402,4 @@ class DifferentiablePolicyViewTransform:
     ) -> torch.Tensor:
         """返回完整 exact-forward、surrogate-backward Effective View。"""
 
-        self._validate_source(source_nchw)
-        _, exact_effective_view = self._exact_batches(source_nchw)
-        surrogate_pre_crop = self._surrogate_pre_crop_canvas(source_nchw)
-        surrogate_effective_view = torch_center_crop_float(
-            surrogate_pre_crop,
-            specification=self.specification.center_crop,
-        )
-        return self._bpda_forward(
-            exact_effective_view,
-            surrogate_effective_view,
-        )
+        return self.build_stages(source_nchw).effective_view
