@@ -377,7 +377,7 @@ SHA-256 为
 `1884eb7500283eea9f3bcf8793a4410cd1396b87`，再运行：
 
 ```bash
-set -o pipefail
+set -euo pipefail
 COMPOSITOR_RUN_DIR=/tmp/openvla-compositor-zero-delta-1884eb7
 mkdir -p "$COMPOSITOR_RUN_DIR"
 git rev-parse HEAD | tee "$COMPOSITOR_RUN_DIR/commit.log"
@@ -395,7 +395,7 @@ CUDA_VISIBLE_DEVICES='' PYTHONDONTWRITEBYTECODE=1 TF_CPP_MIN_LOG_LEVEL=3 \
 定向回归通过后运行真实 Gate：
 
 ```bash
-set -o pipefail
+set -euo pipefail
 COMPOSITOR_RUN_DIR=/tmp/openvla-compositor-zero-delta-1884eb7
 git rev-parse HEAD | tee "$COMPOSITOR_RUN_DIR/commit.log"
 test "$(git rev-parse HEAD)" = 1884eb7500283eea9f3bcf8793a4410cd1396b87
