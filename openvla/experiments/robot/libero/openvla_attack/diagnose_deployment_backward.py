@@ -264,6 +264,9 @@ def run_gate_2e(args: argparse.Namespace) -> Path:
 
     model: Any = get_model(cfg)
     model.eval()
+    # Gate 2E 只求输入/纹理梯度；冻结7B模型参数不会改变 forward 或输入 VJP，
+    # 并避免为无用的权重梯度分配显存。
+    model.requires_grad_(False)
     processor: Any = get_processor(cfg)
     image_preprocessor = DifferentiableOpenVLAImageProcessor.from_checkpoint(
         model=model,
