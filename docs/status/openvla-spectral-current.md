@@ -31,7 +31,7 @@
 | 双视角与动态范数保护 | 机制已实现，源门槛未通过 | 两者均未把 held-out 源攻击恢复到预设的3/10失败 |
 | OpenVLA processor 预处理正确性 | Gate 1P 已通过 | states 0–9 pixel MAE/L∞=`0/0`，10/10序列和70/70 token一致 |
 | Deployment Effective View 与训练反传 | Gate 1D、2C、2E已通过 | 完整forward零误差；crop VJP对齐；五级梯度、单轮更新、bake/rollout/资产恢复通过 |
-| Visibility/Coverage/Compositor | Visibility/Alignment与Compositor零delta均已通过；Gate 2R代码已实现、待服务器验收 | 20/20对齐证据、10/10零delta states与70/70 action token通过；2R纯CPU契约9项测试通过 |
+| Visibility/Coverage/Compositor | Visibility/Alignment与Compositor零delta均已通过；Gate 2R state0 smoke通过、正式30-case待运行 | 20/20对齐证据、10/10零delta states与70/70 action token通过；2R smoke 3/3 probe同向 |
 | BPDA 下源攻击基线 | 未建立 | Gate 2R与新参数化契约通过后才运行首个新候选 |
 | BPDA 下 OFT 迁移信号 | 未开始 | 新源候选未过门槛前不得进入 OFT |
 | 无偏跨模型迁移与鲁棒性提升 | 未开始 | 需方法冻结后的新任务/第三模型与后续防御实验 |
@@ -457,6 +457,32 @@ RUN_ID="gate2r-${CODE_COMMIT:0:7}-states0-9"
 首轮只按预注册必要条件自动判定：30/30 两条 RMS 均不低于 `1e-6`、全部
 `cos_alpha > 0`、行集合/事务/hash/状态/产物完整。relative L2、sign consistency
 和 Action margin 不进入 Gate；审计后才能讨论更强门槛。
+
+2026-08-08 在 commit `c7f14f347cc7f82c9130a80ce0567db9c2f883ed` 上完成
+state 0 三通道工程 smoke。R/G/B 的 surrogate RMS 分别为
+`0.00317794/0.00319634/0.00317729`，bake RMS 为
+`0.00475871/0.00439715/0.00425495`，cosine 为
+`0.590808/0.565539/0.656018`，因此三行均通过预注册最低门槛。relative L2
+仍为 `0.810479/0.840361/0.760177`，sign consistency 为
+`0.357544/0.347229/0.419539`：现有 surrogate 能提供同向信号，但不能解释为
+真实 bake 的高保真颜色或幅值模型。逐通道统计进一步表明 surrogate 常量 probe
+只改变目标 RGB 通道，而 MuJoCo bake 在非目标通道也有响应；这是当前较大
+relative L2 的直接来源之一，不进入第一版硬 Gate。
+
+WSL 已独立使用 `allow_pickle=False` 加载3个 NPZ，逐值复算全部指标与 Action
+margin，核对21个 artifact、config/evidence hash、clean/bake simulation state、
+Active Texture 和 XML/纹理恢复，失败项为空。log/manifest/JSONL/CSV SHA-256
+分别为：
+
+- `4dab46b976934c432e5d6ad9535c051c288dc6a7cf7393daf2038851a6cb3315`；
+- `9a913357dadf98a297de095dfa5f1df2630563df68eae96498ec1dbfe032cc34`；
+- `471eacaffaba4f22c7e53ead016e74f3a3dbae5e2afe652286bd378d632f0610`；
+- `e690dfe60e6a067e9d2626b651a8885a9cdfac735df64d5314042cb37d829c42`。
+
+smoke 也暴露出非权威 weighted-scatter PNG 的点过小且 alpha 色过浅；正式
+30-case 前已改为半径2的高对比度点、增加 `y=x` 参考线和 RGB 图例，并与
+sign-consistency 一样排除双零通道分量。该修正只改善人工抽查，不改变 NPZ、
+任何数值指标或 Gate 判定。
 
 ### Gate 3：建立 BPDA 下的新源候选
 

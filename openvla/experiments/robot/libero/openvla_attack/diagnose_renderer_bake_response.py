@@ -564,8 +564,23 @@ def _save_weighted_scatter(
     size = 512
     image = Image.new("RGB", (size, size), (255, 255, 255))
     draw = ImageDraw.Draw(image)
-    draw.line((size // 2, 0, size // 2, size - 1), fill=(180, 180, 180))
-    draw.line((0, size // 2, size - 1, size // 2), fill=(180, 180, 180))
+    plot_margin = 12
+    plot_maximum = size - 1 - plot_margin
+    plot_span = plot_maximum - plot_margin
+    plot_center = plot_margin + plot_span // 2
+    # y=x 是理想响应参考；水平/垂直轴帮助识别单侧零响应。
+    draw.line(
+        (plot_margin, plot_maximum, plot_maximum, plot_margin),
+        fill=(220, 220, 220),
+    )
+    draw.line(
+        (plot_center, plot_margin, plot_center, plot_maximum),
+        fill=(170, 170, 170),
+    )
+    draw.line(
+        (plot_margin, plot_center, plot_maximum, plot_center),
+        fill=(170, 170, 170),
+    )
     visible = alpha > 0.0
     scale = float(
         max(
@@ -576,9 +591,14 @@ def _save_weighted_scatter(
     )
     colors = ((220, 40, 40), (40, 170, 40), (40, 80, 220))
     for channel_index, base_color in enumerate(colors):
-        x_values = d_sur[..., channel_index][visible]
-        y_values = d_bake[..., channel_index][visible]
-        weights = alpha[visible]
+        # 与 sign-consistency 分母一致：双零通道分量不提供响应方向证据。
+        channel_evidence = visible & (
+            (d_sur[..., channel_index] != 0.0)
+            | (d_bake[..., channel_index] != 0.0)
+        )
+        x_values = d_sur[..., channel_index][channel_evidence]
+        y_values = d_bake[..., channel_index][channel_evidence]
+        weights = alpha[channel_evidence]
         stride = max(1, int(np.ceil(x_values.size / 50_000)))
         for x_value, y_value, weight in zip(
             x_values[::stride],
@@ -586,11 +606,40 @@ def _save_weighted_scatter(
             weights[::stride],
             strict=True,
         ):
-            x = int(np.clip((float(x_value) / scale + 1.0) * 0.5 * (size - 1), 0, size - 1))
-            y = int(np.clip((1.0 - (float(y_value) / scale + 1.0) * 0.5) * (size - 1), 0, size - 1))
-            intensity = 0.25 + 0.75 * float(weight)
-            color = tuple(int(255.0 - (255.0 - value) * intensity) for value in base_color)
-            draw.point((x, y), fill=color)
+            x = int(
+                np.clip(
+                    plot_margin
+                    + (float(x_value) / scale + 1.0) * 0.5 * plot_span,
+                    plot_margin,
+                    plot_maximum,
+                )
+            )
+            y = int(
+                np.clip(
+                    plot_margin
+                    + (1.0 - (float(y_value) / scale + 1.0) * 0.5)
+                    * plot_span,
+                    plot_margin,
+                    plot_maximum,
+                )
+            )
+            # alpha 仍控制颜色深浅，但设置足够的最低对比度并使用半径2的点，
+            # 使 uint8 导致的少量离散坐标在便读 PNG 中可见。
+            intensity = 0.70 + 0.30 * float(weight)
+            color = tuple(
+                int(255.0 - (255.0 - value) * intensity)
+                for value in base_color
+            )
+            draw.ellipse(
+                (x - 2, y - 2, x + 2, y + 2),
+                fill=color,
+            )
+    for legend_index, (label, color) in enumerate(
+        zip(("R", "G", "B"), colors, strict=True)
+    ):
+        legend_x = 18 + legend_index * 42
+        draw.rectangle((legend_x, 18, legend_x + 9, 27), fill=color)
+        draw.text((legend_x + 13, 15), label, fill=(30, 30, 30))
     image.save(path)
     return _sha256_file(path)
 

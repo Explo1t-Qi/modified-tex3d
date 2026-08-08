@@ -100,3 +100,9 @@ def test_visualization_helpers_write_readable_non_authoritative_pngs(
     assert Image.open(alpha_path).mode == "L"
     assert Image.open(delta_path).mode == "RGB"
     assert Image.open(scatter_path).size == (512, 512)
+    scatter = np.asarray(Image.open(scatter_path).convert("RGB"))
+    strongly_colored = (
+        scatter.max(axis=2).astype(np.int16)
+        - scatter.min(axis=2).astype(np.int16)
+    ) > 40
+    assert int(np.count_nonzero(strongly_colored)) >= 100
