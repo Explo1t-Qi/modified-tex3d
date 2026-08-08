@@ -12,7 +12,7 @@
 更强方向门槛。Gate 2C 数值门槛已由 WSL 与服务器证据冻结。实现不得为了让
 某个 state 或 support 通过而调整其余候选值。
 
-## 实施进度（2026-08-07）
+## 实施进度（2026-08-08）
 
 - `b7d61cb`：固定 512 Policy Source，将 224 Policy Pre-Crop Canvas 与录像
   分辨率解耦；
@@ -33,7 +33,12 @@
   与权威 JSONL；
 - commit `802733e` 的服务器 Gate 1D 为10/10 states、70/70 token及所有 hard
   L∞=0；WSL 已从50张 PNG 和10个 NPZ 独立复算，Gate 1D 正式通过；
-- Gate 2E 尚未开始，也未开始 Visibility/Coverage/Compositor。
+- `0399c8f`：collector clean label、主/腕部 clean feature 与正式 optimizer
+  统一接入 512 Policy Source→224 Pre-Crop→Effective View；clean prompt 同时
+  使用 rollout 已验证的 trailing-empty-token 修复；
+- `0399c8f`：实现 `openvla-gate-2e-v1` 严格证据、Surface Delta 中间梯度
+  捕获和单 state/单 update runner。Gate 2E 尚待服务器无 GPU 回归与真实 GPU
+  smoke，不得提前标为通过；Visibility/Coverage/Compositor 仍未开始。
 
 Gate 2C 实现过程中发现 TensorFlow 2.15 CPU 与 PyTorch 2.2 CPU 对
 `sqrt(float32(0.9))` 的结果相差 1 ULP；稀疏 impulse 会把它放大为约 `2e-5`
@@ -59,6 +64,45 @@ BPDA approximation；Gate 1D 只验证其 exact forward，不为该近似新增�
 
 每个纵切先增加或迁移 CPU 测试，再移动一个职责。Gate 1D/2E 的 GPU 部分由
 用户在服务器运行绑定明确 commit SHA 的命令。
+
+### Gate 2E 服务器验收命令
+
+先在 commit `0399c8f88abcf0688463f33a45b2933c3fea77ce` 上运行完整无 GPU
+回归；输出保存到 Git 忽略的临时目录，随后通过 rsync 同步：
+
+```bash
+mkdir -p /tmp/openvla-gate2e-0399c8f
+CUDA_VISIBLE_DEVICES='' PYTHONDONTWRITEBYTECODE=1 TF_CPP_MIN_LOG_LEVEL=3 \
+  NUMBA_CACHE_DIR=/tmp/tex3d-numba-cache \
+  /home/xiaomengqi/miniconda3/envs/tex3d-openvla/bin/python -m pytest -q tests \
+  2>&1 | tee /tmp/openvla-gate2e-0399c8f/pytest.log
+```
+
+无 GPU 回归通过后再运行真实 smoke。正式 K=256 仍从已有 K=512 连续 basis
+中截取前256个非恒定模态；本命令不读取旧攻击系数：
+
+```bash
+CUDA_VISIBLE_DEVICES=0 PYTHONDONTWRITEBYTECODE=1 TF_CPP_MIN_LOG_LEVEL=3 \
+  NUMBA_CACHE_DIR=/tmp/tex3d-numba-cache \
+  /home/xiaomengqi/miniconda3/envs/tex3d-openvla/bin/python \
+  openvla/experiments/robot/libero/openvla_attack/diagnose_deployment_backward.py \
+  --pretrained_checkpoint /data/huangsimin/openvla-7b-finetuned-libero-spatial \
+  --spectral_basis_path experiments/spectral_basis/akita_black_bowl_k512.npz \
+  --output_dir /tmp/openvla-gate2e-0399c8f \
+  --code_commit 0399c8f88abcf0688463f33a45b2933c3fea77ce \
+  --task_suite_name libero_spatial \
+  --task_id 0 \
+  --object_name akita_black_bowl \
+  --train_state_id 0 \
+  --rollout_state_id 10 \
+  2>&1 | tee /tmp/openvla-gate2e-0399c8f/gate2e.log
+```
+
+正式判定读取 `deployment_backward_evidence.json`，而非仅看 stdout。必须同时
+满足 `[256,3]` 参数更新、Policy Source/Pre-Crop/Effective View/Surface Delta/
+参数梯度有限非零、Surface Step `<=2/255`、Surface Delta `<=128/255`、Active
+Texture hash 等于 bake PNG、rollout 正常结束、XML/真实纹理逐字节恢复且 backup
+删除。`rollout_success` 只记录，不参与工程 Gate。
 
 ## 阶段 2：Visibility、Coverage 与 Compositor
 

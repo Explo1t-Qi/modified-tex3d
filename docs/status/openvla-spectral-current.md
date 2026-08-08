@@ -73,12 +73,11 @@ bicubic 得到 224×224 Policy Pre-Crop Canvas。`a2efb7f` 起，唯一
 float32 surrogate，`get_vla_action()` 已改为调用 exact helper；`2bb6ce7` 又补齐
 Gate 2C 审计和显式 TF 像素坐标/插值顺序。
 
-当前剩余缺口不再是 crop 定义缺失，而是 collector、Seed Audit 和 Attack
-Training 尚未端到端消费这一完整 Deployment Path。Gate 1D 仍需在真实 states
-0–9 对照 rollout 的逐阶段 RGB、processor tensor 和 action token；Gate 2E 仍需
-证明梯度穿过 center-crop 与 processor 两层 BPDA 后能更新 Surface Delta、完成
-bake 并恢复资产。因此不得把 Gate 2C 解释为完整 deployment equivalence 或
-真实 attack backward 已通过。
+Gate 1D 通过后，commit `0399c8f` 已让 collector 与 Attack Training 端到端消费
+同一完整 Deployment Path；Seed Audit 仍被基础 Gate 阻断。Gate 2E 的严格 schema
+和 runner 已实现，但尚待服务器证明梯度穿过 center-crop 与 processor 两层 BPDA
+后能更新 Surface Delta、完成 bake/rollout 并恢复资产。因此不得把代码实现完成
+解释为真实 attack backward 已通过。
 
 真实 Spatial checkpoint 的 CPU 差分记录为 fused pixel values MAE/L∞=`0/0`，
 输入梯度有限且非零；文档记录当时全量 CPU 回归为 `113 passed, 1 skipped`。
@@ -204,6 +203,13 @@ Gate 1D 与 Gate 2C 通过后，验证梯度能穿过 center crop 与 checkpoint
 - Actual Surface Step 不超过 `2/255`；
 - Max Surface Delta 不超过 `128/255`；
 - UV PNG、Active Texture、rollout 和 Runtime Asset Transaction 正常。
+
+Commit `0399c8f88abcf0688463f33a45b2933c3fea77ce` 已实现机器可重算的
+`openvla-gate-2e-v1` JSON、只在诊断范围启用的 Surface Delta 中间梯度捕获，以及
+固定 source Action-only、K=256、train state 0 单 update、rollout state 10 的
+真实 runner。判定要求 Policy Source、Pre-Crop、Effective View、Surface Delta
+和谱参数五级梯度均有限非零；`rollout_success` 只记录工程 smoke 的策略结果，
+不参与 Gate，也不得解释为攻击效果。当前状态仍为“实现完成、服务器待验”。
 
 ### Gate 2R：renderer-to-bake response（待实现/运行）
 
