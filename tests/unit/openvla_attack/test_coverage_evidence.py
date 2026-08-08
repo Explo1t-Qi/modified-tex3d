@@ -130,7 +130,7 @@ def test_instance_aware_summary_uses_visible_area_weighting() -> None:
     assert summary.numerator == 2.0
     assert summary.equivalent_visible_pixels == 3.0
     assert summary.observation_area == 0.75
-    assert summary.per_instance_coverage == (1.0, 0.0)
+    assert summary.per_instance_coverage == pytest.approx((1.0, 0.0))
     assert summary.per_instance_equivalent_visible_pixels == (2.0, 1.0)
 
 
