@@ -365,8 +365,13 @@ Gate 对每个原始 state 严格要求：
 每个 state 保存一个 `allow_pickle=False` 可加载的 NPZ、clean/composited RGB、
 MuJoCo alpha 图和完整 SHA-256 inventory；唯一权威长表为
 `compositor_zero_delta_metrics.jsonl`，manifest 必须绑定其 SHA-256。WSL 定向
-回归为 `22 passed`；扩大本地测试集合时仅因当前环境缺少 nvdiffrast 与 LIBERO
-而在 collection 阶段停止，没有发现新增断言失败。
+回归为 `22 passed`；服务器定向回归同样为 `22 passed in 1.06s`，同步日志
+SHA-256 为
+`76614c2c6f128aca9516c283424a670890936f188aed56f3064e8f5fb73fd572`。
+该 pytest 日志没有包含命令前单独打印的 `git rev-parse HEAD`，因此只接受为数值
+回归证据；真实 Gate 命令必须另外保存并核对 `commit.log`。扩大本地测试集合时
+仅因当前环境缺少 nvdiffrast 与 LIBERO 而在 collection 阶段停止，没有发现新增
+断言失败。
 
 服务器必须先同步到完整 commit
 `1884eb7500283eea9f3bcf8793a4410cd1396b87`，再运行：
@@ -375,6 +380,8 @@ MuJoCo alpha 图和完整 SHA-256 inventory；唯一权威长表为
 set -o pipefail
 COMPOSITOR_RUN_DIR=/tmp/openvla-compositor-zero-delta-1884eb7
 mkdir -p "$COMPOSITOR_RUN_DIR"
+git rev-parse HEAD | tee "$COMPOSITOR_RUN_DIR/commit.log"
+test "$(git rev-parse HEAD)" = 1884eb7500283eea9f3bcf8793a4410cd1396b87
 CUDA_VISIBLE_DEVICES='' PYTHONDONTWRITEBYTECODE=1 TF_CPP_MIN_LOG_LEVEL=3 \
   NUMBA_CACHE_DIR=/tmp/tex3d-numba-cache \
   /home/xiaomengqi/miniconda3/envs/tex3d-openvla/bin/python -m pytest -q \
@@ -390,6 +397,8 @@ CUDA_VISIBLE_DEVICES='' PYTHONDONTWRITEBYTECODE=1 TF_CPP_MIN_LOG_LEVEL=3 \
 ```bash
 set -o pipefail
 COMPOSITOR_RUN_DIR=/tmp/openvla-compositor-zero-delta-1884eb7
+git rev-parse HEAD | tee "$COMPOSITOR_RUN_DIR/commit.log"
+test "$(git rev-parse HEAD)" = 1884eb7500283eea9f3bcf8793a4410cd1396b87
 CUDA_VISIBLE_DEVICES=0 PYTHONDONTWRITEBYTECODE=1 TF_CPP_MIN_LOG_LEVEL=3 \
   NUMBA_CACHE_DIR=/tmp/tex3d-numba-cache \
   /home/xiaomengqi/miniconda3/envs/tex3d-openvla/bin/python \
