@@ -31,7 +31,7 @@
 | 双视角与动态范数保护 | 机制已实现，源门槛未通过 | 两者均未把 held-out 源攻击恢复到预设的3/10失败 |
 | OpenVLA processor 预处理正确性 | Gate 1P 已通过 | states 0–9 pixel MAE/L∞=`0/0`，10/10序列和70/70 token一致 |
 | Deployment Effective View 与训练反传 | Gate 1D、2C、2E已通过 | 完整forward零误差；crop VJP对齐；五级梯度、单轮更新、bake/rollout/资产恢复通过 |
-| Visibility/Coverage/Compositor | Visibility/Alignment与Compositor零delta均已通过；Gate 2R待实现 | 20/20对齐证据、10/10零delta states与70/70 action token通过 |
+| Visibility/Coverage/Compositor | Visibility/Alignment与Compositor零delta均已通过；Gate 2R代码已实现、待服务器验收 | 20/20对齐证据、10/10零delta states与70/70 action token通过；2R纯CPU契约9项测试通过 |
 | BPDA 下源攻击基线 | 未建立 | Gate 2R与新参数化契约通过后才运行首个新候选 |
 | BPDA 下 OFT 迁移信号 | 未开始 | 新源候选未过门槛前不得进入 OFT |
 | 无偏跨模型迁移与鲁棒性提升 | 未开始 | 需方法冻结后的新任务/第三模型与后续防御实验 |
@@ -81,7 +81,8 @@ Gate 1D 通过后，commit `0399c8f` 已让 collector 与 Attack Training 端到
 同一完整 Deployment Path；Seed Audit 仍被基础 Gate 阻断。Gate 2E 已由服务器
 证明梯度穿过 center-crop 与 processor 两层 BPDA 后能更新 Surface Delta、完成
 bake/rollout 并恢复资产，完整证据见下文。当前阻断项已转为真实
-Visibility/Alignment audit、零 Surface Delta compositor Gate 与 Gate 2R。
+Visibility/Alignment audit 与零 Surface Delta compositor Gate 已通过；当前只剩
+Gate 2R 的服务器定向回归与真实30-case审计。
 
 真实 Spatial checkpoint 的 CPU 差分记录为 fused pixel values MAE/L∞=`0/0`，
 输入梯度有限且非零；文档记录当时全量 CPU 回归为 `113 passed, 1 skipped`。
@@ -391,11 +392,71 @@ WSL 又独立验证60个 artifact SHA-256，使用 `allow_pickle=False` 加载10
 因此零 Surface Delta Compositor Gate 正式通过。下一步只允许实现和运行 Gate
 2R；在 Gate 2R 通过前仍不得进入 Support Seed Gradient Audit。
 
-### Gate 2R：renderer-to-bake response（待实现/运行）
+### Gate 2R：renderer-to-bake response（已实现、待服务器运行）
 
 Gate 2E 通过后、Support Seed Gradient Audit 前，使用第五十项冻结的 Action-free
 小幅颜色探针，比较 Renderer Delta Composition 与真实 bake→MuJoCo observation
 在同一 effective view 目标可见区域内的 RGB 响应方向。
+
+实现分为两个职责明确的模块：
+
+- `renderer_bake_response_audit.py` 是不导入模型、LIBERO、renderer 或 CUDA 的
+  纯数值层，固定 weighted RMS/cosine/relative L2、sign denominator、Action
+  margin、30行完整性、NPZ/JSONL/CSV/manifest schema 与逐 probe 汇总；
+- `diagnose_renderer_bake_response.py` 是真实 runner。它对每个 state 只在 clean
+  环境采集一次 MuJoCo alpha 和三条 renderer surrogate，再对 R/G/B bake 分别
+  激活资产、重建同一初始环境、采集真实 response，随后关闭环境并恢复资产。
+
+每行额外要求 clean/bake 静止仿真 fingerprint 完全相同；响应充分但 cosine
+非正时，证据 `status` 仍为 `valid`、行级 Gate 失败，避免把机制反证误写成
+采集证据损坏。只有事务、hash、状态或五类可视化不完整时才标记
+`invalid_evidence`。sign consistency 的分母冻结为 effective-view 内 alpha 正权重
+且两条响应至少一个严格非零的通道分量；双零分量不提供方向证据，一侧为零则
+计入分母但不计入分子。runner 还会在加载模型前验证 `--code_commit` 等于真实
+Git HEAD 且 tracked worktree clean，避免再次产生“命令写一个 hash、实际运行
+另一个版本”的伪 provenance。
+
+WSL 已通过 Gate 2R 纯数值层 `9 passed`，并在排除9个明确依赖
+`nvdiffrast`/`libero.libero` 的文件后通过其余 OpenVLA Attack 单元测试
+`160 passed`。完整本地 suite 因上述缺失依赖在 collection 阶段停止，未伪记为
+代码失败或全量通过。服务器应
+先运行下面的无 GPU 定向回归；命令从服务器当前 HEAD 动态取得40位 SHA，避免
+手填旧 hash：
+
+```bash
+# 在服务器已同步到目标 commit 的仓库根目录执行。
+CUDA_VISIBLE_DEVICES='' PYTHONDONTWRITEBYTECODE=1 TF_CPP_MIN_LOG_LEVEL=3 \
+  NUMBA_CACHE_DIR=/tmp/tex3d-numba-cache \
+  /home/xiaomengqi/miniconda3/envs/tex3d-openvla/bin/python -m pytest -q \
+  tests/unit/openvla_attack/test_renderer_bake_response_audit.py \
+  tests/unit/openvla_attack/test_diagnose_renderer_bake_response.py
+```
+
+定向回归通过后才运行真实30-case命令；`--output_dir` 必须是新的空目录：
+
+```bash
+# 在服务器已同步到目标 commit 的仓库根目录执行。
+set -o pipefail
+CODE_COMMIT="$(git rev-parse HEAD)"
+RUN_ID="gate2r-${CODE_COMMIT:0:7}-states0-9"
+/home/xiaomengqi/miniconda3/envs/tex3d-openvla/bin/python \
+  openvla/experiments/robot/libero/openvla_attack/diagnose_renderer_bake_response.py \
+  --pretrained_checkpoint /data/huangsimin/openvla-7b-finetuned-libero-spatial \
+  --output_dir "experiments_inbox/${RUN_ID}" \
+  --code_commit "${CODE_COMMIT}" \
+  --task_suite_name libero_spatial \
+  --task_id 0 \
+  --object_name akita_black_bowl \
+  --state_ids 0-9 \
+  --num_steps_wait 10 \
+  --seed 7 \
+  --unnorm_key libero_spatial_no_noops \
+  2>&1 | tee "experiments_inbox/${RUN_ID}.log"
+```
+
+首轮只按预注册必要条件自动判定：30/30 两条 RMS 均不低于 `1e-6`、全部
+`cos_alpha > 0`、行集合/事务/hash/状态/产物完整。relative L2、sign consistency
+和 Action margin 不进入 Gate；审计后才能讨论更强门槛。
 
 ### Gate 3：建立 BPDA 下的新源候选
 

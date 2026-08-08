@@ -136,8 +136,10 @@ Texture hash 等于 bake PNG、rollout 正常结束、XML/真实纹理逐字节�
 1. states 0–9 visibility/alignment audit；
 2. 根据预注册流程冻结 `A_obs_min` 与 renderer recall；
 3. 零 Surface Delta Compositor Gate；
-4. Gate 2R 的 R/G/B `2/255` renderer-to-bake response；
-5. 生成权威 JSONL、无 pickle NPZ、派生 CSV 和逐 case 图；
+4. Gate 2R 的 R/G/B `2/255` renderer-to-bake response（代码与纯CPU契约已完成，
+   待服务器真实30-case验收）；
+5. 生成权威 JSONL、无 pickle NPZ、派生 CSV 和逐 case 图（已由Gate 2R runner
+   实现，待真实产物复算）；
 6. 根据审计分布决定 Gate 2R 剩余阈值，不回看 support 成败调门槛。
 
 ## 阶段 4：Support 与训练候选

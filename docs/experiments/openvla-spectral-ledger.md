@@ -57,7 +57,7 @@
 | 2（已通过） | Gate 2C center-crop forward/VJP | 10个冻结CPU case | 全部case通过正式relative L2/cosine门槛 | 已达到数值门槛 |
 | 3（已通过） | Gate 1D deployment-path forward equivalence | 共享Policy Canvas与Effective View实现 | 逐阶段RGB、processor tensor、action sequence/token完全一致 | 已达到零误差门槛 |
 | 4（已通过） | Gate 2E backward/update/bake smoke | Gate 1D与2C通过 | 梯度有限非零、参数更新、Surface/asset约束通过 | 已达到全部工程门槛 |
-| 5（进行中） | Visibility/Coverage/Compositor与Gate 2R | Gate 2E通过 | Visibility/Alignment与零delta已通过；Gate 2R待实现 | 停止Seed Audit，修复基础证据链 |
+| 5（进行中） | Visibility/Coverage/Compositor与Gate 2R | Gate 2E通过 | Visibility/Alignment与零delta已通过；Gate 2R代码和纯CPU契约完成，待服务器30-case验收 | 停止Seed Audit，修复基础证据链 |
 | 6 | 谱自然性约束 + Fixed Vertex Support源候选 | 全部基础Gate通过 | held-out states 10–19至少3/10失败 | 先归因参数化/目标/部署输入，不做无依据网格扫描 |
 | 7 | OFT开发期 rollout | 队列6通过 | 旧0/10迁移基线上至少出现2/10失败信号 | 记录机制失败，不包装为迁移提升 |
 | 8 | 新任务/第三模型无偏验证 | 方法和超参数冻结 | 预注册门槛 | 区分开发期选择偏差与真实迁移 |
