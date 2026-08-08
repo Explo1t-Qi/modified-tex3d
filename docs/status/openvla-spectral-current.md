@@ -1,7 +1,8 @@
 # OpenVLA 谱纹理当前状态
 
-更新时间：2026-08-07
-功能代码基线：`546440a`；服务器 Gate 1D 复核基线：`802733e`
+更新时间：2026-08-08
+功能代码基线与服务器 Gate 2E 复核基线：
+`de880cee6ddabd827bfcb2c35340f0eec09fa687`
 
 本文是 OpenVLA 谱纹理研究的**当前状态入口**。新一轮开发应先读本文，再按需
 进入专题文档；不要从长篇实验时间线推测当前优先级。历史实验索引见
@@ -27,8 +28,8 @@
 | 共享特征与跨模型梯度诊断 | 已完成 | 共享 Feature 方向存在，Action 方向弱；OFT 腕部 Action 更强且与主视角近似正交 |
 | 双视角与动态范数保护 | 机制已实现，源门槛未通过 | 两者均未把 held-out 源攻击恢复到预设的3/10失败 |
 | OpenVLA processor 预处理正确性 | Gate 1P 已通过 | states 0–9 pixel MAE/L∞=`0/0`，10/10序列和70/70 token一致 |
-| Deployment Effective View 几何 | Gate 1D与2C已通过 | 10/10 deployment states、70/70 token及全部RGB/processor/action零误差；Gate 2E待验 |
-| BPDA 下源攻击基线 | 未建立 | 必须在多状态 processor 等价和单轮更新 smoke 后重新训练 |
+| Deployment Effective View 与训练反传 | Gate 1D、2C、2E已通过 | 完整forward零误差；crop VJP对齐；五级梯度、单轮更新、bake/rollout/资产恢复通过 |
+| BPDA 下源攻击基线 | 未建立 | Gate 2R与新参数化契约通过后才运行首个新候选 |
 | BPDA 下 OFT 迁移信号 | 未开始 | 新源候选未过门槛前不得进入 OFT |
 | 无偏跨模型迁移与鲁棒性提升 | 未开始 | 需方法冻结后的新任务/第三模型与后续防御实验 |
 
@@ -155,7 +156,8 @@ WSL 复核没有只读取 manifest 判定：已重新验证 50 张 stage PNG 的
 checkpoint 与 LIBERO 资产原文件只存在服务器，不能在 WSL 重算内容 hash；其
 配置 hash、权重 name/size inventory、物体资产 hash、task/object 和10个 state
 fingerprint 已完整绑定。日志中的 wandb/robosuite/Gym warning 均发生在正式
-采集前，未改变 Gate 数据或判定。因此 Gate 1D 正式通过，下一门槛为 Gate 2E。
+采集前，未改变 Gate 数据或判定。因此 Gate 1D 正式通过；当时的下一门槛为
+Gate 2E，现已由下述独立证据通过。
 
 ### Gate 2C：center-crop surrogate VJP equivalence（已通过）
 
@@ -189,8 +191,8 @@ error=`4.76837158203125e-07`。
 
 因此正式冻结 Gate 2C 门槛为 `relative_L2 <= 1e-5` 且
 `cosine >= 0.99999`，`max_abs` 继续只作诊断；本次 5/5 VJP case 均以明显余量
-通过。framework build、crop specification 或 surrogate 实现变化时必须重跑，
-当前结果不替代尚未完成的 Gate 1D 或 Gate 2E。
+通过。framework build、crop specification 或 surrogate 实现变化时必须重跑；
+Gate 1D 与2E后来分别用独立证据通过，不能由本 Gate 单独替代。
 
 ### Gate 2E：deployment-path end-to-end backward/update/bake smoke
 
@@ -210,7 +212,31 @@ Commits `0399c8f88abcf0688463f33a45b2933c3fea77ce` 与
 固定 source Action-only、K=256、train state 0 单 update、rollout state 10 的
 真实 runner。判定要求 Policy Source、Pre-Crop、Effective View、Surface Delta
 和谱参数五级梯度均有限非零；`rollout_success` 只记录工程 smoke 的策略结果，
-不参与 Gate，也不得解释为攻击效果。当前状态仍为“实现完成、服务器待验”。
+不参与 Gate，也不得解释为攻击效果。
+
+服务器在 `de880cee6ddabd827bfcb2c35340f0eec09fa687` 上先完成无 GPU 回归：
+`135 passed, 1 skipped`；skip 是预期的无 CUDA renderer smoke，6项 warning 均为
+robosuite/wandb 依赖弃用提示。随后真实 Gate 2E 得到：
+
+- Action loss=`34.693824768066406`；Policy Source、Pre-Crop、Effective View、
+  Surface Delta 与 `[256,3]` 参数梯度全部有限非零；
+- 768/768 个谱系数更新，参数 L∞ change=`9.178405889542773e-05`；
+- Actual Surface Step 与 Max Surface Delta 均为
+  `0.007843135856091976`，低于 `2/255` 且远低于 `128/255`；
+- bake PNG 与 Active Texture SHA-256 同为
+  `8095d0e875e9e3ea3e455ffb467e2ec81825f62095bc7775fb20e91c81ddb744`；
+- state 10 rollout 正常完成；其 success=true 只作记录；XML 与真实纹理恢复前后
+  hash 分别完全一致，backup 已删除。
+
+WSL 重新加载 schema 后独立得到 `gate_pass=true`，并以 `weights_only=True` 检查
+谱参数产物为有限 `[256,3]`、768项非零；同步的4096×4096 RGB PNG hash与证据
+一致，K=512 basis 的本地 SHA-256 也与 provenance 一致。权威 evidence、日志和
+pytest 日志 SHA-256 分别为
+`b561b573b46ad79b705bc15644cffd706d72b3c08cc1965ebcc778934c2044e3`、
+`aa425f619a55752404f12102fa014e8a71b530108d60779365c1718793da7f0a`、
+`7ba5261056f0e5d850fb6a444666fb4c0f663567f82a9fdd79c1343c7c140675`。
+因此 Gate 2E 正式通过；唯一下一阶段为 Visibility/Coverage/Compositor 与
+Gate 2R，不得提前运行 Support Seed Audit 或正式候选。
 
 ### Gate 2R：renderer-to-bake response（待实现/运行）
 

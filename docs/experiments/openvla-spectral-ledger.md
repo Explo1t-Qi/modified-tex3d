@@ -45,6 +45,7 @@
 | 2026-08-04 | 十状态 BPDA forward-only | pixel MAE/L∞=`0/0`，10/10序列、70/70 token一致；clean/processor teacher-first均为1 | 未测 | processor等价数值门槛通过；bundle未含stdout/stderr与资产hash | [双视角](../spectral/openvla-dual-view-siglip.md) |
 | 2026-08-07 | Gate 2C center-crop forward/VJP | 5类forward逐值相等；5类VJP最坏relative L2=`5.43e-8`、最小cosine=`0.999999999998` | OFT不参与 | WSL与服务器10/10 case通过；正式冻结`relative_L2<=1e-5`、`cosine>=0.99999` | [当前状态](../status/openvla-spectral-current.md) |
 | 2026-08-08 | Gate 1D deployment forward | Pre-Crop/Effective/processor/action L∞均为0；10/10 states、70/70 token一致 | OFT不参与 | 完整deployment exact forward通过；允许进入Gate 2E，不代表backward/bake已通过 | [当前状态](../status/openvla-spectral-current.md) |
+| 2026-08-08 | Gate 2E deployment backward/update/bake | 五级梯度有限非零；768/768系数更新；Surface Step/Delta=`0.007843135856`；bake/Active hash一致；资产恢复 | OFT不参与；state10 source rollout正常完成且success只作工程记录 | 完整deployment backward与单轮资产链通过；进入Visibility/Coverage/Compositor与Gate 2R | [当前状态](../status/openvla-spectral-current.md) |
 
 ## 当前待执行队列
 
@@ -53,7 +54,7 @@
 | 1（已通过） | Gate 1P processor forward equivalence | states 0–9、服务器环境 | pixel MAE/L∞=0，10/10序列、70/70 token一致 | 已达到数值门槛 |
 | 2（已通过） | Gate 2C center-crop forward/VJP | 10个冻结CPU case | 全部case通过正式relative L2/cosine门槛 | 已达到数值门槛 |
 | 3（已通过） | Gate 1D deployment-path forward equivalence | 共享Policy Canvas与Effective View实现 | 逐阶段RGB、processor tensor、action sequence/token完全一致 | 已达到零误差门槛 |
-| 4 | Gate 2E backward/update/bake smoke | Gate 1D与2C通过 | 梯度有限非零、参数更新、Surface/asset约束通过 | 定位两层surrogate或训练数据流 |
+| 4（已通过） | Gate 2E backward/update/bake smoke | Gate 1D与2C通过 | 梯度有限非零、参数更新、Surface/asset约束通过 | 已达到全部工程门槛 |
 | 5 | Visibility/Coverage/Compositor与Gate 2R | Gate 2E通过 | 对齐、偏序、零delta与renderer-to-bake response Gates通过 | 停止Seed Audit，修复基础证据链 |
 | 6 | 谱自然性约束 + Fixed Vertex Support源候选 | 全部基础Gate通过 | held-out states 10–19至少3/10失败 | 先归因参数化/目标/部署输入，不做无依据网格扫描 |
 | 7 | OFT开发期 rollout | 队列6通过 | 旧0/10迁移基线上至少出现2/10失败信号 | 记录机制失败，不包装为迁移提升 |

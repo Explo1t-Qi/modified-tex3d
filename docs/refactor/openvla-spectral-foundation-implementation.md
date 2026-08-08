@@ -37,10 +37,14 @@
   统一接入 512 Policy Source→224 Pre-Crop→Effective View；clean prompt 同时
   使用 rollout 已验证的 trailing-empty-token 修复；
 - `0399c8f`：实现 `openvla-gate-2e-v1` 严格证据、Surface Delta 中间梯度
-  捕获和单 state/单 update runner。Gate 2E 尚待服务器无 GPU 回归与真实 GPU
-  smoke，不得提前标为通过；Visibility/Coverage/Compositor 仍未开始。
+  捕获和单 state/单 update runner；该提交时 Gate 2E 尚待服务器验证，且未开始
+  Visibility/Coverage/Compositor；
 - `de880ce`：Gate 2E runner 冻结7B模型权重，只保留输入/纹理 VJP，避免为不参与
   更新的模型梯度分配显存；不改变 forward 或攻击目标。
+- 服务器在 `de880ce` 上以 `135 passed, 1 skipped` 通过无 GPU 回归；真实 Gate
+  2E 的五级梯度、768/768谱系数更新、`2/255` Surface Step、bake/Active Texture
+  hash、state 10 rollout 与资产恢复全部通过。WSL 独立复算 schema、参数/PNG和
+  basis hash 后正式接受；下一纵切为 Visibility/Coverage/Compositor 与 Gate 2R。
 
 Gate 2C 实现过程中发现 TensorFlow 2.15 CPU 与 PyTorch 2.2 CPU 对
 `sqrt(float32(0.9))` 的结果相差 1 ULP；稀疏 impulse 会把它放大为约 `2e-5`
