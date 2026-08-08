@@ -7,8 +7,9 @@
 
 四类状态严格区分没有观测、观测不足、对齐无效和有效。coverage 不在这里计算，
 从而不会把 ``invalid_alignment`` 或 ``not_observable`` 静默解释为 coverage=0。
-当前 ``A_obs=1e-3`` 与 recall=0.95 仍是审计候选值；只有 states 0–9 分布审计后
-才能由文档正式冻结。
+states 0–9 真实审计已通过并正式冻结 ``A_obs_min=1e-3`` 与
+``recall_min=0.95``。历史 audit schema 仍保留 ``Candidates`` 类名，以便旧
+JSONL/代码可重放；其默认值现在是正式门槛，不得为 support 成败调整。
 """
 
 from __future__ import annotations
@@ -28,13 +29,20 @@ VisibilityEvidenceStatus: TypeAlias = Literal[
 ]
 A_OBS_MIN_CANDIDATE: Final[float] = 1e-3
 RECALL_MIN_CANDIDATE: Final[float] = 0.95
+A_OBS_MIN_FROZEN: Final[float] = A_OBS_MIN_CANDIDATE
+RECALL_MIN_FROZEN: Final[float] = RECALL_MIN_CANDIDATE
+VISIBILITY_THRESHOLDS_FROZEN: Final[bool] = True
 ALIGNMENT_DENOMINATOR_EPSILON: Final[float] = 1e-12
 VISIBILITY_INVARIANT_ATOL: Final[float] = 1e-6
 
 
 @dataclass(frozen=True)
 class VisibilityThresholdCandidates:
-    """states 0–9 审计前使用、尚未正式冻结的候选门槛。"""
+    """Visibility 门槛值；类名为兼容冻结前 audit schema 而保留。
+
+    默认 ``A_obs_min=1e-3``、``recall_min=0.95`` 已由 states 0–9 审计正式
+    冻结。只有显式诊断测试才应构造其他值；正式 support/coverage 不得覆盖。
+    """
 
     observation_area_min: float = A_OBS_MIN_CANDIDATE
     recall_min: float = RECALL_MIN_CANDIDATE
@@ -46,12 +54,12 @@ class VisibilityThresholdCandidates:
             math.isfinite(self.observation_area_min)
             and 0.0 < self.observation_area_min <= 1.0
         ):
-            raise ValueError("A_obs_min candidate 必须位于 (0,1]")
+            raise ValueError("A_obs_min 必须位于 (0,1]")
         if not (
             math.isfinite(self.recall_min)
             and 0.0 <= self.recall_min <= 1.0
         ):
-            raise ValueError("recall_min candidate 必须位于 [0,1]")
+            raise ValueError("recall_min 必须位于 [0,1]")
         if not math.isfinite(self.invariant_atol) or self.invariant_atol < 0:
             raise ValueError("visibility invariant_atol 必须为有限非负数")
         if not (

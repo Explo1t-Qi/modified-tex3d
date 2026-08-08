@@ -15,10 +15,21 @@ LIBERO_EXPERIMENT_DIR = (
 sys.path.insert(0, str(LIBERO_EXPERIMENT_DIR))
 
 from openvla_attack.visibility_evidence import (  # noqa: E402
+    A_OBS_MIN_FROZEN,
+    RECALL_MIN_FROZEN,
+    VISIBILITY_THRESHOLDS_FROZEN,
     VisibilityThresholdCandidates,
     compute_soft_alignment_metrics,
     evaluate_visibility,
 )
+
+
+def test_visibility_threshold_defaults_are_formally_frozen() -> None:
+    thresholds = VisibilityThresholdCandidates()
+
+    assert VISIBILITY_THRESHOLDS_FROZEN
+    assert thresholds.observation_area_min == A_OBS_MIN_FROZEN == 1e-3
+    assert thresholds.recall_min == RECALL_MIN_FROZEN == 0.95
 
 
 def _thresholds(
