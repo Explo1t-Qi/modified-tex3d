@@ -39,6 +39,8 @@
 - `0399c8f`：实现 `openvla-gate-2e-v1` 严格证据、Surface Delta 中间梯度
   捕获和单 state/单 update runner。Gate 2E 尚待服务器无 GPU 回归与真实 GPU
   smoke，不得提前标为通过；Visibility/Coverage/Compositor 仍未开始。
+- `de880ce`：Gate 2E runner 冻结7B模型权重，只保留输入/纹理 VJP，避免为不参与
+  更新的模型梯度分配显存；不改变 forward 或攻击目标。
 
 Gate 2C 实现过程中发现 TensorFlow 2.15 CPU 与 PyTorch 2.2 CPU 对
 `sqrt(float32(0.9))` 的结果相差 1 ULP；稀疏 impulse 会把它放大为约 `2e-5`
@@ -67,7 +69,7 @@ BPDA approximation；Gate 1D 只验证其 exact forward，不为该近似新增�
 
 ### Gate 2E 服务器验收命令
 
-先在 commit `0399c8f88abcf0688463f33a45b2933c3fea77ce` 上运行完整无 GPU
+先在 commit `de880cee6ddabd827bfcb2c35340f0eec09fa687` 上运行完整无 GPU
 回归；输出保存到 Git 忽略的临时目录，随后通过 rsync 同步：
 
 ```bash
@@ -89,7 +91,7 @@ CUDA_VISIBLE_DEVICES=0 PYTHONDONTWRITEBYTECODE=1 TF_CPP_MIN_LOG_LEVEL=3 \
   --pretrained_checkpoint /data/huangsimin/openvla-7b-finetuned-libero-spatial \
   --spectral_basis_path experiments/spectral_basis/akita_black_bowl_k512.npz \
   --output_dir /tmp/openvla-gate2e-0399c8f \
-  --code_commit 0399c8f88abcf0688463f33a45b2933c3fea77ce \
+  --code_commit de880cee6ddabd827bfcb2c35340f0eec09fa687 \
   --task_suite_name libero_spatial \
   --task_id 0 \
   --object_name akita_black_bowl \

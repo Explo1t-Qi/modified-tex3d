@@ -204,7 +204,8 @@ Gate 1D 与 Gate 2C 通过后，验证梯度能穿过 center crop 与 checkpoint
 - Max Surface Delta 不超过 `128/255`；
 - UV PNG、Active Texture、rollout 和 Runtime Asset Transaction 正常。
 
-Commit `0399c8f88abcf0688463f33a45b2933c3fea77ce` 已实现机器可重算的
+Commits `0399c8f88abcf0688463f33a45b2933c3fea77ce` 与
+`de880cee6ddabd827bfcb2c35340f0eec09fa687` 已实现机器可重算的
 `openvla-gate-2e-v1` JSON、只在诊断范围启用的 Surface Delta 中间梯度捕获，以及
 固定 source Action-only、K=256、train state 0 单 update、rollout state 10 的
 真实 runner。判定要求 Policy Source、Pre-Crop、Effective View、Surface Delta
