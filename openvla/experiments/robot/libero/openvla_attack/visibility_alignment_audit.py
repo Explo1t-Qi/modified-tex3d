@@ -92,6 +92,12 @@ def _is_sha256(value: str) -> bool:
     )
 
 
+def _is_git_commit(value: str) -> bool:
+    return len(value) == 40 and all(
+        character in "0123456789abcdef" for character in value
+    )
+
+
 def summarize_visibility_alignment_rows(
     rows: list[VisibilityAlignmentAuditRow],
     *,
@@ -121,7 +127,7 @@ def summarize_visibility_alignment_rows(
 
     code_commits = {row.code_commit for row in rows}
     if len(code_commits) != 1 or any(
-        not _is_sha256(commit) for commit in code_commits
+        not _is_git_commit(commit) for commit in code_commits
     ):
         failures.append("invalid_or_mixed_code_commit")
     if any(

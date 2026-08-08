@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 LIBERO_EXPERIMENT_DIR = (
@@ -30,7 +31,8 @@ from openvla_attack.visibility_view_evidence import (  # noqa: E402
 )
 
 
-SHA = "a" * 64
+GIT_COMMIT = "b" * 40
+SHA256 = "a" * 64
 
 
 def _row(
@@ -55,7 +57,7 @@ def _row(
     )
     return VisibilityAlignmentAuditRow(
         schema_version=VISIBILITY_ALIGNMENT_SCHEMA_VERSION,
-        code_commit=SHA,
+        code_commit=GIT_COMMIT,
         state_id=state_id,
         view_name=view_name,  # type: ignore[arg-type]
         status=status,  # type: ignore[arg-type]
@@ -76,19 +78,19 @@ def _row(
         instance_body_names=("target",),
         transaction=VisibilityAuditTransactionEvidence(
             verified=True,
-            before_fingerprint_sha256=SHA,
-            after_fingerprint_sha256=SHA,
+            before_fingerprint_sha256=SHA256,
+            after_fingerprint_sha256=SHA256,
             maximum_position_delta=0.0,
             maximum_quaternion_delta=0.0,
         ),
-        initial_state_sha256=SHA,
-        arrays_npz_sha256=SHA,
-        oriented_segmentation_sha256=SHA,
-        renderer_faces_sha256=SHA,
-        render_to_geometry_sha256=SHA,
-        mesh_sha256=SHA,
+        initial_state_sha256=SHA256,
+        arrays_npz_sha256=SHA256,
+        oriented_segmentation_sha256=SHA256,
+        renderer_faces_sha256=SHA256,
+        render_to_geometry_sha256=SHA256,
+        mesh_sha256=SHA256,
         backend={"simulation_class": "fake"},
-        artifact_sha256={"overlay": SHA},
+        artifact_sha256={"overlay": SHA256},
     )
 
 
@@ -144,6 +146,22 @@ def test_missing_or_duplicate_rows_fail_structure() -> None:
     assert any("missing_rows" in failure for failure in missing.failures)
     assert not duplicate.structural_pass
     assert "duplicate_state_view_rows" in duplicate.failures
+
+
+def test_sha256_length_is_not_accepted_as_git_commit() -> None:
+    primary = replace(_row(0, "primary"), code_commit=SHA256)
+    wrist = replace(
+        _row(0, "wrist_source_crop_proxy"),
+        code_commit=SHA256,
+    )
+
+    summary = summarize_visibility_alignment_rows(
+        [primary, wrist],
+        expected_state_ids=(0,),
+    )
+
+    assert not summary.structural_pass
+    assert "invalid_or_mixed_code_commit" in summary.failures
 
 
 def test_jsonl_writer_uses_deterministic_state_view_order(tmp_path: Path) -> None:
