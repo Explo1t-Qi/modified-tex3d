@@ -2,7 +2,7 @@
 
 更新时间：2026-08-08
 当前 Visibility/Coverage/Compositor 功能代码基线：
-`590d766a017cf0756bb799c085b5bf7efd1922ed`
+`24daa8d835bd3fa5eadd6d3e0b180e56575b793f`
 服务器 Gate 2E 复核基线：
 `de880cee6ddabd827bfcb2c35340f0eec09fa687`
 
@@ -31,7 +31,7 @@
 | 双视角与动态范数保护 | 机制已实现，源门槛未通过 | 两者均未把 held-out 源攻击恢复到预设的3/10失败 |
 | OpenVLA processor 预处理正确性 | Gate 1P 已通过 | states 0–9 pixel MAE/L∞=`0/0`，10/10序列和70/70 token一致 |
 | Deployment Effective View 与训练反传 | Gate 1D、2C、2E已通过 | 完整forward零误差；crop VJP对齐；五级梯度、单轮更新、bake/rollout/资产恢复通过 |
-| Visibility/Coverage/Compositor | 纯计算契约已实现，真实审计未运行 | 连续evidence、严格segmentation、四状态、raster correspondence、Delta compositor与静止事务已有CPU回归；待服务器验证真实backend |
+| Visibility/Coverage/Compositor | 纯契约与真实audit runner已实现，state 0 smoke未运行 | 连续evidence、严格segmentation、四状态、raster correspondence、Delta compositor与静止事务已有CPU回归；待服务器验证真实backend |
 | BPDA 下源攻击基线 | 未建立 | Gate 2R与新参数化契约通过后才运行首个新候选 |
 | BPDA 下 OFT 迁移信号 | 未开始 | 新源候选未过门槛前不得进入 OFT |
 | 无偏跨模型迁移与鲁棒性提升 | 未开始 | 需方法冻结后的新任务/第三模型与后续防御实验 |
@@ -188,9 +188,17 @@ commit 日志 SHA-256 为
 `a10ee9c23bfae6fb64ec6d2ca26cd237bc589dc537b57370dcf2f7d4e28f5caa`。
 
 该结果验证 CPU/interface 回归，没有验证真实 CUDA rasterization 或 MuJoCo
-segmentation backend schema。下一步实现并运行 states 0–9
-Visibility/Alignment audit；候选 `A_obs_min=1e-3` 与 `recall_min=0.95`
-仍未冻结。
+segmentation backend schema。commits `8b9392b`、`b506362` 与 `24daa8d`
+随后补齐 effective-view visibility 编排、权威
+`openvla-visibility-alignment-v1` JSONL schema 和真实 audit runner。runner 不加载
+VLA 权重，不修改纹理；它在同一静止事务中采集 Primary 与 wrist source-crop
+proxy 的 segmentation、全部共享纹理实例 renderer raster，并保存可复算 NPZ、
+mask/overlay、拓扑/资产/事务 hash。
+
+下一步先运行 state 0 GPU smoke 验证真实 segmentation schema、nvdiffrast
+triangle/barycentric 与静止事务，再扩展到 states 0–9。候选
+`A_obs_min=1e-3` 与 `recall_min=0.95` 仍未冻结；即使结构判定通过，也必须人工
+检查 overlay、precision/IoU 和 recall 分布后才能冻结。
 
 WSL 复核没有只读取 manifest 判定：已重新验证 50 张 stage PNG 的数组 hash、
 10 个 `allow_pickle=False` NPZ 的 processor/token/action 数组以及全部零误差条件。
