@@ -27,7 +27,11 @@
 - `9fc1d48`：冻结 Gate 1D 的逐 state `openvla-gate-1d-v1` 判定 schema。RGB、
   processor tensor、全部 action token 和连续 action 采用严格零误差 Gate，汇总
   层拒绝缺失、重复或额外 state；
-- Gate 1D 真实 states 0–9 采集 runner 尚待接入，Gate 2E 尚未开始，也未开始
+- `546440a`：实现 Gate 1D 只读 states 0–9 runner。run manifest 绑定 checkpoint
+  配置/权重 inventory、task/object、state fingerprints、framework 版本、完整
+  deployment config 和命令；逐 state 保存 exact/candidate PNG、无 pickle NPZ
+  与权威 JSONL；
+- Gate 1D 服务器运行尚待执行，Gate 2E 尚未开始，也未开始
   Visibility/Coverage/Compositor。
 
 Gate 2C 实现过程中发现 TensorFlow 2.15 CPU 与 PyTorch 2.2 CPU 对
@@ -36,6 +40,10 @@ Gate 2C 实现过程中发现 TensorFlow 2.15 CPU 与 PyTorch 2.2 CPU 对
 TensorFlow oracle 产生的两个 float32 常量，并显式复现 pixel coordinate 与
 双线性插值顺序。修正后 WSL 最坏 VJP relative L2 为 `5.4239e-8`、最小 cosine
 为 `0.9999999999978721`、最大绝对误差为 `4.7684e-7`。
+
+512→224 backward 使用 PyTorch bicubic+antialias 近似 Pillow bicubic，明确属于
+BPDA approximation；Gate 1D 只验证其 exact forward，不为该近似新增临时 Gate。
+其端到端梯度与真实资产响应分别继续由 Gate 2E 和 Gate 2R 验收。
 
 ## 阶段 1：Deployment Path
 
