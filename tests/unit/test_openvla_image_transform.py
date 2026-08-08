@@ -123,6 +123,29 @@ def test_torch_center_crop_preserves_batch_order() -> None:
     np.testing.assert_array_equal(torch_output, tensorflow_output)
 
 
+def test_torch_center_crop_supports_single_channel_continuous_evidence() -> None:
+    """coverage alpha 复用 RGB 几何时不应复制成伪三通道。"""
+    source = torch.arange(9, dtype=torch.float32).reshape(1, 1, 3, 3)
+    specification = CenterCropSpecification(
+        input_resolution=3,
+        output_resolution=2,
+        crop_area=1.0,
+    )
+
+    output = torch_center_crop_float(
+        source,
+        specification=specification,
+    )
+
+    assert output.shape == (1, 1, 2, 2)
+    torch.testing.assert_close(
+        output,
+        torch.tensor([[[[0.0, 2.0], [6.0, 8.0]]]]),
+        rtol=0,
+        atol=0,
+    )
+
+
 def test_torch_center_crop_input_vjp_matches_tensorflow() -> None:
     source_hwc = _spatial_ramp(9)
     upstream_hwc = np.random.default_rng(17).standard_normal(

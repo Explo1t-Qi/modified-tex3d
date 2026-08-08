@@ -258,14 +258,15 @@ def torch_center_crop_float(
     """使用 PyTorch 可微 surrogate 复现 TensorFlow center-crop 几何。
 
     Args:
-        image_nchw: float32 tensor，语义为连续 RGB，shape 为
-            ``[batch_size, 3, input_resolution, input_resolution]``，device
-            与 dtype 由调用方决定。
+        image_nchw: float32 tensor，语义为连续空间证据，shape 为
+            ``[batch_size, channels, input_resolution, input_resolution]``，
+            device 与 dtype 由调用方决定。RGB 使用3通道；coverage 的
+            ``alpha`` 与预乘证据可使用1通道，二者共享同一采样几何。
         specification: 输入尺寸、输出尺寸和裁剪面积。
 
     Returns:
         同 dtype、同 device 的 NCHW tensor，shape 为
-        ``[batch_size, 3, output_resolution, output_resolution]``。
+        ``[batch_size, channels, output_resolution, output_resolution]``。
 
     本函数只替代部署变换的 backward。正式 BPDA forward 仍必须使用
     :func:`deployment_center_crop_uint8` 产生的精确 uint8 结果。
@@ -283,15 +284,17 @@ def torch_center_crop_float(
             "PyTorch center-crop 输入必须为 NCHW rank-4 tensor，收到 "
             f"shape {tuple(image_nchw.shape)}"
         )
-    expected_tail: tuple[int, int, int] = (
-        3,
+    expected_spatial_shape: tuple[int, int] = (
         specification.input_resolution,
         specification.input_resolution,
     )
-    if tuple(image_nchw.shape[1:]) != expected_tail:
+    if image_nchw.shape[0] <= 0 or image_nchw.shape[1] <= 0:
+        raise ValueError("PyTorch center-crop batch 与 channel 必须为正数")
+    if tuple(image_nchw.shape[2:]) != expected_spatial_shape:
         raise ValueError(
             "PyTorch center-crop 输入 shape 与 specification 不一致："
-            f"{tuple(image_nchw.shape)}，期望尾部为 {expected_tail}"
+            f"{tuple(image_nchw.shape)}，期望空间尺寸为 "
+            f"{expected_spatial_shape}"
         )
 
     coordinate_dtype: torch.dtype = torch.float32
