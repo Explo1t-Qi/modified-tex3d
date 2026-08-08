@@ -17,7 +17,7 @@ import math
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Sequence, TypedDict
+from typing import Any, Mapping, Sequence, TypedDict
 
 import numpy as np
 from numpy.typing import NDArray
@@ -388,5 +388,76 @@ def write_deployment_forward_jsonl(
         )
         + "\n"
     ).encode("utf-8")
+    output_path.write_bytes(payload)
+    return hashlib.sha256(payload).hexdigest()
+
+
+_REQUIRED_RUN_METADATA_FIELDS = frozenset(
+    {
+        "code_commit",
+        "checkpoint",
+        "checkpoint_fingerprints",
+        "task_suite_name",
+        "task_id",
+        "task_name",
+        "object_name",
+        "object_asset_fingerprints",
+        "state_ids",
+        "state_fingerprints",
+        "seed",
+        "deployment_configuration",
+        "framework_versions",
+        "command",
+    }
+)
+
+
+def write_deployment_forward_manifest(
+    *,
+    metadata: Mapping[str, Any],
+    summary: DeploymentForwardSummary,
+    metrics_jsonl_sha256: str,
+    output_path: Path,
+) -> str:
+    """保存 Gate 1D run-level provenance、判定摘要与权威表哈希。
+
+    逐 state JSONL 保持数值判定职责；checkpoint、task/object、state
+    fingerprint、framework 版本和完整 deployment configuration 在这里统一
+    绑定，避免每行重复且防止孤立的 ``gate_pass=true`` 失去实验身份。
+    """
+
+    missing_fields = sorted(_REQUIRED_RUN_METADATA_FIELDS - set(metadata))
+    if missing_fields:
+        raise DeploymentForwardAuditError(
+            f"Gate 1D run metadata 缺少字段: {missing_fields}"
+        )
+    if len(metrics_jsonl_sha256) != 64:
+        raise DeploymentForwardAuditError("metrics JSONL SHA-256 格式无效")
+    metadata_state_ids = [int(value) for value in metadata["state_ids"]]
+    if metadata_state_ids != summary["expected_state_ids"]:
+        raise DeploymentForwardAuditError(
+            "metadata state_ids 与 Gate summary expected_state_ids 不一致"
+        )
+    if str(metadata["code_commit"]) not in summary["code_commits"]:
+        raise DeploymentForwardAuditError(
+            "metadata code_commit 与逐 state metrics 不一致"
+        )
+
+    manifest = {
+        "schema_version": DEPLOYMENT_FORWARD_SCHEMA_VERSION,
+        "metadata": dict(metadata),
+        "metrics_jsonl_sha256": metrics_jsonl_sha256,
+        "summary": summary,
+    }
+    payload = (
+        json.dumps(
+            manifest,
+            ensure_ascii=False,
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n"
+    ).encode("utf-8")
+    output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_bytes(payload)
     return hashlib.sha256(payload).hexdigest()

@@ -20,6 +20,7 @@ from openvla_attack.deployment_forward_audit import (  # noqa: E402
     evaluate_deployment_forward_evidence,
     summarize_deployment_forward_rows,
     write_deployment_forward_jsonl,
+    write_deployment_forward_manifest,
 )
 
 
@@ -133,3 +134,55 @@ def test_jsonl_writer_preserves_state_order_and_returns_hash(
     ]
     assert [row["state_id"] for row in saved_rows] == [7, 2]
     assert len(output_sha256) == 64
+
+
+def test_manifest_binds_run_provenance_summary_and_jsonl(
+    tmp_path: Path,
+) -> None:
+    row = evaluate_deployment_forward_evidence(
+        _equal_evidence(0),
+        code_commit="abc123",
+    )
+    summary = summarize_deployment_forward_rows(
+        (row,),
+        expected_state_ids=(0,),
+    )
+    output_path = tmp_path / "deployment_forward_manifest.json"
+    metadata = {
+        "code_commit": "abc123",
+        "checkpoint": "/checkpoints/openvla",
+        "checkpoint_fingerprints": {"config.json": "a" * 64},
+        "task_suite_name": "libero_spatial",
+        "task_id": 0,
+        "task_name": "pick_up_the_bowl",
+        "object_name": "akita_black_bowl",
+        "object_asset_fingerprints": {"texture": "d" * 64},
+        "state_ids": [0],
+        "state_fingerprints": {"0": "b" * 64},
+        "seed": 7,
+        "deployment_configuration": {
+            "policy_source_resolution": 512,
+            "pre_crop_resolution": 224,
+            "crop_area": 0.9,
+        },
+        "framework_versions": {
+            "pillow": "10.0",
+            "tensorflow": "2.15",
+            "torch": "2.2",
+            "numpy": "1.26",
+        },
+        "command": "python -m gate_1d ...",
+    }
+
+    manifest_sha256 = write_deployment_forward_manifest(
+        metadata=metadata,
+        summary=summary,
+        metrics_jsonl_sha256="c" * 64,
+        output_path=output_path,
+    )
+
+    manifest = json.loads(output_path.read_text(encoding="utf-8"))
+    assert manifest["metadata"] == metadata
+    assert manifest["summary"]["gate_pass"] is True
+    assert manifest["metrics_jsonl_sha256"] == "c" * 64
+    assert len(manifest_sha256) == 64
