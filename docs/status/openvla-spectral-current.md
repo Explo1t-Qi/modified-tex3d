@@ -178,10 +178,19 @@ SHA-256 为 `b8d3856dc3159f3ba575dd6a121b1fe2e24ee38824b7a2cd8c6bcd363344f760`�
   多实例编排层强制公开 mask 与 triangle-ID valid mask 逐值一致。
 
 截至该检查点，相关本地 CPU 定向回归为 `64 passed`；另有 12 项 renderer
-interface 测试通过仅用于导入的 nvdiffrast stub。后者不代表真实 CUDA
-rasterization 已验证。下一步先在服务器运行完整无 GPU 回归，再实现并运行
-states 0–9 Visibility/Alignment audit；候选 `A_obs_min=1e-3` 与
-`recall_min=0.95` 仍未冻结。
+interface 测试通过仅用于导入的 nvdiffrast stub。服务器随后在 commit
+`803b702fa2c7ee370891752a649c06a8b7ad9b14` 上完成完整无 GPU 回归：
+`197 passed, 1 skipped, 6 warnings in 22.15s`。唯一 skip 是预期的无 CUDA
+renderer smoke；warning 均来自 robosuite、wandb 与 pkg_resources 第三方依赖。
+同步 pytest 日志 SHA-256 为
+`5d73952ae6c027f2662d6507ae367d2987c4d7eeda5fd0e58e3f0d4d4d22c1d3`，
+commit 日志 SHA-256 为
+`a10ee9c23bfae6fb64ec6d2ca26cd237bc589dc537b57370dcf2f7d4e28f5caa`。
+
+该结果验证 CPU/interface 回归，没有验证真实 CUDA rasterization 或 MuJoCo
+segmentation backend schema。下一步实现并运行 states 0–9
+Visibility/Alignment audit；候选 `A_obs_min=1e-3` 与 `recall_min=0.95`
+仍未冻结。
 
 WSL 复核没有只读取 manifest 判定：已重新验证 50 张 stage PNG 的数组 hash、
 10 个 `allow_pickle=False` NPZ 的 processor/token/action 数组以及全部零误差条件。
