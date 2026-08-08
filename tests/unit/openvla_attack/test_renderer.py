@@ -20,6 +20,7 @@ sys.path.insert(0, str(LIBERO_EXPERIMENT_DIR))
 from openvla_attack.renderer import (
     AdversarialTextureLoadResult,
     DifferentiableRenderer,
+    RendererEvidence,
     resolve_position_offset,
 )
 from openvla_attack.spectral_geometry import save_spectral_basis
@@ -217,6 +218,68 @@ def test_geometry_vertex_renderer_builds_surface_parameterization(
         renderer.get_surface_delta(),
         torch.zeros((3, 3)),
     )
+    torch.testing.assert_close(
+        renderer.get_render_to_geometry_mapping(),
+        torch.arange(3),
+    )
+
+
+def test_legacy_renderer_rejects_missing_strict_geometry_mapping() -> None:
+    renderer: DifferentiableRenderer = _minimal_cpu_renderer()
+
+    with pytest.raises(RuntimeError, match="不提供严格 render_to_geometry"):
+        renderer.get_render_to_geometry_mapping()
+
+
+@pytest.mark.parametrize("return_clean", [False, True])
+def test_render_tuple_interface_delegates_to_explicit_evidence(
+    monkeypatch,
+    return_clean: bool,
+) -> None:
+    renderer: DifferentiableRenderer = _minimal_cpu_renderer()
+    adversarial = torch.full((1, 2, 2, 3), 0.6)
+    clean = torch.full((1, 2, 2, 3), 0.5)
+    mask = torch.ones((1, 2, 2, 1))
+    raster = torch.zeros((1, 2, 2, 4))
+    evidence = RendererEvidence(
+        adversarial_rgb=adversarial,
+        clean_rgb=clean,
+        visibility_mask=mask,
+        raster=raster,
+    )
+    calls: list[
+        tuple[torch.Tensor, tuple[int, int], torch.Tensor | None]
+    ] = []
+
+    def fake_render_evidence(
+        mvp: torch.Tensor,
+        resolution: tuple[int, int],
+        model_rot: torch.Tensor | None,
+    ) -> RendererEvidence:
+        calls.append((mvp, resolution, model_rot))
+        return evidence
+
+    monkeypatch.setattr(renderer, "render_evidence", fake_render_evidence)
+    mvp = torch.eye(4)
+    rotation = torch.eye(3)
+
+    result = renderer.render(
+        mvp,
+        resolution=(2, 2),
+        return_clean=return_clean,
+        model_rot=rotation,
+    )
+
+    assert calls == [(mvp, (2, 2), rotation)]
+    if return_clean:
+        assert len(result) == 3
+        assert result[0] is adversarial
+        assert result[1] is clean
+        assert result[2] is mask
+    else:
+        assert len(result) == 2
+        assert result[0] is adversarial
+        assert result[1] is mask
 
 
 def test_spectral_renderer_exposes_basis_and_matching_eigenvalues(

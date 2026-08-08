@@ -96,6 +96,21 @@ class SurfaceDeltaGradientCapture:
         return torch.stack(gradients, dim=0).sum(dim=0)
 
 
+@dataclass(frozen=True)
+class RendererEvidence:
+    """同一次 nvdiffrast rasterization 产生的完整实例证据。
+
+    RGB 为 float32 NHWC ``[1,H,W,3]``，visibility mask 为 float32 NHWC
+    ``[1,H,W,1]``，raw raster 为 float32 ``[1,H,W,4]``。raw raster 用于
+    triangle/barycentric correspondence；不得从 RGB 或 mask 反推 face。
+    """
+
+    adversarial_rgb: Tensor
+    clean_rgb: Tensor
+    visibility_mask: Tensor
+    raster: Tensor
+
+
 def resolve_position_offset(
     pos_offset: Optional[Sequence[float]],
 ) -> tuple[float, float, float]:
@@ -475,6 +490,19 @@ class DifferentiableRenderer(nn.Module):
         """返回用于日志和产物命名的稳定 adapter 名称。"""
         return self.texture_parameterization_kind
 
+    def get_render_to_geometry_mapping(self) -> Tensor:
+        """返回严格的 ``renderer vertex -> OBJ geometry vertex`` seam 映射。
+
+        legacy 参数化没有独立保存原始 OBJ 几何拓扑，不能作为 Fixed Vertex
+        Support correspondence 的来源，因此显式拒绝而不猜测恒等映射。
+        """
+
+        if self.surface_parameterization is None:
+            raise RuntimeError(
+                "legacy renderer 不提供严格 render_to_geometry 映射"
+            )
+        return self.surface_parameterization.render_to_geometry
+
     def get_spectral_basis_and_eigenvalues(
         self,
     ) -> tuple[Tensor, Tensor]:
@@ -775,7 +803,7 @@ class DifferentiableRenderer(nn.Module):
         return_clean: bool = False,
         model_rot: Optional[Tensor] = None,
     ) -> tuple[Tensor, Tensor] | tuple[Tensor, Tensor, Tensor]:
-        """把当前 mesh 渲染为带简化光照的 NHWC RGB。
+        """保留历史 tuple interface，并委托给显式 evidence renderer。
 
         Args:
             mvp: model-view-projection 矩阵，形状 ``[4, 4]``。
@@ -788,6 +816,32 @@ class DifferentiableRenderer(nn.Module):
             ``(adv_rgb, clean_rgb, mask)``。RGB 形状均为 ``[1, H, W, 3]``，
             mask 形状为 ``[1, H, W, 1]``。
         """
+        evidence: RendererEvidence = self.render_evidence(
+            mvp,
+            resolution=resolution,
+            model_rot=model_rot,
+        )
+        if return_clean:
+            return (
+                evidence.adversarial_rgb,
+                evidence.clean_rgb,
+                evidence.visibility_mask,
+            )
+        return evidence.adversarial_rgb, evidence.visibility_mask
+
+    def render_evidence(
+        self,
+        mvp: Tensor,
+        resolution: ImageResolution = (256, 256),
+        model_rot: Optional[Tensor] = None,
+    ) -> RendererEvidence:
+        """把 mesh 渲染为带 raw raster correspondence 的完整实例证据。
+
+        ``adversarial_rgb``、``clean_rgb``、``visibility_mask`` 与 ``raster``
+        全部来自同一次 rasterization，防止 coverage/compositor 混用跨姿态或
+        跨调用缓存。普通调用方继续使用 :meth:`render` 即可。
+        """
+
         # pos/position_homogeneous: [num_vertices, 3/4]。
         # position: [num_vertices, 3]，把对齐偏移应用到 renderer 顶点。
         position: Tensor = self.pos + self.pos_offset
@@ -923,9 +977,12 @@ class DifferentiableRenderer(nn.Module):
         visibility_mask: Tensor = (
             (raster[..., 3] > 0).float().unsqueeze(-1)
         )
-        if return_clean:
-            return adversarial_lit, clean_lit, visibility_mask
-        return adversarial_lit, visibility_mask
+        return RendererEvidence(
+            adversarial_rgb=adversarial_lit,
+            clean_rgb=clean_lit,
+            visibility_mask=visibility_mask,
+            raster=raster,
+        )
 
     def get_baked_adv_texture(self) -> Tensor:
         """把当前 Surface Delta bake 到 UV atlas。3D纹理变成 uv png
