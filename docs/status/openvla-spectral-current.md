@@ -2,7 +2,7 @@
 
 更新时间：2026-08-08
 当前 Visibility/Coverage/Compositor 功能代码基线：
-`74d6e17005404899d58c2e1461b0056e07b59712`
+`3b51f27c6cc31d4819f41b98f6c07e9b11077d69`
 服务器 Gate 2E 复核基线：
 `de880cee6ddabd827bfcb2c35340f0eec09fa687`
 
@@ -31,7 +31,7 @@
 | 双视角与动态范数保护 | 机制已实现，源门槛未通过 | 两者均未把 held-out 源攻击恢复到预设的3/10失败 |
 | OpenVLA processor 预处理正确性 | Gate 1P 已通过 | states 0–9 pixel MAE/L∞=`0/0`，10/10序列和70/70 token一致 |
 | Deployment Effective View 与训练反传 | Gate 1D、2C、2E已通过 | 完整forward零误差；crop VJP对齐；五级梯度、单轮更新、bake/rollout/资产恢复通过 |
-| Visibility/Coverage/Compositor | 真实backend state 0 smoke已通过，states 0–9待运行 | 两视角均valid且recall>0.999；segmentation/raster/静止事务/NPZ复算通过；结构判定器40/64位bug已修复 |
+| Visibility/Coverage/Compositor | states 0–9 Visibility/Alignment audit已通过；Compositor零delta与Gate 2R待运行 | 20/20行完整、两视角均10/10 valid；正式冻结`A_obs_min=1e-3`、`recall_min=0.95` |
 | BPDA 下源攻击基线 | 未建立 | Gate 2R与新参数化契约通过后才运行首个新候选 |
 | BPDA 下 OFT 迁移信号 | 未开始 | 新源候选未过门槛前不得进入 OFT |
 | 无偏跨模型迁移与鲁棒性提升 | 未开始 | 需方法冻结后的新任务/第三模型与后续防御实验 |
@@ -195,8 +195,8 @@ VLA 权重，不修改纹理；它在同一静止事务中采集 Primary 与 wri
 proxy 的 segmentation、全部共享纹理实例 renderer raster，并保存可复算 NPZ、
 mask/overlay、拓扑/资产/事务 hash。
 
-候选 `A_obs_min=1e-3` 与 `recall_min=0.95` 仍未冻结；即使结构判定通过，
-也必须人工检查 overlay、precision/IoU 和 recall 分布后才能冻结。
+当时 `A_obs_min=1e-3` 与 `recall_min=0.95` 仍为预注册候选；正式冻结要求
+完整 states 0–9 结构通过，并人工检查 overlay、precision/IoU 和 recall 分布。
 
 服务器随后在 commit `bf941d9d7f5b74ca97b2e04be45cab81a750ad6a`
 完成 state 0 GPU smoke。MuJoCo backend 为 mujoco `3.2.3`、robosuite `1.4.1`，
@@ -221,7 +221,37 @@ recall/precision/IoU 与 JSONL 误差小于 `2e-7`。权威 JSONL SHA-256 为
 `invalid_or_mixed_code_commit`。commit `74d6e17` 已拆分两种 hash 校验并新增
 “64位 SHA-256 不得冒充 Git commit”回归测试；相关本地定向回归为
 `72 passed`。旧 state 0 manifest 的 false 结论不改写，保留为该 bookkeeping
-bug 的原始证据。下一步直接运行修正版 states 0–9 audit。
+bug 的原始证据；该阶段的下一步是运行修正版 states 0–9 audit。
+
+修正版随后在 commit `d0a784cb3e0ef2ae35d11464bd60020170186430`
+完成 states 0–9 全量 audit。权威 JSONL 20行完整且唯一，Primary 与 wrist
+source-crop proxy 均为10/10 `valid`，无 `A_obs` 边界案例、无
+`invalid_alignment`，全部 static transaction 前后 fingerprint 完全相同。分布为：
+
+- Primary `A_obs` 范围 `[0.0230380, 0.0242684]`，最低值是门槛的约23倍；
+  recall范围 `[0.9992251, 1.0]`，precision最低`0.9957341`，IoU最低
+  `0.9957341`；
+- wrist proxy `A_obs` 范围 `[0.0291956, 0.0461461]`；recall范围
+  `[0.9995750, 1.0]`，precision最低`0.9996968`，IoU最低`0.9994967`；
+- 40个逐实例案例中30个可观测、10个不可观测、0个观测不足。10个不可观测
+  案例均为 wrist 中不在视野内的第二个 bowl；可观测实例最低
+  recall=`0.9986185`、最低 precision/IoU=`0.9910161`。
+
+WSL 重新验证全部20个 NPZ 与100张 PNG 的 SHA-256，以
+`allow_pickle=False` 加载并复算全部 union 指标；最大复算误差
+`1.39e-7`，有效 barycentric sum 最大误差`5.96e-8`，背景 barycentric 与
+corner index 分别严格为0和-1。人工检查覆盖 union 与逐实例最差指标案例的
+state 2、7 Primary 及 state 3 wrist union overlay，差异仅位于抗锯齿边缘，
+没有位置、轮廓、尺度或相机方向异常。
+
+权威 JSONL/manifest/log SHA-256 分别为
+`4d19dd9e1761266357321d5696e6690ee6cdbeba59aadbb62fb1a2c21e8c54c8`、
+`f48a8262e0c8460547f223ec88cd0a3cec6233967962e9fe1b9dc50ad8cd6ab9`、
+`c992fcd0e866840851467662e8a5ff8f43b2bc0cd66c46621150b1a3bf5b4a1f`。
+因此从 commit `3b51f27` 起正式冻结 `A_obs_min=1e-3` 与
+`recall_min=0.95`；类名 `VisibilityThresholdCandidates` 仅为历史 schema
+兼容保留，默认值已是正式门槛。下一步是零 Surface Delta compositor Gate，
+随后实现并运行 Gate 2R；仍不得提前运行 Support Seed Gradient Audit。
 
 WSL 复核没有只读取 manifest 判定：已重新验证 50 张 stage PNG 的数组 hash、
 10 个 `allow_pickle=False` NPZ 的 processor/token/action 数组以及全部零误差条件。
@@ -663,8 +693,8 @@ C_{s,primary}(S) >= 0.20
 投影图。若多个 state 同为最小值，按 state ID 决胜并保存完整并列列表。
 这些诊断用于区分普遍低 coverage 与单 state 盲区，但不能改变 Gate。
 
-已冻结的第四十项设计决定：预注册
-`A_obs_min_candidate = 1e-3`，但在 states 0–9 visibility audit 完成前不得把它
+已冻结的第四十项设计决定：最初预注册
+`A_obs_min_candidate = 1e-3`，在 states 0–9 visibility audit 完成前不得把它
 标记为正式冻结门槛。`A_obs = sum_p alpha_p / (H * W)` 只判断有效视野中的
 目标观测是否足以形成稳定 coverage 分母，不衡量 support 好坏；在 `224 x 224`
 输入上，候选值约等于 50 个完全可见像素的有效权重。
@@ -681,7 +711,11 @@ Primary support Gate。门槛只能依据 crop/segmentation 后观测分母的�
 候选值清晰分离且证据无误，才正式冻结 `A_obs_min = 1e-3` 并记录审计产物
 SHA-256；任何改值都需要新的明确决策和理由，不能作为 support 调参步骤。
 
-已冻结的第四十一项设计决定：预注册
+2026-08-08 全量 audit 的20个 union 观测均远离边界带，最小非零
+`A_obs=0.0230380`；40个逐实例观测中30个大于门槛、10个精确为0、没有
+`0<A_obs<1e-3`。因此现已正式冻结 `A_obs_min=1e-3`。
+
+已冻结的第四十一项设计决定：最初预注册
 `recall_min_candidate = 0.95`，但与 `A_obs_min` 一样，必须在 states 0–9
 alignment audit 后才能正式冻结。MuJoCo 与 nvdiffrast 的 alpha 必须先进入同一
 effective-view/crop 坐标系，再计算：
@@ -704,6 +738,11 @@ IoU 第一版不设硬门槛，但若其分布存在明显异常值，或 overla
 通过也必须暂停验收，防止大实例掩盖小实例错误。只有 states 0–9 的 union、
 逐实例指标和 overlay 均无异常且 recall 分布与 0.95 清晰分离后，才正式冻结
 `recall_min = 0.95` 并记录审计产物 SHA-256；不得根据 support 成败调低门槛。
+
+2026-08-08 全量 audit 的 Primary/wrist union 最低 recall 分别为
+`0.9992251/0.9995750`，可观测逐实例最低 recall=`0.9986185`；最差
+precision/IoU 与 overlay 也没有异常。因此现已正式冻结
+`recall_min=0.95`。
 
 已冻结的第四十二项设计决定：共享同一 Active Texture 的命中物体实例使用
 instance-aware premultiplied aggregation 计算正式 coverage。对同一个

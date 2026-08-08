@@ -46,6 +46,7 @@
 | 2026-08-07 | Gate 2C center-crop forward/VJP | 5类forward逐值相等；5类VJP最坏relative L2=`5.43e-8`、最小cosine=`0.999999999998` | OFT不参与 | WSL与服务器10/10 case通过；正式冻结`relative_L2<=1e-5`、`cosine>=0.99999` | [当前状态](../status/openvla-spectral-current.md) |
 | 2026-08-08 | Gate 1D deployment forward | Pre-Crop/Effective/processor/action L∞均为0；10/10 states、70/70 token一致 | OFT不参与 | 完整deployment exact forward通过；允许进入Gate 2E，不代表backward/bake已通过 | [当前状态](../status/openvla-spectral-current.md) |
 | 2026-08-08 | Gate 2E deployment backward/update/bake | 五级梯度有限非零；768/768系数更新；Surface Step/Delta=`0.007843135856`；bake/Active hash一致；资产恢复 | OFT不参与；state10 source rollout正常完成且success只作工程记录 | 完整deployment backward与单轮资产链通过；进入Visibility/Coverage/Compositor与Gate 2R | [当前状态](../status/openvla-spectral-current.md) |
+| 2026-08-08 | states 0–9 Visibility/Alignment audit | Primary 10/10 valid；最低A_obs=`0.0230380`、recall=`0.9992251`；20行与全部事务完整 | wrist proxy 10/10 valid；最低A_obs=`0.0291956`、recall=`0.9995750`；第二实例10/10不可观测 | 正式冻结`A_obs_min=1e-3`、`recall_min=0.95`；进入零delta Compositor与Gate 2R | [当前状态](../status/openvla-spectral-current.md) |
 
 ## 当前待执行队列
 
@@ -55,7 +56,7 @@
 | 2（已通过） | Gate 2C center-crop forward/VJP | 10个冻结CPU case | 全部case通过正式relative L2/cosine门槛 | 已达到数值门槛 |
 | 3（已通过） | Gate 1D deployment-path forward equivalence | 共享Policy Canvas与Effective View实现 | 逐阶段RGB、processor tensor、action sequence/token完全一致 | 已达到零误差门槛 |
 | 4（已通过） | Gate 2E backward/update/bake smoke | Gate 1D与2C通过 | 梯度有限非零、参数更新、Surface/asset约束通过 | 已达到全部工程门槛 |
-| 5 | Visibility/Coverage/Compositor与Gate 2R | Gate 2E通过 | 对齐、偏序、零delta与renderer-to-bake response Gates通过 | 停止Seed Audit，修复基础证据链 |
+| 5（进行中） | Visibility/Coverage/Compositor与Gate 2R | Gate 2E通过 | Visibility/Alignment已通过；仍需零delta与renderer-to-bake response Gates | 停止Seed Audit，修复基础证据链 |
 | 6 | 谱自然性约束 + Fixed Vertex Support源候选 | 全部基础Gate通过 | held-out states 10–19至少3/10失败 | 先归因参数化/目标/部署输入，不做无依据网格扫描 |
 | 7 | OFT开发期 rollout | 队列6通过 | 旧0/10迁移基线上至少出现2/10失败信号 | 记录机制失败，不包装为迁移提升 |
 | 8 | 新任务/第三模型无偏验证 | 方法和超参数冻结 | 预注册门槛 | 区分开发期选择偏差与真实迁移 |
