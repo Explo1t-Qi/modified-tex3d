@@ -44,7 +44,14 @@
 - 服务器在 `de880ce` 上以 `135 passed, 1 skipped` 通过无 GPU 回归；真实 Gate
   2E 的五级梯度、768/768谱系数更新、`2/255` Surface Step、bake/Active Texture
   hash、state 10 rollout 与资产恢复全部通过。WSL 独立复算 schema、参数/PNG和
-  basis hash 后正式接受；下一纵切为 Visibility/Coverage/Compositor 与 Gate 2R。
+  basis hash 后正式接受；下一纵切为 Visibility/Coverage/Compositor 与 Gate 2R；
+- `5dcec04`：建立 `openvla-compositor-zero-delta-v1` 纯 CPU 判定层，严格检查
+  raw/Pre-Crop/Effective/processor/action 恒等、clean/adv renderer 梯度分支、
+  静止事务、state 集合完整性和 artifact SHA-256；
+- `1884eb7`：实现 states 0–9 真实零 Surface Delta runner，在 MuJoCo alpha 与
+  renderer mask 的 joint-visible 路径上验证有限非零 Surface 参数梯度，并保存
+  权威 JSONL、manifest、无 pickle NPZ 与便读图。代码已完成，服务器 Gate 尚未
+  运行，不能记为通过。
 
 Gate 2C 实现过程中发现 TensorFlow 2.15 CPU 与 PyTorch 2.2 CPU 对
 `sqrt(float32(0.9))` 的结果相差 1 ULP；稀疏 impulse 会把它放大为约 `2e-5`
@@ -125,9 +132,10 @@ Texture hash 等于 bake PNG、rollout 正常结束、XML/真实纹理逐字节�
 
 1. states 0–9 visibility/alignment audit；
 2. 根据预注册流程冻结 `A_obs_min` 与 renderer recall；
-3. Gate 2R 的 R/G/B `2/255` renderer-to-bake response；
-4. 生成权威 JSONL、无 pickle NPZ、派生 CSV 和逐 case 图；
-5. 根据审计分布决定 Gate 2R 剩余阈值，不回看 support 成败调门槛。
+3. 零 Surface Delta Compositor Gate；
+4. Gate 2R 的 R/G/B `2/255` renderer-to-bake response；
+5. 生成权威 JSONL、无 pickle NPZ、派生 CSV 和逐 case 图；
+6. 根据审计分布决定 Gate 2R 剩余阈值，不回看 support 成败调门槛。
 
 ## 阶段 4：Support 与训练候选
 
