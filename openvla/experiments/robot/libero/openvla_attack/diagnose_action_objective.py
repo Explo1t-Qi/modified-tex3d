@@ -132,6 +132,29 @@ class ActionObjectiveAuditConfig:
     center_crop: bool = True
 
 
+@dataclass(frozen=True)
+class ActionObjectiveStateCapture:
+    """一次共享 Action-only runtime capture 的完整内存结果。
+
+    ``dense_geometry_gradient`` 是拥有数据的 CPU float32
+    ``[num_geometry_vertices,3]`` NumPy 数组。Objective GPU Audit 只消费其
+    hash/统计；Dense Seed Audit 复用同一次捕获并把完整数组写入独立 artifact。
+    其余 hash 与实例字段绑定产生梯度的几何 correspondence、有效输入和
+    visibility evidence。
+    """
+
+    evidence: ActionObjectiveAuditEvidence
+    dense_geometry_gradient: np.ndarray
+    mesh_sha256: str
+    render_to_geometry_sha256: str
+    policy_source_rgb_sha256: str
+    effective_view_rgb_sha256: str
+    mujoco_instance_alpha_sha256: str
+    renderer_visibility_sha256: str
+    shared_instance_body_ids: tuple[int, ...]
+    shared_instance_body_names: tuple[str, ...]
+
+
 def _parse_args(
     argv: Optional[Sequence[str]] = None,
 ) -> ActionObjectiveAuditConfig:
@@ -165,7 +188,13 @@ def _sha256_file(path: Path) -> str:
 
 
 def _state_fingerprint(state: Any) -> str:
-    array = np.ascontiguousarray(np.asarray(state))
+    return _array_sha256(np.asarray(state))
+
+
+def _array_sha256(value: np.ndarray) -> str:
+    """按 contiguous dtype/shape/bytes 绑定 NumPy 数组。"""
+
+    array = np.ascontiguousarray(np.asarray(value))
     digest = hashlib.sha256()
     digest.update(str(array.dtype).encode("ascii"))
     digest.update(json.dumps(list(array.shape)).encode("ascii"))
@@ -176,12 +205,7 @@ def _state_fingerprint(state: Any) -> str:
 def _tensor_sha256(tensor: torch.Tensor) -> str:
     """按 CPU contiguous dtype/shape/bytes 绑定任意 tensor。"""
 
-    array = np.ascontiguousarray(tensor.detach().cpu().numpy())
-    digest = hashlib.sha256()
-    digest.update(str(array.dtype).encode("ascii"))
-    digest.update(json.dumps(list(array.shape)).encode("ascii"))
-    digest.update(array.tobytes())
-    return digest.hexdigest()
+    return _array_sha256(tensor.detach().cpu().numpy())
 
 
 def _checkpoint_fingerprints(checkpoint_path: Path) -> dict[str, str]:
@@ -262,7 +286,7 @@ def _require_gradient(
     return gradient.detach()
 
 
-def _collect_state_evidence(
+def collect_action_objective_state_capture(
     *,
     cfg: ActionObjectiveAuditConfig,
     state_id: int,
@@ -278,8 +302,8 @@ def _collect_state_evidence(
     get_libero_dummy_action: Any,
     get_libero_env: Any,
     get_libero_image: Any,
-) -> ActionObjectiveAuditEvidence:
-    """执行一个 state 的零扰动 teacher-forward/backward。"""
+) -> ActionObjectiveStateCapture:
+    """执行一个 state 的零扰动 teacher-forward/backward 公共链路。"""
 
     renderer.reset_texture()
     dense_parameter = renderer.get_texture_param()
@@ -472,6 +496,9 @@ def _collect_state_evidence(
             torch.int64
         )
         clean_token_ids = clean_classes + ACTION_TOKEN_START
+        dense_gradient_array = np.ascontiguousarray(
+            dense_gradient.to(dtype=torch.float32).cpu().numpy()
+        )
         evidence = ActionObjectiveAuditEvidence(
             schema_version=ACTION_OBJECTIVE_SCHEMA_VERSION,
             code_commit=cfg.code_commit,
@@ -514,9 +541,30 @@ def _collect_state_evidence(
             dense_geometry_gradient=GradientEvidence.from_tensor(
                 dense_gradient
             ),
-            dense_geometry_gradient_sha256=_tensor_sha256(dense_gradient),
+            dense_geometry_gradient_sha256=_array_sha256(
+                dense_gradient_array
+            ),
         )
-        return evidence
+        return ActionObjectiveStateCapture(
+            evidence=evidence,
+            dense_geometry_gradient=dense_gradient_array,
+            mesh_sha256=_sha256_file(Path(asset["mesh"]).resolve()),
+            render_to_geometry_sha256=_tensor_sha256(
+                renderer.get_render_to_geometry_mapping()
+            ),
+            policy_source_rgb_sha256=_array_sha256(clean_source_rgb),
+            effective_view_rgb_sha256=_array_sha256(
+                exact_clean.effective_view_rgb
+            ),
+            mujoco_instance_alpha_sha256=_tensor_sha256(mujoco_alpha),
+            renderer_visibility_sha256=_tensor_sha256(
+                renderer_evidence.visibility_mask
+            ),
+            shared_instance_body_ids=body_ids,
+            shared_instance_body_names=tuple(
+                str(pose.body_name) for pose in target_poses
+            ),
+        )
     finally:
         env.close()
 
@@ -619,7 +667,7 @@ def run_action_objective_audit(
     rows: list[ActionObjectiveAuditEvidence] = []
     for state_id in state_ids:
         print(f"[ACTION-OBJECTIVE-AUDIT] state {state_id}")
-        row = _collect_state_evidence(
+        capture = collect_action_objective_state_capture(
             cfg=cfg,
             state_id=state_id,
             initial_state=initial_states[state_id],
@@ -635,6 +683,7 @@ def run_action_objective_audit(
             get_libero_env=get_libero_env,
             get_libero_image=get_libero_image,
         )
+        row = capture.evidence
         decision = evaluate_action_objective_evidence(row)
         rows.append(row)
         print(

@@ -625,6 +625,24 @@ log当作成功证据。后续重跑必须使用新的run目录和日志名。Ob
 已通过，允许进入Dense Seed Audit实现；其现有梯度摘要/hash仍不得冒充正式
 Seed Audit的完整`G_s`产物。
 
+Dense Seed Gradient Audit 的实现与完整 artifact/evidence contract 已在本地
+完成，等待服务器正式验收。它不重写模型链路，而是把已通过 Objective GPU
+Audit 的单 state capture 提取为唯一公共 seam；Objective runner 继续只消费
+gradient统计/hash，Dense Seed runner 则额外保存拥有数据的CPU float32
+`G_s [N_v,3]`。每个state的禁止pickle NPZ同时绑定clean token/classes、全部
+margin/hinge、OBJ mesh、render-to-geometry mapping、Policy Source/Effective
+View、MuJoCo instance alpha、renderer visibility及全部共享纹理body ID/name。
+JSONL evaluator会重新加载NPZ、重算文件与数组hash、梯度统计和Objective Gate，
+并严格要求states 0--9、共同mesh/mapping和唯一artifact路径。
+
+该runner没有导入`optimization.py`，进程开始与写manifest前还会检查任意模块
+路径下的legacy optimizer均未加载；Feature/wrist/OFT gradient字段不存在。
+冻结schema也不允许score、density、coverage或support数组，manifest对应布尔
+项全部为false。相关Objective/parameterization/Dense Seed纯CPU与静态依赖测试
+共34项通过；本机缺少完整LIBERO，真实`[21263,3]`逐state artifact仍须服务器
+运行后验收。在这次正式audit通过前，不得计算`q_i`、`d_i`、平滑density或生成
+Fixed Vertex Support。
+
 已冻结的第一项设计决定：谱方法在新候选中作为作用于最终 Surface Delta 的软
 自然性正则，只惩罚高频谱能量；它不再把扰动硬限制在前 K 个谱基中，也不是与
 顶点扰动相加的第二个可学习分量。

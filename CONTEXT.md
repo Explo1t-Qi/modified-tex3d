@@ -36,7 +36,9 @@ _Avoid_: vertex noise, texture noise
 
 **Texture Parameterization**:
 把可学习参数映射为 **Surface Delta** 的方式。当前包括逐几何顶点的
-Geometry Vertex adapter 与低维谱系数的 Spectral adapter。
+Geometry Vertex adapter、低维谱系数的 Spectral adapter，以及只消费外部冻结
+顶点索引、使用紧凑 `[|S|,3]` 参数的 Fixed-Support adapter。Fixed-Support
+机制代码存在不表示生产 **Fixed Vertex Support** 已经生成。
 _Avoid_: optimizer, texture format
 
 **Spectral Naturalness Regularization**:
