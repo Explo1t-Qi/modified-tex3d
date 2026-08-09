@@ -53,6 +53,7 @@
 | 2026-08-09 | Gate 2R state9 action分叉诊断 | 仅index1分叉；generation class125 margin=`0.125`，teacher class125与120精确并列、margin=`0.0`；其余6/7一致 | OFT不参与；13个服务器定向测试通过 | 排除输入变异与系统性causal错位；严格检查改为clean class属于argmax集合，精确tie记录、负margin仍失败 | [当前状态](../status/openvla-spectral-current.md) |
 | 2026-08-09 | Gate 2R state9 exact-tie fix smoke | R/G/B cosine=`0.6238/0.5813/0.6510`，3/3 valid；24文件、3个NPZ与21个artifact独立复核无失败 | OFT不参与；teacher tie在manifest显式保留 | exact-tie修正通过单点验收；不与旧commit的27行拼接，待同commit正式30-case | [当前状态](../status/openvla-spectral-current.md) |
 | 2026-08-09 | Gate 2R同commit正式30-case | 30/30 valid；R/G/B worst cosine=`0.5908/0.5655/0.5867`；全部RMS充分、cosine为正 | OFT不参与；仅state9/index1 exact tie，无负teacher margin | 30 NPZ、183 artifact和186文件独立复核无失败；Gate 2R正式通过，转入新参数化契约 | [当前状态](../status/openvla-spectral-current.md) |
+| 2026-08-09 | 新Action Objective GPU Audit，states 0--9零delta dense geometry | 10/10 state、70/70 token通过；margin min=`0`，仅state9/index1 exact tie；五级梯度全部有限非零，dense L2=`0.2435--0.5751` | Feature/wrist/OFT均未进入；未保存完整seed gradient payload | metrics/manifest hash一致且WSL独立重算通过；随后同目录重跑仅触发防覆盖`FileExistsError`，不否定首次权威结果；允许进入Dense Seed Audit | [当前状态](../status/openvla-spectral-current.md) |
 
 ## 当前待执行队列
 

@@ -599,14 +599,31 @@ Dense Seed Audit。现有旧优化器仍显式调用 legacy objective，不得�
 接入该类，也不存在生产 Fixed Support；Objective GPU Audit 与后续 Dense Seed
 Audit 仍必须使用全顶点 `GeometryVertexTextureParameterization`。
 
-Objective GPU Audit runner 与纯 CPU evidence contract 现已实现，等待服务器
-验收。正式 runner 固定 Action hinge 为唯一 objective，逐 state 复用全部共享
-纹理实例、MuJoCo front-most alpha、visibility-masked compositor、精确
-center-crop 与 checkpoint BPDA；参考参数为全几何顶点 `[N_v,3]` 且严格为零。
+Objective GPU Audit runner 与纯 CPU evidence contract 已实现并通过服务器
+states 0--9正式验收。正式 runner 固定 Action hinge 为唯一 objective，逐 state
+复用全部共享纹理实例、MuJoCo front-most alpha、visibility-masked compositor、
+精确 center-crop 与 checkpoint BPDA；参考参数为全几何顶点 `[N_v,3]` 且严格
+为零。
 每行证据保存完整 clean token/classes、margin/hinge、五级梯度统计及 dense
 gradient hash；Feature/wrist/OFT、参数更新、Support Construction 和完整 seed
 gradient payload 均不进入该命令。CPU evidence/objective/parameterization 相关
-测试当前共28项通过。服务器 states 0--9 未通过前，不得运行 Dense Seed Audit。
+测试共28项通过；服务器绑定commit
+`20646568cdbec4affa16ffd5e89ab266b48a1e04`的结果为10/10 state、70/70 token
+通过，Action loss均值`12.2232146`，margin mean/min/max为
+`12.2232143/0.0/42.125`。只有state 9/index 1为精确tie，无负margin；每个
+state的Policy Source、Pre-Crop、Effective View、render Surface Delta和
+`[21263,3]` dense geometry梯度均有限非零，dense gradient L2范围
+`[0.2435126,0.5750862]`，10个state gradient hash均唯一。metrics SHA-256为
+`721e9ee455cebfacd03727ad9847bfceb23029924276c2f1e50f126cf9536895`，manifest
+SHA-256为`505e0fcae64ace8c76903d5690e836ff88af40c83540079f5520835256a006b1`；WSL
+严格加载10行并独立重算summary与全部逐行decision，结果与manifest一致。
+
+同步的stdout log来自成功后约49秒的同目录重跑：runner按设计因已有metrics/
+manifest抛出`FileExistsError`，同时第二次`tee`覆盖了首次成功stdout。该异常
+不否定时间上更早、hash自洽且可独立重算的权威文件，但正式记录不把被覆盖的
+log当作成功证据。后续重跑必须使用新的run目录和日志名。Objective GPU Audit
+已通过，允许进入Dense Seed Audit实现；其现有梯度摘要/hash仍不得冒充正式
+Seed Audit的完整`G_s`产物。
 
 已冻结的第一项设计决定：谱方法在新候选中作为作用于最终 Surface Delta 的软
 自然性正则，只惩罚高频谱能量；它不再把扰动硬限制在前 K 个谱基中，也不是与
