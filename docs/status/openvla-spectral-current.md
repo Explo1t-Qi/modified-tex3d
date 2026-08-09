@@ -591,6 +591,14 @@ token 提取 helper。7个纯 CPU 测试覆盖 margin 数值、梯度方向、�
 Dense Seed Audit。现有旧优化器仍显式调用 legacy objective，不得将其结果
 记为新候选。
 
+同日已完成 Fixed-Support 参数化机制的纯计算契约：它只接受外部提供的唯一
+几何顶点索引，以紧凑 `[|S|,3]` 参数表示实际可学习的 `delta_S`，再散射到
+完整 `[N_v,3]` Surface Delta；Support 外严格为零，UV seam、Surface-L∞预算
+和 surface-normalized step 继续复用公共语义。14个参数化 CPU 测试全部通过，
+其中8项直接覆盖紧凑参数、mask、梯度与非法 Support。当前 renderer/CLI 尚未
+接入该类，也不存在生产 Fixed Support；Objective GPU Audit 与后续 Dense Seed
+Audit 仍必须使用全顶点 `GeometryVertexTextureParameterization`。
+
 已冻结的第一项设计决定：谱方法在新候选中作为作用于最终 Surface Delta 的软
 自然性正则，只惩罚高频谱能量；它不再把扰动硬限制在前 K 个谱基中，也不是与
 顶点扰动相加的第二个可学习分量。

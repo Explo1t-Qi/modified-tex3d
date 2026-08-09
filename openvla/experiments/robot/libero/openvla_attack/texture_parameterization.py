@@ -5,6 +5,8 @@
 
 - ``GeometryVertexTextureParameterization``：每个几何顶点三个自由参数，
   用作与谱方法公平比较的高维基线；
+- ``FixedSupportTextureParameterization``：只为外部冻结 Support 中的顶点
+  分配紧凑 ``[|S|,3]`` 参数，再散射到完整几何顶点域；
 - ``SpectralTextureParameterization``：仅优化 ``[K, 3]`` 谱系数，通过
   ``Phi @ coefficients`` 得到 ``[N, 3]`` 曲面增量。
 
@@ -15,7 +17,7 @@ surface-normalized 更新，因此实验差异只来自参数空间本身。
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Protocol, TypeAlias
+from typing import Protocol, Sequence, TypeAlias
 
 import numpy as np
 import torch
@@ -272,6 +274,170 @@ class GeometryVertexTextureParameterization(nn.Module):
                 f"{tuple(self.coefficients.shape)} 不一致"
             )
         return direction
+
+    @torch.no_grad()
+    def project_coefficients_(self) -> float:
+        raw_delta: Tensor = self.unprojected_geometry_delta()
+        scale: Tensor = _functional_projection_scale(
+            raw_delta,
+            self.epsilon,
+        )
+        self.coefficients.mul_(scale)
+        return float(scale.item())
+
+    @torch.no_grad()
+    def max_abs_delta(self) -> float:
+        return float(self.geometry_delta().abs().amax().item())
+
+
+class FixedSupportTextureParameterization(nn.Module):
+    """外部 Fixed Vertex Support 上的紧凑独立 RGB 参数化。
+
+    本类只消费 Support，不生成、扩张或修改它。``support_vertex_indices`` 必须
+    来自 Support Construction 的冻结产物；在正式产物存在前，测试只能注入
+    合成索引。可学习 ``coefficients`` shape 为 ``[num_support_vertices,3]``，
+    :meth:`geometry_delta` 再按索引散射成 ``[num_geometry_vertices,3]``，因此
+    Support 外不但 Surface Delta 恒为零，也不存在伪可学习参数。
+    """
+
+    def __init__(
+        self,
+        render_to_geometry: np.ndarray | Tensor,
+        num_geometry_vertices: int,
+        support_vertex_indices: np.ndarray | Tensor | Sequence[int],
+        epsilon: float,
+        *,
+        device: str | torch.device | None = None,
+        dtype: torch.dtype = torch.float32,
+    ) -> None:
+        super().__init__()
+        mapping_tensor: Tensor = torch.as_tensor(
+            render_to_geometry,
+            dtype=torch.long,
+            device=device,
+        )
+        raw_support_tensor: Tensor = torch.as_tensor(
+            support_vertex_indices,
+            device=device,
+        )
+        if num_geometry_vertices <= 0:
+            raise TextureParameterizationError(
+                "num_geometry_vertices 必须为正数"
+            )
+        if mapping_tensor.ndim != 1 or mapping_tensor.numel() == 0:
+            raise TextureParameterizationError(
+                "render_to_geometry 必须为非空一维向量"
+            )
+        if (
+            mapping_tensor.min().item() < 0
+            or mapping_tensor.max().item() >= num_geometry_vertices
+        ):
+            raise TextureParameterizationError(
+                "render_to_geometry 包含越界索引"
+            )
+        if raw_support_tensor.ndim != 1:
+            raise TextureParameterizationError(
+                "support_vertex_indices 必须为一维向量"
+            )
+        if raw_support_tensor.numel() == 0:
+            raise TextureParameterizationError(
+                "support_vertex_indices 不得为空"
+            )
+        if raw_support_tensor.dtype == torch.bool or (
+            raw_support_tensor.is_floating_point()
+            or raw_support_tensor.is_complex()
+        ):
+            raise TextureParameterizationError(
+                "support_vertex_indices 必须使用整数 dtype"
+            )
+        support_tensor: Tensor = raw_support_tensor.to(dtype=torch.long)
+        if (
+            support_tensor.min().item() < 0
+            or support_tensor.max().item() >= num_geometry_vertices
+        ):
+            raise TextureParameterizationError(
+                "support_vertex_indices 包含越界索引"
+            )
+        if int(torch.unique(support_tensor).numel()) != int(
+            support_tensor.numel()
+        ):
+            raise TextureParameterizationError(
+                "support_vertex_indices 包含重复顶点"
+            )
+
+        self.epsilon: float = _validate_epsilon(epsilon)
+        self._num_geometry_vertices: int = int(num_geometry_vertices)
+        self.register_buffer(
+            "render_to_geometry",
+            mapping_tensor.contiguous(),
+        )
+        self.register_buffer(
+            "support_vertex_indices",
+            support_tensor.contiguous(),
+        )
+        # coefficients: float [num_support_vertices, 3]，即冻结决策中的
+        # 实际可学习 RGB 参数空间 delta_S。
+        self.coefficients: nn.Parameter = nn.Parameter(
+            torch.zeros(
+                support_tensor.numel(),
+                3,
+                dtype=dtype,
+                device=device,
+            )
+        )
+
+    @property
+    def num_geometry_vertices(self) -> int:
+        return self._num_geometry_vertices
+
+    @property
+    def num_render_vertices(self) -> int:
+        return int(self.render_to_geometry.shape[0])
+
+    @property
+    def num_support_vertices(self) -> int:
+        return int(self.support_vertex_indices.shape[0])
+
+    def reset_parameters(self) -> None:
+        with torch.no_grad():
+            self.coefficients.zero_()
+
+    def unprojected_geometry_delta(self) -> Tensor:
+        """把紧凑 ``delta_S`` 散射为未投影的完整 ``[N,3]`` 增量。"""
+
+        full_delta: Tensor = self.coefficients.new_zeros(
+            (self.num_geometry_vertices, 3)
+        )
+        return full_delta.index_copy(
+            0,
+            self.support_vertex_indices,
+            self.coefficients,
+        )
+
+    def geometry_delta(self) -> Tensor:
+        raw_delta: Tensor = self.unprojected_geometry_delta()
+        return raw_delta * _functional_projection_scale(
+            raw_delta,
+            self.epsilon,
+        )
+
+    def render_delta(self) -> Tensor:
+        return self.geometry_delta()[self.render_to_geometry]
+
+    def parameter_direction_to_geometry(self, direction: Tensor) -> Tensor:
+        if direction.shape != self.coefficients.shape:
+            raise TextureParameterizationError(
+                f"Fixed Support方向 shape {tuple(direction.shape)} 与参数 "
+                f"{tuple(self.coefficients.shape)} 不一致"
+            )
+        full_direction: Tensor = direction.new_zeros(
+            (self.num_geometry_vertices, 3)
+        )
+        return full_direction.index_copy(
+            0,
+            self.support_vertex_indices,
+            direction,
+        )
 
     @torch.no_grad()
     def project_coefficients_(self) -> float:
