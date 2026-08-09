@@ -59,6 +59,7 @@
 | 2026-08-09 | Akita Support Construction/coverage与score repeat | canonical/repeat均在`r=1`、seed 829通过；Primary min=`0.359261/0.359275`，最差均为state5；面积比例=`0.1000002/0.1000246` | selected Support Jaccard=`0.997443`，逐Primary coverage最大差=`2.699e-4`；wrist只读 | commit `144cd00`完整保存逐实例/顶点contribution、candidate mask/region owner及最差state投影并独立重算通过；稳定性不设事后阈值，production support仍未冻结 | [当前状态](../status/openvla-spectral-current.md) |
 | 2026-08-09 | canonical Production Fixed Support冻结 | 冻结3514个顶点/10542个RGB标量，面积比例=`0.1000002`，Primary min=`0.359261`；未运行模型、反传或rollout | wrist min=`0.155602`继续只读；OFT不参与 | `openvla-production-fixed-support-v1`绑定全部上游、mesh与mapping hash并通过独立重载；`rho_nat/lambda_spec`均未校准且`formal_training_allowed=false`，只允许继续参数化接线与两级校准 | [当前状态](../status/openvla-spectral-current.md) |
 | 2026-08-09 | uniform Support谱自然性`rho_nat`校准 | `E_total/low/high=0.0215720/0.0194305/0.00214153`，`rho_nat=0.0992735862`；未运行模型、反传或rollout | OFT/Feature/wrist均不参与 | 连续K_nat=128+常数频带M-正交与常数模态审计通过，两个输入artifact独立复算无失败；只放行Action-only Spectral Guard Calibration，正式训练仍为false | [当前状态](../status/openvla-spectral-current.md) |
+| 2026-08-09 | states 0--9 Action-only Spectral Guard Calibration | 首个稳定窗口为iterations 1--5；`q_med=117.572826`，冻结`lambda_spec=0.000850536673`；逐轮Surface Step约`2/255`，delta达到`12/255` | Feature/wrist/OFT/legacy optimizer均未进入；谱/Action梯度cosine范围=`[-0.7981, -0.7821]` | 每轮10个state完整唯一且fingerprint绑定，第0轮与Objective Audit逐项一致，全部7项状态/RNG恢复与WSL独立evaluator通过；只放行新Action+Spectral trainer smoke，尚无攻击或迁移效果证据 | [当前状态](../status/openvla-spectral-current.md) |
 
 ## 当前待执行队列
 
@@ -71,8 +72,8 @@
 | 5（已通过） | Visibility/Coverage/Compositor与Gate 2R | Gate 2E通过 | Visibility/Alignment、零delta与Gate 2R正式30-case全部通过 | 已达到预注册机制门槛 |
 | 6a（已通过） | 冻结canonical Production Fixed Support | Support Construction与repeat已通过 | 不重选点；绑定全部provenance，3514个紧凑参数坐标且正式训练标志为false | 已形成`openvla-production-fixed-support-v1` |
 | 6b（已通过） | 校准`rho_nat=r_high(1_S)` | Production Support与K_nat=128连续几何频带 | uniform support probe能量可独立复算，artifact/hash/频带字段完整 | 已冻结`rho_nat=0.0992735862`，未自动增大K |
-| 6c（当前唯一门槛） | 服务器Action-only Spectral Guard Calibration | runner/evaluator已实现；`rho_nat`通过且新trainer不复用legacy Feature objective | states 0–9每轮完整唯一且绑定fingerprint；首个连续5轮稳定激活窗口冻结`lambda_spec`；逐轮SurfaceStepStats；最多64轮；Surface/update/gradient/sampler/RNG完整恢复 | 恢复失败阻止正式训练；无稳定窗口按冻结规则标记 |
-| 6d | 正式Fixed-Support Action+Spectral训练与source rollout | 两级校准均通过并显式放行正式训练 | 工程smoke先通过；held-out states 10–19至少3/10失败 | 先归因参数化/目标/部署输入，不做无依据网格扫描 |
+| 6c（已通过） | 服务器Action-only Spectral Guard Calibration | runner/evaluator已实现；`rho_nat`通过且新trainer不复用legacy Feature objective | states 0–9每轮完整唯一且绑定fingerprint；首个连续5轮稳定激活窗口冻结`lambda_spec`；逐轮SurfaceStepStats；最多64轮；Surface/update/gradient/sampler/RNG完整恢复 | 已冻结`lambda_spec=0.000850536673`，7项恢复检查通过 |
+| 6d（当前唯一门槛） | Fixed-Support Action+Spectral trainer工程smoke，再进入source训练/rollout | 两级校准均通过；必须复用正式Action-only objective、共享更新核心与冻结权重 | 先验证单轮Action+Spectral backward/update/bake、证据与资产恢复；工程通过后正式训练，held-out states 10–19至少3/10失败 | smoke失败先修工程链；rollout未过则归因参数化/目标/部署输入，不做无依据网格扫描 |
 | 7 | OFT开发期 rollout | 队列6d通过 | 旧0/10迁移基线上至少出现2/10失败信号 | 记录机制失败，不包装为迁移提升 |
 | 8 | 新任务/第三模型无偏验证 | 方法和超参数冻结 | 预注册门槛 | 区分开发期选择偏差与真实迁移 |
 

@@ -21,6 +21,8 @@ Production Fixed Support冻结基线：
 `2a684942a79c9ddf1d436f47bc579dc79aaf89d4`
 Spectral Guard GPU Calibration runner实现基线：
 `839f5ec78f7eaae094989c394ddba01992e4a243`
+Spectral Guard GPU Calibration正式证据基线：
+`4f9b6bd95384a94719edce117c4ba61e7d493be1`
 
 本文是 OpenVLA 谱纹理研究的**当前状态入口**。新一轮开发应先读本文，再按需
 进入专题文档；不要从长篇实验时间线推测当前优先级。历史实验索引见
@@ -52,7 +54,7 @@ Spectral Guard GPU Calibration runner实现基线：
 | Seed Score/density/smoothing | 已通过 | corrected canonical/repeat artifacts均从raw `G_s`独立复算；连续场与高分区域repeat稳定 |
 | Support Construction/coverage | 已通过，Production Support已冻结 | canonical/repeat均以`r=1`、seed 829通过；冻结3514个顶点/10542个RGB标量并绑定全部上游hash |
 | 谱自然性uniform Support校准 | 已通过 | 连续K_nat=128+常数频带通过数值审计；`rho_nat=0.0992735862`并由两个输入artifact独立复算 |
-| BPDA 下源攻击基线 | 未建立 | Fixed-Support renderer加载接线与`rho_nat`已完成；新trainer及`lambda_spec`校准未完成，正式训练仍被入口阻止 |
+| BPDA 下源攻击基线 | 未建立 | Fixed-Support renderer、`rho_nat`与`lambda_spec`校准已通过；下一门槛是新Action+Spectral trainer工程smoke，尚无正式训练或rollout结果 |
 | BPDA 下 OFT 迁移信号 | 未开始 | 新源候选未过门槛前不得进入 OFT |
 | 无偏跨模型迁移与鲁棒性提升 | 未开始 | 需方法冻结后的新任务/第三模型与后续防御实验 |
 
@@ -110,9 +112,9 @@ Seed Gradient Audit、Seed Score的归一化/跨state聚合/mesh平滑与repeat�
 candidate已经冻结为独立Production Fixed Support，renderer只允许通过完整
 mesh/mapping/provenance hash加载其3514个紧凑参数坐标。uniform Support probe
 的`rho_nat`也已通过纯CPU校准与独立复算。新Action-only Spectral Guard runner
-及独立CPU evaluator已经实现；当前唯一下一门槛是在服务器执行真实states 0--9
-GPU calibration，以冻结`lambda_spec`并验证完整状态恢复。在该门槛通过前，
-正式训练和held-out rollout均不得开始。
+已在真实states 0--9上完成GPU calibration，`lambda_spec`与完整状态恢复证据均已
+通过独立复核。当前唯一下一门槛是实现并运行Fixed-Support Action+Spectral正式
+trainer的工程smoke；在该门槛通过前，正式训练和held-out rollout均不得开始。
 
 真实 Spatial checkpoint 的 CPU 差分记录为 fused pixel values MAE/L∞=`0/0`，
 输入梯度有限且非零；文档记录当时全量 CPU 回归为 `113 passed, 1 skipped`。
@@ -820,7 +822,7 @@ artifact记录全部129个特征值及mesh/mass/basis/Support semantic hash，�
 源攻击或迁移效果证据，也不允许跳过Action-only Spectral Guard Calibration。
 
 commit `839f5ec78f7eaae094989c394ddba01992e4a243` 已实现真实GPU
-Spectral Guard runner与独立CPU bundle evaluator，但尚无服务器数值结果。
+Spectral Guard runner与独立CPU bundle evaluator。
 runner一次性冻结states 0--9的initial/static-scene fingerprint、MuJoCo
 front-most instance alpha、全部共享纹理实例变换及clean teacher-forced token；
 每轮严格按0--9逐state构图和释放，再对10个Action loss/紧凑梯度作算术平均。
@@ -833,8 +835,35 @@ Action+Feature optimizer均被进程级护栏排除。
 Surface-L∞ projection；runner不得复制更新公式。逐轮权威长表保存配置
 `surface_step`和全部`SurfaceStepStats`。校准事务覆盖紧凑Surface参数、共享更新
 核心、all-state provider/sampler、gradient cache及Python/NumPy/Torch CPU/CUDA
-RNG；任一恢复验证失败即不生成可接受结果。当前这些只是实现与CPU契约证据，
-`lambda_spec`仍未冻结，正式训练仍未放行。
+RNG；任一恢复验证失败即不生成可接受结果。
+
+服务器随后在commit `4f9b6bd95384a94719edce117c4ba61e7d493be1`完成正式
+states 0--9校准。WSL独立evaluator返回`gate_pass=true`且无failure；第0轮10个
+state的fingerprint、clean token、Action loss、margin与hinge和已通过的Objective
+GPU Audit逐项完全一致。6轮中每轮states 0--9完整、唯一且各参与一次，两个共享
+纹理实例均被累计；Feature、wrist、OFT与legacy optimizer均未进入。
+
+第0轮零delta只执行Action update；第1--5轮构成首个连续稳定激活窗口。窗口内
+`r_high=0.778966--0.789506`，均明显高于冻结的
+`rho_nat=0.0992735862`；`q_t=71.5783--326.0135`，中位数
+`q_med=117.5728258`，因此按预注册公式冻结
+`lambda_spec=0.000850536673`。对应逐轮加权谱梯度/Action梯度范数比为
+`0.2773/0.1488/0.1000/0.0722/0.0609`；10%只在该窗口中位数处成立，不应解释
+为逐轮上限。两梯度cosine范围为`[-0.7981, -0.7821]`，说明自然性项在该局部轨迹上
+稳定反对Action方向；这是需要在正式训练继续监测的机制证据，不构成攻击效果或
+迁移提升证据，也不得据此事后重调权重。
+
+每轮实际Surface Step均约为`2/255`，delta L∞从`2/255`累积到`12/255`，无
+像素或通道饱和，projection scale均为1；全部7项module/component/gradient-cache/
+Python/NumPy/Torch CPU/CUDA恢复检查通过。权威action frames、iterations、manifest
+与日志SHA-256分别为
+`9b870b3e03d4a4116e80b476bd92fb276d6220b1ca98d369218cf476f4cdd1e0`、
+`2c8e654c389c160093417c5c14a7a8aeb5f25d6d2798eeb0de5c334769dc6c72`、
+`aa8eec38f7d7a419970fd9adab7b77216e0eb6214ace93b406d612f6a6e31336`与
+`f246807e9c0484c62ac941f25f4983f11744843a13f884bf3a464d77f842679c`。
+该门槛只冻结`lambda_spec`；manifest仍正确保留
+`formal_training_allowed=false`，下一门槛为
+`fixed_support_action_spectral_training_smoke`。
 
 已冻结的第一项设计决定：谱方法在新候选中作为作用于最终 Surface Delta 的软
 自然性正则，只惩罚高频谱能量；它不再把扰动硬限制在前 K 个谱基中，也不是与
