@@ -63,6 +63,27 @@ clean token 仍占优，非正值表示最近的 untargeted 决策边界已被�
 _Avoid_: symmetric action target, adversarial autoregressive prefix,
 continuous-action distance
 
+**Dense Seed Gradient**:
+source OpenVLA 在零 **Surface Delta**、全顶点 Geometry Vertex 参数化和固定
+clean action prefix 下，由 Untargeted Clean-Action Margin hinge 得到的完整
+`G_s [N_v,3]`。它只来自 Primary action objective；Feature、wrist 与 OFT
+不得进入该梯度。
+_Avoid_: legacy optimizer gradient, feature seed gradient, target-model gradient
+
+**Support Seed Score**:
+由多 state **Dense Seed Gradient** 逐 state 做全局 Surface-L∞ 方向归一化后，
+将逐顶点平均 RGB sensitivity 与跨 state RGB direction consistency 相乘得到的
+`q_i`。它只为连通区域的种子与扩张提供排序证据，不能直接 top-N 或等同于
+**Fixed Vertex Support**。
+_Avoid_: support mask, attack loss, vertex saliency top-N
+
+**Smoothed Seed Density**:
+先用 barycentric lumped vertex mass 将 `q_i` 转成单位曲面面积 density
+`d_i=q_i/m_i`，再按 `(M+tau L)d_tilde=Md` 得到的 mass-aware implicit
+Laplacian 平滑结果。原始与平滑 density 都是可复算证据，不修改 OBJ 几何、
+Surface Delta 或纹理。
+_Avoid_: mesh smoothing, texture smoothing, selected support
+
 **Spectral Guard Calibration**:
 正式 **Attack Training** 前的一次性 source-only 校准过程，用同一实际可训练
 参数空间中的 Action/谱梯度相对强度赋予“弱谱护栏”可复查含义。

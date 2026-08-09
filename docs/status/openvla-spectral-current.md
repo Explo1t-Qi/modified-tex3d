@@ -92,9 +92,10 @@ Visibility/Alignment audit、零 Surface Delta compositor Gate与Gate 2R均已�
 旧`696ee68`的states 0–8部分产物和`cf4676d`的state 9仍不作拼接证据；
 权威Gate 2R bundle来自同一commit `0b0b86a`的正式30-case。Fixed-Support
 Texture Parameterization纯计算契约、Action Objective GPU Audit和完整Dense
-Seed Gradient Audit现均已通过。当前唯一下一门槛是实现并冻结Seed Score的
-归一化、跨state聚合与mesh平滑evidence contract；在该契约通过前不得从本轮
-`G_s`直接生成生产Fixed Vertex Support。
+Seed Gradient Audit现均已通过。Seed Score的归一化、跨state聚合与mesh平滑
+evidence contract已在本地实现，当前唯一下一门槛是服务器从正式Akita OBJ生成
+权威score artifact，并完成一次同commit Dense repeat的稳定性复核；在这两项
+通过前不得从本轮`G_s`直接生成生产Fixed Vertex Support。
 
 真实 Spatial checkpoint 的 CPU 差分记录为 fused pixel values MAE/L∞=`0/0`，
 输入梯度有限且非零；文档记录当时全量 CPU 回归为 `113 passed, 1 skipped`。
@@ -653,6 +654,29 @@ GPU数值非确定性使raw gradient hash不同，但L2相对差异仅
 score、density、coverage和production support均未计算。Dense Seed Gradient
 Gate据此正式通过；下一步只允许实现Seed Score及其evidence contract，不能直接
 从artifact生成Fixed Vertex Support。
+
+Seed Score/density/smoothing纯CPU契约已实现，尚待服务器正式artifact验收。
+它逐state保存`max(abs(G_s))`归一化scale、absolute component p99与
+`max/p99`，并完整保存`[S,N_v]`归一化梯度范数、`[N_v,3]`均值梯度、mean
+sensitivity、RGB direction consistency、`q_i`、barycentric lumped mass、
+`d_i`、`d_tilde_i`、全顶点排名和只读局部峰诊断。平滑固定`alpha=0.05`，
+使用原始OBJ cotangent stiffness与`tau=alpha^2*A_total`；linear residual、
+mass integral守恒和负density均显式检查，禁止静默clamp。
+
+artifact内嵌float64 vertices/int64 faces并绑定正式Dense metrics、10个NPZ、
+10个raw gradient和OBJ file/array SHA-256，因此同步后WSL可脱离LIBERO资产从
+raw `G_s`重算全部score。repeat比较接口报告raw score/density/smoothed density
+cosine、smoothed Spearman、top `0.1%/0.5%/1%/5%` Jaccard及前100个局部峰
+Jaccard；按本轮建议只报告分布，不预注册通过阈值，也不生成候选Support。
+相关Objective/Dense/geometry/score纵向CPU测试共47项通过。
+
+使用历史K=128谱基中同一Akita mesh arrays对正式Dense bundle做的本地非权威
+预演确认几何顶点/face为`21263/42522`，重算mass与旧谱基逐值一致；linear
+residual=`6.02e-14`、mass conservation error=`7.49e-16`且没有负density。
+逐state normalization `max/p99`范围为`3.08--7.24`；raw score、raw density与
+smoothed density的`max/p99`分别为`2.71/6.51/1.05`，局部峰数为42。该结果只
+排除明显数值故障，不能替代直接绑定服务器OBJ file hash的正式artifact，也不能
+回答repeat高分区域是否稳定。
 
 已冻结的第一项设计决定：谱方法在新候选中作为作用于最终 Surface Delta 的软
 自然性正则，只惩罚高频谱能量；它不再把扰动硬限制在前 K 个谱基中，也不是与
