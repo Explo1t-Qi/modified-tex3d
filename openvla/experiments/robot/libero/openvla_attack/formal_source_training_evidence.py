@@ -219,12 +219,19 @@ def evaluate_formal_source_training_bundle(
                 "weighted_spectral_gradient_l2",
                 "total_gradient_l2",
                 "combination_residual_linf",
+                "action_total_cosine",
+                "weighted_spectral_action_ratio",
             )
             if not all(_finite(row.get(name)) for name in required_finite):
                 failures.append(f"step {iteration}包含NaN/Inf或缺失统计")
                 break
             if row.get("combination_residual_linf") != 0.0:
                 failures.append(f"step {iteration}联合梯度残差不为零")
+                break
+            if not -1.0 - NUMERIC_TOLERANCE <= float(
+                row["action_total_cosine"]
+            ) <= 1.0 + NUMERIC_TOLERANCE:
+                failures.append(f"step {iteration} Action/total cosine越界")
                 break
             stats = row.get("surface_step_stats", {})
             if not all(

@@ -56,6 +56,7 @@ class CombinedGradientUpdate:
     weighted_spectral_gradient_l2: float
     total_gradient_l2: float
     action_spectral_cosine: Optional[float]
+    action_total_cosine: Optional[float]
     weighted_spectral_action_ratio: Optional[float]
     combination_residual_linf: float
     surface_step_stats: SurfaceStepStats
@@ -154,6 +155,17 @@ class FixedSupportTrainerCore:
                 ).item()
                 / (action_norm * spectral_norm)
             )
+        action_total_cosine: Optional[float]
+        if action_norm == 0.0 or total_norm == 0.0:
+            action_total_cosine = None
+        else:
+            action_total_cosine = float(
+                torch.dot(
+                    action_gradient.reshape(-1),
+                    total_gradient.reshape(-1),
+                ).item()
+                / (action_norm * total_norm)
+            )
         recombined = action_gradient + weighted_spectral
         residual_linf = float(
             (total_gradient - recombined).abs().amax().item()
@@ -167,6 +179,7 @@ class FixedSupportTrainerCore:
             weighted_spectral_gradient_l2=weighted_norm,
             total_gradient_l2=total_norm,
             action_spectral_cosine=cosine,
+            action_total_cosine=action_total_cosine,
             weighted_spectral_action_ratio=(
                 None if action_norm == 0.0 else weighted_norm / action_norm
             ),

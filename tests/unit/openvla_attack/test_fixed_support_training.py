@@ -118,6 +118,16 @@ def test_combined_training_gradient_is_summed_before_exactly_one_update() -> Non
         atol=0.0,
     )
     assert update.combination_residual_linf == 0.0
+    expected_action_total_cosine = float(
+        torch.nn.functional.cosine_similarity(
+            action_gradient.reshape(1, -1),
+            expected_total.reshape(1, -1),
+        ).item()
+    )
+    assert update.action_total_cosine is not None
+    assert abs(
+        update.action_total_cosine - expected_action_total_cosine
+    ) < 1e-7
     assert renderer.step_call_count == 1
     assert trainer.update_count == 1
     assert update.surface_step_stats.actual_surface_step <= 0.1 + 1e-7

@@ -268,6 +268,7 @@ def _step_row(
         ),
         "total_gradient_l2": update.total_gradient_l2,
         "action_spectral_cosine": update.action_spectral_cosine,
+        "action_total_cosine": update.action_total_cosine,
         "weighted_spectral_action_ratio": (
             update.weighted_spectral_action_ratio
         ),
@@ -383,6 +384,24 @@ def run_formal_source_training(
             steps_handle.flush()
             frames_handle.flush()
             losses.append(action_sample.loss)
+            if (
+                iteration == 0
+                or (iteration + 1) % 10 == 0
+                or iteration + 1 == num_iterations
+            ):
+                stats = update.surface_step_stats
+                print(
+                    "[FORMAL-SOURCE] "
+                    f"iteration={iteration + 1}/{num_iterations} "
+                    f"action_loss={action_sample.loss:.8f} "
+                    f"weighted_spec_action_ratio="
+                    f"{update.weighted_spectral_action_ratio!s} "
+                    f"cos_action_spec={update.action_spectral_cosine!s} "
+                    f"cos_action_total={update.action_total_cosine!s} "
+                    f"surface_step={stats.actual_surface_step:.8f} "
+                    f"surface_linf={stats.max_abs_delta:.8f}",
+                    flush=True,
+                )
 
     artifacts: OptimizationArtifactPaths = artifact_store.save_optimization_result(
         episode_index=task_id,

@@ -181,6 +181,7 @@ def _gradient_row(
         ),
         "total_gradient_l2": update.total_gradient_l2,
         "action_spectral_cosine": update.action_spectral_cosine,
+        "action_total_cosine": update.action_total_cosine,
         "weighted_spectral_action_ratio": (
             update.weighted_spectral_action_ratio
         ),

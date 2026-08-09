@@ -971,6 +971,15 @@ Action-only control；在该对照之前不调整lambda、K_nat、Support或其�
 仍在collection阶段得到10个相同依赖缺失ImportError。真实CUDA、5000轮训练、
 正式evaluator与成对rollout均尚未运行，因此队列6e仍未通过。
 
+服务器随后在commit `81f542facaf415f7fb9f29835b6d89ea3224e616`完成正式
+训练前无GPU全量回归：`323 passed, 1 skipped`，6条输出仅来自wandb、setuptools
+与robosuite的既有弃用警告，无失败或错误。准备5000轮命令时进一步发现正式长表
+虽已保存`cos(g_A,g_S)`和加权谱/Action比，但遗漏已冻结风险监测要求中的
+`cos(g_A,g_total)`，且长循环没有stdout心跳。该follow-up只增加联合核心计算后
+的只读cosine证据、CPU evaluator范围检查和每10轮进度行，不改变梯度合成、更新、
+目标、lambda或任何方法配置；修正后本地定向`18 passed`、可收集回归仍为
+`256 passed`。正式GPU运行应使用包含该follow-up的最终commit。
+
 已冻结的第一项设计决定：谱方法在新候选中作为作用于最终 Surface Delta 的软
 自然性正则，只惩罚高频谱能量；它不再把扰动硬限制在前 K 个谱基中，也不是与
 顶点扰动相加的第二个可学习分量。
