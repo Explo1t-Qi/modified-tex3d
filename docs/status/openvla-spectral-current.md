@@ -9,6 +9,8 @@ Gate 2R exact-tie 语义修正基线：
 `cf4676dded3a0887a57904d21ea9119f06031b85`
 Gate 2R 正式30-case证据基线：
 `0b0b86ae5d2b831e1cbd8df411404e64cf7e9e51`
+Dense Seed Gradient Audit正式证据基线：
+`a7196e7b2a53bf36fa554ed46a51e5305529419d`
 
 本文是 OpenVLA 谱纹理研究的**当前状态入口**。新一轮开发应先读本文，再按需
 进入专题文档；不要从长篇实验时间线推测当前优先级。历史实验索引见
@@ -36,7 +38,8 @@ Gate 2R 正式30-case证据基线：
 | OpenVLA processor 预处理正确性 | Gate 1P 已通过 | states 0–9 pixel MAE/L∞=`0/0`，10/10序列和70/70 token一致 |
 | Deployment Effective View 与训练反传 | Gate 1D、2C、2E已通过 | 完整forward零误差；crop VJP对齐；五级梯度、单轮更新、bake/rollout/资产恢复通过 |
 | Visibility/Coverage/Compositor | Gate 2R与全部前置Gate已通过 | 20/20对齐证据、10/10零delta states与70/70 action token通过；2R正式30/30 valid且全部cosine为正 |
-| BPDA 下源攻击基线 | 未建立 | Gate 2R与新参数化契约通过后才运行首个新候选 |
+| Action Objective与Dense Seed Gradient | 已通过 | 新Action hinge语义、10个完整`G_s [21263,3]`及全部artifact/hash由服务器运行并在WSL独立复核 |
+| BPDA 下源攻击基线 | 未建立 | Dense Seed已通过；Seed Score与Fixed Support尚未构造，首个新候选不得提前运行 |
 | BPDA 下 OFT 迁移信号 | 未开始 | 新源候选未过门槛前不得进入 OFT |
 | 无偏跨模型迁移与鲁棒性提升 | 未开始 | 需方法冻结后的新任务/第三模型与后续防御实验 |
 
@@ -87,9 +90,11 @@ Gate 1D 通过后，commit `0399c8f` 已让 collector 与 Attack Training 端到
 bake/rollout 并恢复资产，完整证据见下文。当前阻断项已转为真实
 Visibility/Alignment audit、零 Surface Delta compositor Gate与Gate 2R均已通过。
 旧`696ee68`的states 0–8部分产物和`cf4676d`的state 9仍不作拼接证据；
-权威Gate 2R bundle来自同一commit `0b0b86a`的正式30-case。当前下一门槛
-切换为把已冻结的“谱自然性约束 + Fixed Vertex Support”设计落为可测试的
-新 Texture Parameterization 契约；契约未通过前不运行Support Seed Audit。
+权威Gate 2R bundle来自同一commit `0b0b86a`的正式30-case。Fixed-Support
+Texture Parameterization纯计算契约、Action Objective GPU Audit和完整Dense
+Seed Gradient Audit现均已通过。当前唯一下一门槛是实现并冻结Seed Score的
+归一化、跨state聚合与mesh平滑evidence contract；在该契约通过前不得从本轮
+`G_s`直接生成生产Fixed Vertex Support。
 
 真实 Spatial checkpoint 的 CPU 差分记录为 fused pixel values MAE/L∞=`0/0`，
 输入梯度有限且非零；文档记录当时全量 CPU 回归为 `113 passed, 1 skipped`。
@@ -625,23 +630,29 @@ log当作成功证据。后续重跑必须使用新的run目录和日志名。Ob
 已通过，允许进入Dense Seed Audit实现；其现有梯度摘要/hash仍不得冒充正式
 Seed Audit的完整`G_s`产物。
 
-Dense Seed Gradient Audit 的实现与完整 artifact/evidence contract 已在本地
-完成，等待服务器正式验收。它不重写模型链路，而是把已通过 Objective GPU
-Audit 的单 state capture 提取为唯一公共 seam；Objective runner 继续只消费
-gradient统计/hash，Dense Seed runner 则额外保存拥有数据的CPU float32
-`G_s [N_v,3]`。每个state的禁止pickle NPZ同时绑定clean token/classes、全部
-margin/hinge、OBJ mesh、render-to-geometry mapping、Policy Source/Effective
-View、MuJoCo instance alpha、renderer visibility及全部共享纹理body ID/name。
-JSONL evaluator会重新加载NPZ、重算文件与数组hash、梯度统计和Objective Gate，
-并严格要求states 0--9、共同mesh/mapping和唯一artifact路径。
+Dense Seed Gradient Audit 的实现与完整 artifact/evidence contract 已通过
+服务器正式验收。它不重写模型链路，而是把已通过 Objective GPU Audit 的单
+state capture作为唯一公共seam；Objective runner继续只消费gradient统计/hash，
+Dense Seed runner则保存拥有数据的CPU float32 `G_s [N_v,3]`。正式run
+`dense_seed_audit_a7196e7_20260809_101235`绑定commit
+`a7196e7b2a53bf36fa554ed46a51e5305529419d`，states 0--9全部通过，共10个
+`[21263,3]` NPZ、637890个梯度值和10个唯一gradient hash；L2范围为
+`[0.2437936,0.5747361]`。每个NPZ同时绑定clean token/classes、全部margin/
+hinge、OBJ mesh、render-to-geometry mapping、Policy Source/Effective View、
+MuJoCo instance alpha、renderer visibility及全部共享纹理body ID/name。
 
-该runner没有导入`optimization.py`，进程开始与写manifest前还会检查任意模块
-路径下的legacy optimizer均未加载；Feature/wrist/OFT gradient字段不存在。
-冻结schema也不允许score、density、coverage或support数组，manifest对应布尔
-项全部为false。相关Objective/parameterization/Dense Seed纯CPU与静态依赖测试
-共34项通过；本机缺少完整LIBERO，真实`[21263,3]`逐state artifact仍须服务器
-运行后验收。在这次正式audit通过前，不得计算`q_i`、`d_i`、平滑density或生成
-Fixed Vertex Support。
+WSL已逐文件使用`allow_pickle=False`重新加载全部NPZ，并重算artifact/数组hash、
+梯度统计、Objective Gate与states 0--9 summary，10/10 decision均通过；metrics、
+manifest和log SHA-256分别为
+`bc0bc00865dc4eb83bde4b1b362c09b789a5f04be3b7bf0a2672378c9cadede7`、
+`1c9e9f10d370522e62c4360d7e4d9c788982cd797ef8768c80b0b614f894abbb`、
+`03c592760fe9e31cf59aa1e6a8825078e20c34b6eeede4decacfb23eadf35178`。
+与前序Objective Audit相比，每个state的clean tokens、margins与loss完全一致；
+GPU数值非确定性使raw gradient hash不同，但L2相对差异仅
+`0.037%--0.182%`。manifest确认legacy optimizer未加载，Feature/wrist/OFT、
+score、density、coverage和production support均未计算。Dense Seed Gradient
+Gate据此正式通过；下一步只允许实现Seed Score及其evidence contract，不能直接
+从artifact生成Fixed Vertex Support。
 
 已冻结的第一项设计决定：谱方法在新候选中作为作用于最终 Surface Delta 的软
 自然性正则，只惩罚高频谱能量；它不再把扰动硬限制在前 K 个谱基中，也不是与
