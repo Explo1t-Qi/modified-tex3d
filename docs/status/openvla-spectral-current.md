@@ -1,6 +1,6 @@
 # OpenVLA 谱纹理当前状态
 
-更新时间：2026-08-08
+更新时间：2026-08-09
 当前 Visibility/Coverage/Compositor 功能代码基线：
 `1884eb7500283eea9f3bcf8793a4410cd1396b87`
 服务器 Gate 2E 复核基线：
@@ -31,7 +31,7 @@
 | 双视角与动态范数保护 | 机制已实现，源门槛未通过 | 两者均未把 held-out 源攻击恢复到预设的3/10失败 |
 | OpenVLA processor 预处理正确性 | Gate 1P 已通过 | states 0–9 pixel MAE/L∞=`0/0`，10/10序列和70/70 token一致 |
 | Deployment Effective View 与训练反传 | Gate 1D、2C、2E已通过 | 完整forward零误差；crop VJP对齐；五级梯度、单轮更新、bake/rollout/资产恢复通过 |
-| Visibility/Coverage/Compositor | Visibility/Alignment与Compositor零delta均已通过；Gate 2R state0 smoke通过、正式30-case待运行 | 20/20对齐证据、10/10零delta states与70/70 action token通过；2R smoke 3/3 probe同向 |
+| Visibility/Coverage/Compositor | Visibility/Alignment与Compositor零delta均已通过；Gate 2R state0 smoke通过、正式30-case因state 9 action一致性断言暂停 | 20/20对齐证据、10/10零delta states与70/70 action token通过；2R已完成states 0–8的27/30 probe，fresh state 9复现同一故障 |
 | BPDA 下源攻击基线 | 未建立 | Gate 2R与新参数化契约通过后才运行首个新候选 |
 | BPDA 下 OFT 迁移信号 | 未开始 | 新源候选未过门槛前不得进入 OFT |
 | 无偏跨模型迁移与鲁棒性提升 | 未开始 | 需方法冻结后的新任务/第三模型与后续防御实验 |
@@ -82,7 +82,9 @@ Gate 1D 通过后，commit `0399c8f` 已让 collector 与 Attack Training 端到
 证明梯度穿过 center-crop 与 processor 两层 BPDA 后能更新 Surface Delta、完成
 bake/rollout 并恢复资产，完整证据见下文。当前阻断项已转为真实
 Visibility/Alignment audit 与零 Surface Delta compositor Gate 已通过；当前只剩
-Gate 2R 的服务器定向回归与真实30-case审计。
+Gate 2R 的state 9 generation/teacher-forward分叉诊断。在根因确认
+且决定是否需要修订第三十二项严格一致性要求前，正式30-case与
+Support Seed Audit 均不继续。
 
 真实 Spatial checkpoint 的 CPU 差分记录为 fused pixel values MAE/L∞=`0/0`，
 输入梯度有限且非零；文档记录当时全量 CPU 回归为 `113 passed, 1 skipped`。
@@ -483,6 +485,23 @@ smoke 也暴露出非权威 weighted-scatter PNG 的点过小且 alpha 色过浅
 30-case 前已改为半径2的高对比度点、增加 `y=x` 参考线和 RGB 图例，并与
 sign-consistency 一样排除双零通道分量。该修正只改善人工抽查，不改变 NPZ、
 任何数值指标或 Gate 判定。
+
+2026-08-09 在 commit `696ee68b29990ea95e54432065b1b5f46305a0d8` 上的正式
+states 0–9 运行完成了states 0–8的27个probe，但state 9在任何真实
+bake前触发“clean token与teacher-forced argmax不一致”严格断言。独立的
+fresh state 9 运行在同一代码位置再次失败，因此已排除state顺序和
+旧输出目录干扰；该fresh log SHA-256为
+`1689a326056b643dab7b72262692116786dbb9271e8ecc5cba5e6c7f4b69a55d`。此次不是
+Gate 2R 数值失败：未生成权威30行、manifest或state 9 response，部分
+artifact 不得作为通过证据。
+
+历史source action-response证据曾在其他state的后续action位置观察到同类
+generation/teacher-forward分叉，而首token保持一致；因此当前不将故障
+直接归因为causal错位，也不放宽冻结断言。runner已增加失败保持式
+诊断：捕获cache generation每步score，验证输入tensor未被修改，并在同一
+断言中报告分叉索引、两条路径argmax、固定clean-class margin和逐token
+logit MAE/L∞。下一步只重跑fresh state 9，用该证据区分BF16/cache数值
+分叉、生成score处理与真实对齐错误。
 
 ### Gate 3：建立 BPDA 下的新源候选
 

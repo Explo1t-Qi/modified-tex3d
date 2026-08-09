@@ -63,6 +63,22 @@ class RendererBakeResponseAuditError(RuntimeError):
     """Gate 2R 输入或证据 schema 无法被可靠解释。"""
 
 
+class ActionSequenceConsistencyDiagnostic(TypedDict):
+    """greedy generation 与全序列 teacher forward 的对齐证据。"""
+
+    action_dim: int
+    generated_classes: list[int]
+    generation_argmax_classes: list[int]
+    teacher_argmax_classes: list[int]
+    generation_margins: list[float]
+    teacher_margins: list[float]
+    generation_matches_generated: list[bool]
+    teacher_matches_generated: list[bool]
+    teacher_mismatch_indices: list[int]
+    per_token_logit_mae: list[float]
+    per_token_logit_linf: list[float]
+
+
 @dataclass(frozen=True)
 class ResponsePathStatistics:
     """一个 RGB 响应路径的 alpha 加权逐通道统计。"""
@@ -462,6 +478,83 @@ def compute_untargeted_clean_action_margins(
     other_values = logits64.copy()
     other_values[row_indices, classes] = -np.inf
     return clean_values - np.max(other_values, axis=1)
+
+
+def compute_action_sequence_consistency_diagnostic(
+    generation_action_logits: np.ndarray,
+    teacher_action_logits: np.ndarray,
+    generated_classes: np.ndarray,
+) -> ActionSequenceConsistencyDiagnostic:
+    """比较 cache generation 和全序列 teacher forward 的动作 logits。
+
+    这是失败保持式诊断：它不决定 Gate，只在 clean token 与
+    teacher argmax 分叉时区分生成路径、causal 对齐和数值差异。
+
+    Args:
+        generation_action_logits: greedy generation 每步选 token 时的动作
+            子词表 logits，有限浮点 ``[action_dim,num_action_classes]``。
+        teacher_action_logits: 固定完整 clean sequence 的 teacher-forced
+            logits，shape 与 generation 相同。
+        generated_classes: 实际 greedy token 在动作子词表内的类别，
+            整数 ``[action_dim]``。
+    """
+
+    generation = np.asarray(generation_action_logits)
+    teacher = np.asarray(teacher_action_logits)
+    classes = np.asarray(generated_classes)
+    if generation.shape != teacher.shape:
+        raise RendererBakeResponseAuditError(
+            "generation/teacher action logits shape 不一致"
+        )
+    if generation.ndim != 2 or generation.shape[0] == 0:
+        raise RendererBakeResponseAuditError(
+            "generation/teacher action logits 必须为非空 [A,C]"
+        )
+    # 复用冻结 objective 的校验和 margin 定义，避免诊断另建语义。
+    generation_margins = compute_untargeted_clean_action_margins(
+        generation,
+        classes,
+    )
+    teacher_margins = compute_untargeted_clean_action_margins(
+        teacher,
+        classes,
+    )
+    generation64 = generation.astype(np.float64, copy=False)
+    teacher64 = teacher.astype(np.float64, copy=False)
+    generation_argmax = np.argmax(generation64, axis=1)
+    teacher_argmax = np.argmax(teacher64, axis=1)
+    generation_matches = generation_argmax == classes
+    teacher_matches = teacher_argmax == classes
+    absolute_difference = np.abs(generation64 - teacher64)
+    return ActionSequenceConsistencyDiagnostic(
+        action_dim=int(generation.shape[0]),
+        generated_classes=[int(value) for value in classes.tolist()],
+        generation_argmax_classes=[
+            int(value) for value in generation_argmax.tolist()
+        ],
+        teacher_argmax_classes=[
+            int(value) for value in teacher_argmax.tolist()
+        ],
+        generation_margins=[
+            float(value) for value in generation_margins.tolist()
+        ],
+        teacher_margins=[float(value) for value in teacher_margins.tolist()],
+        generation_matches_generated=[
+            bool(value) for value in generation_matches.tolist()
+        ],
+        teacher_matches_generated=[
+            bool(value) for value in teacher_matches.tolist()
+        ],
+        teacher_mismatch_indices=[
+            int(value) for value in np.flatnonzero(~teacher_matches).tolist()
+        ],
+        per_token_logit_mae=[
+            float(value) for value in absolute_difference.mean(axis=1).tolist()
+        ],
+        per_token_logit_linf=[
+            float(value) for value in absolute_difference.max(axis=1).tolist()
+        ],
+    )
 
 
 def _validate_margins(evidence: RendererBakeResponseEvidence) -> int:

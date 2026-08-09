@@ -8,6 +8,7 @@ from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 
 LIBERO_EXPERIMENT_DIR = (
@@ -19,6 +20,7 @@ from openvla_attack.renderer_bake_response_audit import (  # noqa: E402
     PROBE_CHANNELS,
     RendererBakeResponseEvidence,
     RendererBakeResponseProvenance,
+    compute_action_sequence_consistency_diagnostic,
     compute_untargeted_clean_action_margins,
     compute_weighted_response_metrics,
     evaluate_renderer_bake_response_evidence,
@@ -185,6 +187,34 @@ def test_clean_action_margin_uses_clean_class_against_best_other() -> None:
     margins = compute_untargeted_clean_action_margins(logits, clean_classes)
 
     assert margins.tolist() == [2.0, -1.0]
+
+
+def test_action_sequence_diagnostic_localizes_generation_teacher_split() -> None:
+    generation_logits = np.asarray(
+        [[4.0, 1.0, 0.0], [0.0, 3.0, 2.0]],
+        dtype=np.float32,
+    )
+    teacher_logits = np.asarray(
+        [[3.5, 1.0, 0.0], [0.0, 2.0, 2.5]],
+        dtype=np.float32,
+    )
+    generated_classes = np.asarray([0, 1], dtype=np.int64)
+
+    diagnostic = compute_action_sequence_consistency_diagnostic(
+        generation_logits,
+        teacher_logits,
+        generated_classes,
+    )
+
+    assert diagnostic["generation_argmax_classes"] == [0, 1]
+    assert diagnostic["teacher_argmax_classes"] == [0, 2]
+    assert diagnostic["generation_margins"] == [3.0, 1.0]
+    assert diagnostic["teacher_margins"] == [2.5, -0.5]
+    assert diagnostic["teacher_mismatch_indices"] == [1]
+    assert diagnostic["per_token_logit_mae"] == pytest.approx(
+        [1.0 / 6.0, 0.5]
+    )
+    assert diagnostic["per_token_logit_linf"] == [0.5, 1.0]
 
 
 def test_summary_requires_complete_unique_state_probe_grid() -> None:

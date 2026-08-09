@@ -72,6 +72,7 @@ from openvla_attack.instance_renderer_evidence import (  # noqa: E402
     render_shared_texture_instances,
 )
 from openvla_attack.objective import (  # noqa: E402
+    ACTION_TOKEN_END,
     ACTION_TOKEN_START,
     ActionTokenLogits,
     extract_action_token_logits,
@@ -91,6 +92,7 @@ from openvla_attack.renderer_bake_response_audit import (  # noqa: E402
     RendererBakeResponseProvenance,
     RendererBakeResponseRow,
     VisibilityResponseStatus,
+    compute_action_sequence_consistency_diagnostic,
     compute_untargeted_clean_action_margins,
     evaluate_renderer_bake_response_evidence,
     summarize_renderer_bake_response_rows,
@@ -478,11 +480,40 @@ def _capture_clean_model_context(
         "max_new_tokens": action_dim,
         "do_sample": False,
         "pad_token_id": processor.tokenizer.pad_token_id,
+        "return_dict_in_generate": True,
+        "output_scores": True,
     }
+    generation_input_snapshot: dict[str, torch.Tensor] = _clone_inputs(
+        clean_inputs
+    )
     with torch.no_grad(), autocast(dtype=torch.bfloat16):
-        clean_generated_ids: torch.Tensor = model.generate(
-            **generation_arguments
+        clean_generation: Any = model.generate(**generation_arguments)
+    for key, before in generation_input_snapshot.items():
+        if key not in clean_inputs or not torch.equal(before, clean_inputs[key]):
+            raise RuntimeError(
+                f"Gate 2R model.generate 修改了 clean input tensor: {key}"
+            )
+    if not hasattr(clean_generation, "sequences") or not hasattr(
+        clean_generation,
+        "scores",
+    ):
+        raise RuntimeError("Gate 2R generate 未返回 sequences/scores 诊断")
+    clean_generated_ids: torch.Tensor = clean_generation.sequences
+    generation_scores: tuple[torch.Tensor, ...] = tuple(
+        clean_generation.scores
+    )
+    if len(generation_scores) != action_dim:
+        raise RuntimeError(
+            "Gate 2R generation score 数与 action_dim 不一致："
+            f"{len(generation_scores)} != {action_dim}"
         )
+    generation_action_logits: torch.Tensor = torch.stack(
+        [
+            score[0, ACTION_TOKEN_START:ACTION_TOKEN_END]
+            for score in generation_scores
+        ],
+        dim=0,
+    )
     clean_margins, clean_classes = _teacher_margins(
         model,
         pixel_values=clean_pixel_values,
@@ -510,11 +541,21 @@ def _capture_clean_model_context(
         clean_outputs.logits,
         clean_generated_ids,
     )
-    if not torch.equal(
-        clean_action_tokens.logits.argmax(dim=1),
-        clean_classes,
-    ):
-        raise RuntimeError("Gate 2R clean token 与 teacher-forced argmax 不一致")
+    consistency = compute_action_sequence_consistency_diagnostic(
+        generation_action_logits.float().detach().cpu().numpy(),
+        clean_action_tokens.logits.float().detach().cpu().numpy(),
+        clean_classes.detach().cpu().numpy(),
+    )
+    if not all(consistency["generation_matches_generated"]):
+        raise RuntimeError(
+            "Gate 2R generation scores 与实际 greedy token 不一致: "
+            + json.dumps(consistency, ensure_ascii=False, sort_keys=True)
+        )
+    if consistency["teacher_mismatch_indices"]:
+        raise RuntimeError(
+            "Gate 2R clean token 与 teacher-forced argmax 不一致: "
+            + json.dumps(consistency, ensure_ascii=False, sort_keys=True)
+        )
     return clean_generated_ids, clean_margins, clean_classes
 
 
