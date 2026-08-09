@@ -582,6 +582,15 @@ Gate 1D、Gate 2C、Gate 2E与Gate 2R均已通过，下文也已冻结“谱自�
 候选。held-out states 10–19至少3/10失败才进入OFT开发期rollout。纯K=256、
 `rho=1.0`不再是自动下一候选。
 
+2026-08-09 已完成 Action Objective Contract 的第一段本地实现：历史
+`255-clean_bin` CE 已显式隔离为 legacy 函数，新路径新增可微的 Untargeted
+Clean-Action Margin hinge，并共同复用唯一的尾部对齐、causal shift 和 action
+token 提取 helper。7个纯 CPU 测试覆盖 margin 数值、梯度方向、负 margin
+停止施压、精确 tie 与无 action token 失败。该结果只表示数学和 interface
+契约在本地通过；尚未运行真实 OpenVLA Objective GPU Audit，也尚未运行
+Dense Seed Audit。现有旧优化器仍显式调用 legacy objective，不得将其结果
+记为新候选。
+
 已冻结的第一项设计决定：谱方法在新候选中作为作用于最终 Surface Delta 的软
 自然性正则，只惩罚高频谱能量；它不再把扰动硬限制在前 K 个谱基中，也不是与
 顶点扰动相加的第二个可学习分量。

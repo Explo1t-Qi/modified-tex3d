@@ -45,7 +45,7 @@ from .gradient_protection import (
     combine_gradients_with_feature_norm_protection,
 )
 from .image_preprocessing import DifferentiableOpenVLAImageProcessor
-from .objective import get_attack_loss
+from .objective import legacy_symmetric_target_cross_entropy
 from .policy_view import (
     DifferentiableDeploymentViewStages,
     DifferentiablePolicyViewTransform,
@@ -326,7 +326,7 @@ class AttackOptimizer:
                     output_hidden_states=True,
                 )
             action_losses.append(
-                get_attack_loss(
+                legacy_symmetric_target_cross_entropy(
                     outputs.logits,
                     frame["clean_output_ids"],
                 )
@@ -479,7 +479,7 @@ class AttackOptimizer:
                 pixel_values=primary_pixel_values.to(torch.bfloat16),
                 output_hidden_states=True,
             )
-        action_loss: torch.Tensor = get_attack_loss(
+        action_loss: torch.Tensor = legacy_symmetric_target_cross_entropy(
             primary_outputs.logits,
             frame["clean_output_ids"],
         )

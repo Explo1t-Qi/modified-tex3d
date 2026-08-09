@@ -332,7 +332,7 @@ def test_optimizer_uses_view_sampler_updates_texture_logs_and_schedules_callback
 
     monkeypatch.setattr(
         optimization,
-        "get_attack_loss",
+        "legacy_symmetric_target_cross_entropy",
         lambda logits, clean_ids: logits.mean(),
     )
     monkeypatch.setattr(
@@ -397,7 +397,7 @@ def test_optimizer_uses_surface_normalized_update_for_new_adapter(
 
     monkeypatch.setattr(
         optimization,
-        "get_attack_loss",
+        "legacy_symmetric_target_cross_entropy",
         lambda logits, clean_ids: logits.mean(),
     )
     monkeypatch.setattr(
@@ -542,7 +542,7 @@ def test_siglip_objective_uses_three_channel_shared_features_and_backpropagates(
 
     monkeypatch.setattr(
         optimization,
-        "get_attack_loss",
+        "legacy_symmetric_target_cross_entropy",
         lambda logits, clean_ids: logits.mean(),
     )
     monkeypatch.setattr(
@@ -629,7 +629,11 @@ def test_dual_view_siglip_uses_primary_action_and_two_feature_views(
         action_calls.append(logits)
         return logits.mean()
 
-    monkeypatch.setattr(optimization, "get_attack_loss", fake_action_loss)
+    monkeypatch.setattr(
+        optimization,
+        "legacy_symmetric_target_cross_entropy",
+        fake_action_loss,
+    )
     monkeypatch.setattr(
         optimization,
         "autocast",
@@ -742,7 +746,7 @@ def test_objective_gradient_audit_returns_unweighted_independent_gradients(
 
     monkeypatch.setattr(
         optimization,
-        "get_attack_loss",
+        "legacy_symmetric_target_cross_entropy",
         lambda logits, clean_ids: logits.mean(),
     )
     monkeypatch.setattr(

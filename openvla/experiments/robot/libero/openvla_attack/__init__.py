@@ -14,13 +14,17 @@ from .compositing import (
     composite_foreground,
     render_and_composite,
 )
-from .objective import get_attack_loss
+from .objective import (
+    legacy_symmetric_target_cross_entropy,
+    untargeted_clean_action_margin_hinge,
+)
 
 __all__: list[str] = [
     "build_single_view_samples",
     "composite_foreground",
     "decode_action_from_generated_ids",
-    "get_attack_loss",
+    "legacy_symmetric_target_cross_entropy",
+    "untargeted_clean_action_margin_hinge",
     "OBJECT_ASSETS",
     "parse_mesh_scale",
     "render_and_composite",

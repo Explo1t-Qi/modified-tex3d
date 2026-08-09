@@ -77,7 +77,9 @@ from openvla_attack.frame_collection import (  # noqa: E402
 from openvla_attack.image_preprocessing import (  # noqa: E402
     DifferentiableOpenVLAImageProcessor,
 )
-from openvla_attack.objective import get_attack_loss  # noqa: E402
+from openvla_attack.objective import (  # noqa: E402
+    legacy_symmetric_target_cross_entropy,
+)
 from openvla_attack.policy_view import (  # noqa: E402
     POLICY_SOURCE_RESOLUTION,
     DifferentiableDeploymentViewStages,
@@ -351,7 +353,7 @@ def run_gate_2e(args: argparse.Namespace) -> Path:
                 pixel_values=pixel_values.to(torch.bfloat16),
                 output_hidden_states=True,
             )
-        action_loss = get_attack_loss(
+        action_loss = legacy_symmetric_target_cross_entropy(
             outputs.logits,
             frame["clean_output_ids"],
         )

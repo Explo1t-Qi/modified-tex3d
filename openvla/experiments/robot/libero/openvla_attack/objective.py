@@ -1,9 +1,16 @@
 """OpenVLA action token 的攻击目标函数。
 
-OpenVLA 将连续机器人动作离散化为 256 个 token。当前 Tex3D 实现使用
-“对称 action bin”作为攻击目标：干净动作属于第 ``i`` 个 bin 时，攻击目标
-就是第 ``255 - i`` 个 bin。本模块只负责这一数学规则，不感知图像、renderer、
-LIBERO 环境或训练循环。
+本模块显式隔离两套不能混用的目标语义：
+
+- ``legacy_symmetric_target_cross_entropy`` 只用于复现历史实验，把干净
+  action bin ``i`` 推向 ``255-i``；
+- ``untargeted_clean_action_margin_hinge`` 是新 Fixed-Support 候选唯一允许的
+  Action objective，在固定 clean teacher-forced prefix 下压低 clean token
+  相对最佳其他类别的优势。
+
+二者共享唯一的尾部对齐、causal shift 与 action-token 提取函数。模块不感知
+图像、renderer、LIBERO 环境或训练循环；零扰动 ``margin >= 0`` 的契约检查
+属于审计层，不能错误地让正式训练在负 margin 时失败。
 """
 
 from __future__ import annotations
@@ -29,14 +36,34 @@ class NoActionTokensError(ValueError):
 class ActionTokenLogits(NamedTuple):
     """从 causal LM 输出中抽出的 action 子词表分类数据。
 
-    三个 tensor 的第一维都是有效 action token 数 ``A``。``logits`` shape 为
-    ``[A, 256]``，两个 class tensor shape 为 ``[A]``。当前 LIBERO/OpenVLA
-    通常有 ``A=7``，但这里不硬编码动作维数。
+    两个 tensor 的第一维都是有效 action token 数 ``A``。``logits`` shape 为
+    ``[A, 256]``，``clean_classes`` shape 为 ``[A]``。当前 LIBERO/OpenVLA
+    通常有 ``A=7``，但这里不硬编码动作维数。对称类别只作为 legacy 派生属性
+    保留，避免把历史目标字段混入公共 causal alignment 数据。
     """
 
     logits: Tensor
     clean_classes: Tensor
-    symmetric_target_classes: Tensor
+
+    @property
+    def symmetric_target_classes(self) -> Tensor:
+        """返回 legacy ``255-clean_class`` 目标，shape ``[A]``。"""
+
+        return NUM_ACTION_BINS - 1 - self.clean_classes
+
+
+class UntargetedCleanActionMarginHinge(NamedTuple):
+    """新 Action objective 的可微逐 token 结果。
+
+    ``loss`` 是标量；其余 tensor shape 均为 ``[A]``。``margins`` 定义为
+    ``clean_logit - best_other_logit``，``hinge_values`` 为其逐位置 ReLU。
+    负 margin 在正式训练中是合法的成功状态，绝不能在本函数内 fail-fast。
+    """
+
+    loss: Tensor
+    margins: Tensor
+    hinge_values: Tensor
+    clean_classes: Tensor
 
 
 def extract_action_token_logits(
@@ -101,16 +128,17 @@ def extract_action_token_logits(
         :, ACTION_TOKEN_START:ACTION_TOKEN_END
     ]
     clean_classes: Tensor = shifted_labels[action_mask] - ACTION_TOKEN_START
-    target_classes: Tensor = NUM_ACTION_BINS - 1 - clean_classes
     return ActionTokenLogits(
         logits=action_logits,
         clean_classes=clean_classes,
-        symmetric_target_classes=target_classes,
     )
 
 
-def get_attack_loss(logits: Tensor, clean_generated_token_ids: Tensor) -> Tensor:
-    """计算把干净动作推向对称 action bin 的交叉熵损失。
+def legacy_symmetric_target_cross_entropy(
+    logits: Tensor,
+    clean_generated_token_ids: Tensor,
+) -> Tensor:
+    """计算历史“对称 action bin”交叉熵，仅供 legacy 路径使用。
 
     Args:
         logits: 模型未归一化输出，形状为
@@ -144,4 +172,70 @@ def get_attack_loss(logits: Tensor, clean_generated_token_ids: Tensor) -> Tensor
     return F.cross_entropy(
         action_tokens.logits,
         action_tokens.symmetric_target_classes,
+    )
+
+
+def untargeted_clean_action_margin_hinge(
+    logits: Tensor,
+    clean_generated_token_ids: Tensor,
+) -> UntargetedCleanActionMarginHinge:
+    """计算零置信度 Untargeted Clean-Action Margin hinge。
+
+    对每个有效 action token 位置 ``a`` 计算：
+
+    ``m_a = z[a,y_a] - max_{j != y_a} z[a,j]``
+
+    并返回 ``mean(relu(m_a))``。``clean_generated_token_ids`` 必须是同一
+    部署输入生成后固定的完整 clean sequence；调用方必须把它同时作为模型
+    teacher-forced ``input_ids``，不得用 adversarial 自回归 token 改写后续前缀。
+
+    与 legacy 路径不同，没有 action token 时直接抛
+    :class:`NoActionTokensError`。本函数接受负 margin；只有零 Surface Delta
+    审计才应把负值解释为输入或 causal alignment 失败。
+
+    Args:
+        logits: 浮点 ``[batch_size,model_sequence_length,vocab_size]`` 模型
+            logits。
+        clean_generated_token_ids: 整数
+            ``[batch_size,label_sequence_length]`` clean 完整生成序列。
+
+    Returns:
+        标量 loss、逐 token margin、逐 token hinge 和 clean classes。所有结果
+        保留 autograd 图，供 Dense Seed Audit 和正式训练使用。
+
+    Raises:
+        NoActionTokensError: clean sequence 中没有有效 action token。
+        ValueError: 输入 shape、词表范围或 action logits 数值不合法。
+    """
+
+    action_tokens: ActionTokenLogits = extract_action_token_logits(
+        logits,
+        clean_generated_token_ids,
+    )
+    action_logits: Tensor = action_tokens.logits
+    if not bool(torch.isfinite(action_logits).all().item()):
+        raise ValueError("action logits 包含 NaN/Inf")
+
+    clean_classes: Tensor = action_tokens.clean_classes
+    clean_logits: Tensor = action_logits.gather(
+        dim=1,
+        index=clean_classes.unsqueeze(1),
+    ).squeeze(1)
+    # masked_fill 只排除每行 clean class；amax 对并列最佳其他类使用合法的
+    # 分布式子梯度，避免依赖标量 argmax 的任意 tie-break。
+    clean_class_mask: Tensor = torch.zeros_like(
+        action_logits,
+        dtype=torch.bool,
+    ).scatter(1, clean_classes.unsqueeze(1), True)
+    best_other_logits: Tensor = action_logits.masked_fill(
+        clean_class_mask,
+        float("-inf"),
+    ).amax(dim=1)
+    margins: Tensor = clean_logits - best_other_logits
+    hinge_values: Tensor = torch.relu(margins)
+    return UntargetedCleanActionMarginHinge(
+        loss=hinge_values.mean(),
+        margins=margins,
+        hinge_values=hinge_values,
+        clean_classes=clean_classes,
     )
