@@ -52,6 +52,7 @@
 | 2026-08-09 | Gate 2R states0–9首次正式尝试 | states0–8完成27/30 probe；state9在bake前触发generation/teacher argmax严格断言 | OFT不参与；fresh state9独立复现 | 不得把部分artifact计为Gate结果；先记录两路logit/margin定位cache数值分叉或对齐错误 | [当前状态](../status/openvla-spectral-current.md) |
 | 2026-08-09 | Gate 2R state9 action分叉诊断 | 仅index1分叉；generation class125 margin=`0.125`，teacher class125与120精确并列、margin=`0.0`；其余6/7一致 | OFT不参与；13个服务器定向测试通过 | 排除输入变异与系统性causal错位；严格检查改为clean class属于argmax集合，精确tie记录、负margin仍失败 | [当前状态](../status/openvla-spectral-current.md) |
 | 2026-08-09 | Gate 2R state9 exact-tie fix smoke | R/G/B cosine=`0.6238/0.5813/0.6510`，3/3 valid；24文件、3个NPZ与21个artifact独立复核无失败 | OFT不参与；teacher tie在manifest显式保留 | exact-tie修正通过单点验收；不与旧commit的27行拼接，待同commit正式30-case | [当前状态](../status/openvla-spectral-current.md) |
+| 2026-08-09 | Gate 2R同commit正式30-case | 30/30 valid；R/G/B worst cosine=`0.5908/0.5655/0.5867`；全部RMS充分、cosine为正 | OFT不参与；仅state9/index1 exact tie，无负teacher margin | 30 NPZ、183 artifact和186文件独立复核无失败；Gate 2R正式通过，转入新参数化契约 | [当前状态](../status/openvla-spectral-current.md) |
 
 ## 当前待执行队列
 
@@ -61,8 +62,8 @@
 | 2（已通过） | Gate 2C center-crop forward/VJP | 10个冻结CPU case | 全部case通过正式relative L2/cosine门槛 | 已达到数值门槛 |
 | 3（已通过） | Gate 1D deployment-path forward equivalence | 共享Policy Canvas与Effective View实现 | 逐阶段RGB、processor tensor、action sequence/token完全一致 | 已达到零误差门槛 |
 | 4（已通过） | Gate 2E backward/update/bake smoke | Gate 1D与2C通过 | 梯度有限非零、参数更新、Surface/asset约束通过 | 已达到全部工程门槛 |
-| 5（进行中） | Visibility/Coverage/Compositor与Gate 2R | Gate 2E通过 | Visibility/Alignment、零delta、Gate 2R state0和exact-tie修正后state9均已通过 | 下一步只运行同commit states0–9正式30-case；继续停止Seed Audit |
-| 6 | 谱自然性约束 + Fixed Vertex Support源候选 | 全部基础Gate通过 | held-out states 10–19至少3/10失败 | 先归因参数化/目标/部署输入，不做无依据网格扫描 |
+| 5（已通过） | Visibility/Coverage/Compositor与Gate 2R | Gate 2E通过 | Visibility/Alignment、零delta与Gate 2R正式30-case全部通过 | 已达到预注册机制门槛 |
+| 6（进行中） | 谱自然性约束 + Fixed Vertex Support源候选 | 全部基础Gate通过 | 先完成新Texture Parameterization契约与Support Seed Audit；候选held-out states 10–19至少3/10失败 | 先归因参数化/目标/部署输入，不做无依据网格扫描 |
 | 7 | OFT开发期 rollout | 队列6通过 | 旧0/10迁移基线上至少出现2/10失败信号 | 记录机制失败，不包装为迁移提升 |
 | 8 | 新任务/第三模型无偏验证 | 方法和超参数冻结 | 预注册门槛 | 区分开发期选择偏差与真实迁移 |
 

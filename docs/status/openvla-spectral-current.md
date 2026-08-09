@@ -7,6 +7,8 @@
 `de880cee6ddabd827bfcb2c35340f0eec09fa687`
 Gate 2R exact-tie 语义修正基线：
 `cf4676dded3a0887a57904d21ea9119f06031b85`
+Gate 2R 正式30-case证据基线：
+`0b0b86ae5d2b831e1cbd8df411404e64cf7e9e51`
 
 本文是 OpenVLA 谱纹理研究的**当前状态入口**。新一轮开发应先读本文，再按需
 进入专题文档；不要从长篇实验时间线推测当前优先级。历史实验索引见
@@ -33,7 +35,7 @@ Gate 2R exact-tie 语义修正基线：
 | 双视角与动态范数保护 | 机制已实现，源门槛未通过 | 两者均未把 held-out 源攻击恢复到预设的3/10失败 |
 | OpenVLA processor 预处理正确性 | Gate 1P 已通过 | states 0–9 pixel MAE/L∞=`0/0`，10/10序列和70/70 token一致 |
 | Deployment Effective View 与训练反传 | Gate 1D、2C、2E已通过 | 完整forward零误差；crop VJP对齐；五级梯度、单轮更新、bake/rollout/资产恢复通过 |
-| Visibility/Coverage/Compositor | Visibility/Alignment与Compositor零delta均已通过；Gate 2R state0与state9单点均通过，待同commit正式30-case | 20/20对齐证据、10/10零delta states与70/70 action token通过；2R state9 exact tie显式记录、3/3 probe同向 |
+| Visibility/Coverage/Compositor | Gate 2R与全部前置Gate已通过 | 20/20对齐证据、10/10零delta states与70/70 action token通过；2R正式30/30 valid且全部cosine为正 |
 | BPDA 下源攻击基线 | 未建立 | Gate 2R与新参数化契约通过后才运行首个新候选 |
 | BPDA 下 OFT 迁移信号 | 未开始 | 新源候选未过门槛前不得进入 OFT |
 | 无偏跨模型迁移与鲁棒性提升 | 未开始 | 需方法冻结后的新任务/第三模型与后续防御实验 |
@@ -83,10 +85,11 @@ Gate 1D 通过后，commit `0399c8f` 已让 collector 与 Attack Training 端到
 同一完整 Deployment Path；Seed Audit 仍被基础 Gate 阻断。Gate 2E 已由服务器
 证明梯度穿过 center-crop 与 processor 两层 BPDA 后能更新 Surface Delta、完成
 bake/rollout 并恢复资产，完整证据见下文。当前阻断项已转为真实
-Visibility/Alignment audit 与零 Surface Delta compositor Gate 已通过；当前只剩
-Gate 2R 在exact-tie修正后的同commit states 0–9正式30-case。新bundle完整
-通过前，不得把`696ee68`的states 0–8部分产物与`cf4676d`的state 9
-拼接成正式证据，Support Seed Audit 仍不继续。
+Visibility/Alignment audit、零 Surface Delta compositor Gate与Gate 2R均已通过。
+旧`696ee68`的states 0–8部分产物和`cf4676d`的state 9仍不作拼接证据；
+权威Gate 2R bundle来自同一commit `0b0b86a`的正式30-case。当前下一门槛
+切换为把已冻结的“谱自然性约束 + Fixed Vertex Support”设计落为可测试的
+新 Texture Parameterization 契约；契约未通过前不运行Support Seed Audit。
 
 真实 Spatial checkpoint 的 CPU 差分记录为 fused pixel values MAE/L∞=`0/0`，
 输入梯度有限且非零；文档记录当时全量 CPU 回归为 `113 passed, 1 skipped`。
@@ -256,8 +259,7 @@ state 2、7 Primary 及 state 3 wrist union overlay，差异仅位于抗锯齿�
 因此从 commit `3b51f27` 起正式冻结 `A_obs_min=1e-3` 与
 `recall_min=0.95`；类名 `VisibilityThresholdCandidates` 仅为历史 schema
 兼容保留，默认值已是正式门槛。零 Surface Delta compositor Gate 随后也已完成
-并通过，证据见下文；当前下一步为 Gate 2R，仍不得提前运行 Support Seed
-Gradient Audit。
+并通过，证据见下文；该阶段当时的下一步为Gate 2R，现也已通过。
 
 WSL 复核没有只读取 manifest 判定：已重新验证 50 张 stage PNG 的数组 hash、
 10 个 `allow_pickle=False` NPZ 的 processor/token/action 数组以及全部零误差条件。
@@ -343,8 +345,8 @@ pytest 日志 SHA-256 分别为
 `b561b573b46ad79b705bc15644cffd706d72b3c08cc1965ebcc778934c2044e3`、
 `aa425f619a55752404f12102fa014e8a71b530108d60779365c1718793da7f0a`、
 `7ba5261056f0e5d850fb6a444666fb4c0f663567f82a9fdd79c1343c7c140675`。
-因此 Gate 2E 正式通过；唯一下一阶段为 Visibility/Coverage/Compositor 与
-Gate 2R，不得提前运行 Support Seed Audit 或正式候选。
+因此Gate 2E正式通过；该阶段随后进入的Visibility/Coverage/Compositor与
+Gate 2R现也均已通过。
 
 ### 零 Surface Delta Compositor Gate（已通过）
 
@@ -393,10 +395,10 @@ WSL 又独立验证60个 artifact SHA-256，使用 `allow_pickle=False` 加载10
 - `2a9c330e80df0381ebc88f922da6400438cf05d9949703356c15f14424dd87f6`；
 - `6a2429f941071ceee8c91a2a6abc414e062bc3db5bdb264e0c1291798eafb579`。
 
-因此零 Surface Delta Compositor Gate 正式通过。下一步只允许实现和运行 Gate
-2R；在 Gate 2R 通过前仍不得进入 Support Seed Gradient Audit。
+因此零 Surface Delta Compositor Gate 正式通过。该阶段当时的下一步只允许实现
+和运行Gate 2R；其后Gate 2R也已按下文证据通过。
 
-### Gate 2R：renderer-to-bake response（已实现、待服务器运行）
+### Gate 2R：renderer-to-bake response（已通过）
 
 Gate 2E 通过后、Support Seed Gradient Audit 前，使用第五十项冻结的 Action-free
 小幅颜色探针，比较 Renderer Delta Composition 与真实 bake→MuJoCo observation
@@ -538,15 +540,47 @@ pytest/log/manifest/JSONL/CSV SHA-256分别为：
 - `fbfa65c32516c1cd22984eaffd21fca671a5c507d710b8c5eed07cee49637b57`。
 
 该state 9 bundle只证明修正和单点Gate成立，不替代同一code/config hash下的
-权威30行。下一步是在当前代码上正式重跑states 0–9。
+权威30行；因此随后在当前代码上正式重跑了states 0–9。
+
+commit `0b0b86ae5d2b831e1cbd8df411404e64cf7e9e51` 的同commit正式
+states 0–9已完整通过：30/30行均为`valid`，两条response RMS全部
+高于`1e-6`，全部`cos_alpha > 0`，无缺失、重复、额外key或结构失败。
+逐probe的worst/median cosine为：
+
+- R：`0.590808` (state 0) / `0.626496`；
+- G：`0.565539` (state 0) / `0.578714`；
+- B：`0.586726` (state 6) / `0.652017`。
+
+全局最小surrogate/bake RMS为`0.00313060` (B, state 8) /
+`0.00407509` (B, state 7)。R/G/B最大relative L2为
+`0.815153/0.840361/0.824974`，最小sign consistency为
+`0.350509/0.340486/0.382972`。因此正式分布稳定复现state0/state9的
+结论：surrogate在有效视野内提供稳定同向的小信号，但不是真实bake的
+高保真逐像素或幅值模型。Action consistency仅state 9/action index 1有精确
+teacher argmax tie，10个state均无负teacher margin位置。
+
+WSL已独立在`allow_pickle=False`下加载30个NPZ，重算所有RMS、cosine、
+relative L2、sign consistency及Action margins，重建整个summary，并验证
+183个artifact hash与186个文件的精确inventory，失败项为空。人工抽查
+R/G/B最低cosine的scatter也均非空且显示同向结构；格点来自真实bake的
+8-bit量化。log/manifest/JSONL/CSV SHA-256分别为：
+
+- `c692899eab7bf7408f1c5761edbbd1f8bd75981ba31736bcc928e2e91ce808a1`；
+- `231e6eb67182f4caecf956c93908624ec7472874b53dff7ca10877ebc7143067`；
+- `e1f3375650e0a5077b66cb7ed5f3ecef8a64b297563f2111f2755f3c8b99b8b5`；
+- `79c857e478c973d982bc3c015adff7d9cea54b062dc6a71190a6e6b3be45b056`。
+
+因此Gate 2R按预注册的“response充分且全部cosine为正”最低机制门槛正式
+通过。不根据已观测的分布追加一个为本批数据量身定制的更强事后硬门槛；
+worst/median cosine、relative L2和sign consistency保留为机制表征。
 
 ### Gate 3：建立 BPDA 下的新源候选
 
-Gate 1D、Gate 2C、Gate 2E 与 Gate 2R 通过后，先冻结“谱自然性约束 +
-选定顶点全维优化”的最小参数化、预算与顶点选择规则，再运行 train states
-0–9 的单一候选。held-out states 10–19 至少 3/10 失败才进入 OFT 开发期
-rollout。纯 K=256、`rho=1.0` 不再是自动下一候选；
-新设计尚未冻结前不写入正式实验队列。
+Gate 1D、Gate 2C、Gate 2E与Gate 2R均已通过，下文也已冻结“谱自然性约束 +
+选定顶点全维优化”的最小参数化、预算与顶点选择规则。当前先实现并测试
+新Texture Parameterization契约，再运行Support Seed Audit与train states 0–9的单一
+候选。held-out states 10–19至少3/10失败才进入OFT开发期rollout。纯K=256、
+`rho=1.0`不再是自动下一候选。
 
 已冻结的第一项设计决定：谱方法在新候选中作为作用于最终 Surface Delta 的软
 自然性正则，只惩罚高频谱能量；它不再把扰动硬限制在前 K 个谱基中，也不是与
