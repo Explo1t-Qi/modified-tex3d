@@ -83,8 +83,8 @@ Gate 1D 通过后，commit `0399c8f` 已让 collector 与 Attack Training 端到
 bake/rollout 并恢复资产，完整证据见下文。当前阻断项已转为真实
 Visibility/Alignment audit 与零 Surface Delta compositor Gate 已通过；当前只剩
 Gate 2R 的state 9 generation/teacher-forward分叉诊断。在根因确认
-且决定是否需要修订第三十二项严格一致性要求前，正式30-case与
-Support Seed Audit 均不继续。
+且修正第三十二项严格一致性的tie-break语义后，重跑fresh state 9；
+正式30-case与Support Seed Audit 暂不继续。
 
 真实 Spatial checkpoint 的 CPU 差分记录为 fused pixel values MAE/L∞=`0/0`，
 输入梯度有限且非零；文档记录当时全量 CPU 回归为 `113 passed, 1 skipped`。
@@ -500,8 +500,21 @@ generation/teacher-forward分叉，而首token保持一致；因此当前不将�
 直接归因为causal错位，也不放宽冻结断言。runner已增加失败保持式
 诊断：捕获cache generation每步score，验证输入tensor未被修改，并在同一
 断言中报告分叉索引、两条路径argmax、固定clean-class margin和逐token
-logit MAE/L∞。下一步只重跑fresh state 9，用该证据区分BF16/cache数值
-分叉、生成score处理与真实对齐错误。
+logit MAE/L∞。服务器诊断已定位state 9只在action index 1分叉：
+generation选class 125且margin为`0.125`，teacher forward在class 125与120之间
+精确并列，clean-class margin为`0.0`；其余6/7位置均一致。输入变异保护
+未触发，因此排除系统性causal错位和输入被`generate()`修改，根因是
+BF16/cache generation与全序列teacher forward的数值路径差异，加上标量
+`argmax`的“首个最大值”tie-break语义。
+定向回归为`13 passed, 3 warnings`，pytest/诊断log SHA-256分别为
+`05dd8b1028fa80e1567aa31b2fb5842ebdfb73d1594c5749accf291c5027986e`和
+`7c945fe8bcf753d61a59acc8e4bbdae894780b0b64957f867d255f565cd3c896`。
+
+严格一致性检查因此修正为集合语义：clean generated class必须属于
+teacher-forward argmax集合，等价于冻结clean-class margin `m_a >= 0`。
+`m_a == 0`只接受精确并列并显式记录state/位置，不引入人为容差；
+任何`m_a < 0`仍作为输入/对齐失败严格中止。下一步只重跑fresh
+state 9验证这一修正能越过clean阶段并完成三个probe。
 
 ### Gate 3：建立 BPDA 下的新源候选
 
@@ -718,9 +731,12 @@ margin。零 Surface Delta 的 Support Seed Score 与正式 Attack Training 必�
 objective 及同一 causal alignment helper。
 
 审计与训练产物必须逐 state/iteration 保存全部 action 位置的 `m_a`、
-`m_a <= 0` 的数量及 margin 的 mean/min/max。零 Surface Delta 时若 clean token 与
-同一 teacher-forced forward 的 argmax 不一致，必须作为输入/对齐失败显式报告；
-新 objective 缺少 action token 时必须失败，不得继承 legacy 路径的可反传零损失。
+`m_a <= 0` 的数量及 margin 的 mean/min/max。零 Surface Delta 时，clean token
+必须属于同一 teacher-forced forward 的 argmax 集合，即 `m_a >= 0`。精确
+`m_a == 0` 的并列最大只作显式诊断记录，不依赖标量 `argmax` 的任意
+tie-break索引，也不引入浮点容差；任何 `m_a < 0` 必须作为输入/对齐失败
+显式报告。新 objective 缺少 action token 时必须失败，不得继承 legacy 路径的
+可反传零损失。
 
 已冻结的第三十三项设计决定：`lambda_spec` 通过正式训练前的一次性
 Spectral Guard Calibration 确定，不直接指定任意小数，也不在正式训练中动态

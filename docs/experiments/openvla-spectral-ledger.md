@@ -50,6 +50,7 @@
 | 2026-08-08 | 零 Surface Delta Compositor Gate | 10/10 states与70/70 token完全一致；全部阶段最坏L∞=0；Surface梯度L2=`82.43–87.03` | OFT不参与；只验证source OpenVLA Primary训练路径 | 首次运行因commit provenance冲突拒绝；`7e2ff16`重跑与60个artifact独立复算通过 | [当前状态](../status/openvla-spectral-current.md) |
 | 2026-08-08 | Gate 2R state0 RGB smoke | 3/3响应充分且cosine=`0.566–0.656`；relative L2=`0.760–0.840` | OFT不参与；Action margin仅记录 | 最低同向门槛通过；surrogate不是高保真幅值模型，完成scatter可读性修正后进入正式30-case | [当前状态](../status/openvla-spectral-current.md) |
 | 2026-08-09 | Gate 2R states0–9首次正式尝试 | states0–8完成27/30 probe；state9在bake前触发generation/teacher argmax严格断言 | OFT不参与；fresh state9独立复现 | 不得把部分artifact计为Gate结果；先记录两路logit/margin定位cache数值分叉或对齐错误 | [当前状态](../status/openvla-spectral-current.md) |
+| 2026-08-09 | Gate 2R state9 action分叉诊断 | 仅index1分叉；generation class125 margin=`0.125`，teacher class125与120精确并列、margin=`0.0`；其余6/7一致 | OFT不参与；13个服务器定向测试通过 | 排除输入变异与系统性causal错位；严格检查改为clean class属于argmax集合，精确tie记录、负margin仍失败 | [当前状态](../status/openvla-spectral-current.md) |
 
 ## 当前待执行队列
 

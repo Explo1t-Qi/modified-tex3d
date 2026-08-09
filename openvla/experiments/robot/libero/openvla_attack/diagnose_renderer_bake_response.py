@@ -86,6 +86,7 @@ from openvla_attack.policy_view import (  # noqa: E402
 )
 from openvla_attack.renderer import DifferentiableRenderer  # noqa: E402
 from openvla_attack.renderer_bake_response_audit import (  # noqa: E402
+    ActionSequenceConsistencyDiagnostic,
     PROBE_CHANNELS,
     PROBE_SURFACE_DELTA,
     RendererBakeResponseEvidence,
@@ -411,8 +412,8 @@ def _teacher_margins(
     pixel_values: torch.Tensor,
     clean_generated_ids: torch.Tensor,
     expected_clean_classes: Optional[torch.Tensor] = None,
-) -> tuple[NDArray[np.float64], torch.Tensor]:
-    """以固定 clean sequence 前缀计算一条图像路径的逐 token margin。"""
+) -> tuple[NDArray[np.float64], torch.Tensor, torch.Tensor]:
+    """以固定clean sequence前缀返回margin、class和同次forward logits。"""
 
     with torch.no_grad(), autocast(dtype=torch.bfloat16):
         outputs: Any = model(
@@ -434,7 +435,11 @@ def _teacher_margins(
         action_tokens.logits.float().detach().cpu().numpy(),
         action_tokens.clean_classes.detach().cpu().numpy(),
     )
-    return margins, action_tokens.clean_classes.detach()
+    return (
+        margins,
+        action_tokens.clean_classes.detach(),
+        action_tokens.logits.detach(),
+    )
 
 
 def _capture_clean_model_context(
@@ -449,6 +454,7 @@ def _capture_clean_model_context(
     torch.Tensor,
     NDArray[np.float64],
     torch.Tensor,
+    ActionSequenceConsistencyDiagnostic,
 ]:
     """获得固定 clean labels、clean margin/classes 和 clean pixel values。"""
 
@@ -514,7 +520,7 @@ def _capture_clean_model_context(
         ],
         dim=0,
     )
-    clean_margins, clean_classes = _teacher_margins(
+    clean_margins, clean_classes, clean_action_logits = _teacher_margins(
         model,
         pixel_values=clean_pixel_values,
         clean_generated_ids=clean_generated_ids,
@@ -529,21 +535,11 @@ def _capture_clean_model_context(
     if not torch.equal(clean_classes, generated_classes):
         raise RuntimeError("Gate 2R clean generated token 与 teacher labels 不一致")
 
-    # 冻结 objective 还要求零 delta 时 clean token 是同一 teacher forward argmax。
-    with torch.no_grad(), autocast(dtype=torch.bfloat16):
-        clean_outputs: Any = model(
-            input_ids=clean_generated_ids,
-            attention_mask=torch.ones_like(clean_generated_ids),
-            pixel_values=clean_pixel_values,
-            output_hidden_states=False,
-        )
-    clean_action_tokens = extract_action_token_logits(
-        clean_outputs.logits,
-        clean_generated_ids,
-    )
+    # 冻结 objective 的 margin 和一致性检查必须复用同一次 teacher
+    # forward logits，避免二次BF16/Flash-Attention调用之间引入额外变量。
     consistency = compute_action_sequence_consistency_diagnostic(
         generation_action_logits.float().detach().cpu().numpy(),
-        clean_action_tokens.logits.float().detach().cpu().numpy(),
+        clean_action_logits.float().detach().cpu().numpy(),
         clean_classes.detach().cpu().numpy(),
     )
     if not all(consistency["generation_matches_generated"]):
@@ -551,12 +547,17 @@ def _capture_clean_model_context(
             "Gate 2R generation scores 与实际 greedy token 不一致: "
             + json.dumps(consistency, ensure_ascii=False, sort_keys=True)
         )
-    if consistency["teacher_mismatch_indices"]:
+    if consistency["teacher_negative_margin_indices"]:
         raise RuntimeError(
-            "Gate 2R clean token 与 teacher-forced argmax 不一致: "
+            "Gate 2R clean token 不属于 teacher-forced argmax 集合: "
             + json.dumps(consistency, ensure_ascii=False, sort_keys=True)
         )
-    return clean_generated_ids, clean_margins, clean_classes
+    if consistency["teacher_tie_indices"]:
+        print(
+            "[GATE-2R] clean token 属于 teacher-forced 并列最大类集合: "
+            + json.dumps(consistency, ensure_ascii=False, sort_keys=True)
+        )
+    return clean_generated_ids, clean_margins, clean_classes, consistency
 
 
 def _settle_environment(
@@ -845,6 +846,7 @@ def run_renderer_bake_response_audit(
     clean_texture_sha256 = _sha256_file(texture_path)
     transaction: Optional[RuntimeAssetTransaction] = None
     rows: list[RendererBakeResponseRow] = []
+    action_sequence_consistency: list[dict[str, Any]] = []
     task_description: Optional[str] = None
     backend_identity: Optional[dict[str, Any]] = None
     backup_paths: tuple[Path, ...] = ()
@@ -1021,6 +1023,7 @@ def run_renderer_bake_response_audit(
                     clean_generated_ids,
                     clean_action_margins,
                     clean_classes,
+                    clean_action_consistency,
                 ) = _capture_clean_model_context(
                     model=model,
                     processor=processor,
@@ -1029,8 +1032,14 @@ def run_renderer_bake_response_audit(
                     task_description=current_task_description,
                     exact_clean=clean_exact,
                 )
+                action_sequence_consistency.append(
+                    {
+                        "state_id": state_id,
+                        **clean_action_consistency,
+                    }
+                )
                 for channel, cached_probe in tuple(clean_probes.items()):
-                    surrogate_margins, surrogate_classes = _teacher_margins(
+                    surrogate_margins, surrogate_classes, _ = _teacher_margins(
                         model,
                         pixel_values=cached_probe.surrogate_pixel_values,
                         clean_generated_ids=clean_generated_ids,
@@ -1113,7 +1122,7 @@ def run_renderer_bake_response_audit(
                     baked_pixels = image_preprocessor.build_fused_pixel_values(
                         baked_effective_tensor
                     ).to(torch.bfloat16)
-                    bake_action_margins, bake_classes = _teacher_margins(
+                    bake_action_margins, bake_classes, _ = _teacher_margins(
                         model,
                         pixel_values=baked_pixels,
                         clean_generated_ids=clean_generated_ids,
@@ -1247,6 +1256,7 @@ def run_renderer_bake_response_audit(
         "state_ids": list(state_ids),
         "probe_channels": list(PROBE_CHANNELS),
         "probe_surface_delta": PROBE_SURFACE_DELTA,
+        "clean_action_sequence_consistency": action_sequence_consistency,
         "backend": backend_identity,
         "asset_sha256_after_restore": _fingerprint_files(
             (xml_path, mesh_path, texture_path)

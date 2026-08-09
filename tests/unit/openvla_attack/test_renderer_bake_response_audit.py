@@ -211,10 +211,36 @@ def test_action_sequence_diagnostic_localizes_generation_teacher_split() -> None
     assert diagnostic["generation_margins"] == [3.0, 1.0]
     assert diagnostic["teacher_margins"] == [2.5, -0.5]
     assert diagnostic["teacher_mismatch_indices"] == [1]
+    assert diagnostic["teacher_tie_indices"] == []
+    assert diagnostic["teacher_negative_margin_indices"] == [1]
     assert diagnostic["per_token_logit_mae"] == pytest.approx(
         [1.0 / 6.0, 0.5]
     )
     assert diagnostic["per_token_logit_linf"] == [0.5, 1.0]
+
+
+def test_action_sequence_diagnostic_accepts_exact_argmax_tie_only() -> None:
+    generation_logits = np.asarray(
+        [[4.0, 1.0, 0.0], [0.0, 2.0, 3.0]],
+        dtype=np.float32,
+    )
+    # token 2 与token 1并列最大；NumPy/PyTorch argmax 只因首个最大值
+    # 的tie-break规则返回1，不代表generated class 2低于最大值。
+    teacher_logits = np.asarray(
+        [[4.0, 1.0, 0.0], [0.0, 3.0, 3.0]],
+        dtype=np.float32,
+    )
+    generated_classes = np.asarray([0, 2], dtype=np.int64)
+
+    diagnostic = compute_action_sequence_consistency_diagnostic(
+        generation_logits,
+        teacher_logits,
+        generated_classes,
+    )
+
+    assert diagnostic["teacher_mismatch_indices"] == [1]
+    assert diagnostic["teacher_tie_indices"] == [1]
+    assert diagnostic["teacher_negative_margin_indices"] == []
 
 
 def test_summary_requires_complete_unique_state_probe_grid() -> None:

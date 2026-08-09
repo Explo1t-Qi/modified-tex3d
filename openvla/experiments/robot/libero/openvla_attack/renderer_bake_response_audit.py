@@ -75,6 +75,8 @@ class ActionSequenceConsistencyDiagnostic(TypedDict):
     generation_matches_generated: list[bool]
     teacher_matches_generated: list[bool]
     teacher_mismatch_indices: list[int]
+    teacher_tie_indices: list[int]
+    teacher_negative_margin_indices: list[int]
     per_token_logit_mae: list[float]
     per_token_logit_linf: list[float]
 
@@ -547,6 +549,14 @@ def compute_action_sequence_consistency_diagnostic(
         ],
         teacher_mismatch_indices=[
             int(value) for value in np.flatnonzero(~teacher_matches).tolist()
+        ],
+        teacher_tie_indices=[
+            int(value)
+            for value in np.flatnonzero(teacher_margins == 0.0).tolist()
+        ],
+        teacher_negative_margin_indices=[
+            int(value)
+            for value in np.flatnonzero(teacher_margins < 0.0).tolist()
         ],
         per_token_logit_mae=[
             float(value) for value in absolute_difference.mean(axis=1).tolist()
