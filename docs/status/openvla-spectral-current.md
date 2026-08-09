@@ -118,8 +118,10 @@ mesh/mapping/provenance hash加载其3514个紧凑参数坐标。uniform Support
 的`rho_nat`也已通过纯CPU校准与独立复算。新Action-only Spectral Guard runner
 已在真实states 0--9上完成GPU calibration，`lambda_spec`与完整状态恢复证据均已
 通过独立复核。Fixed-Support Action+Spectral正式trainer的两步工程smoke也已在
-服务器通过并由WSL独立复核。当前唯一下一门槛是把已验收的正式核心接入source
-training，保存正式训练artifact并运行held-out states 10--19；OFT仍不得提前进入。
+服务器通过并由WSL独立复核。正式核心现已接入主入口，并已通过本地CPU契约
+回归；当前唯一下一门槛是在服务器核验该commit并运行5000轮source training，
+随后在同一held-out states 10--19上执行成对Clean/Adversarial rollout。OFT仍
+不得提前进入。
 
 真实 Spatial checkpoint 的 CPU 差分记录为 fused pixel values MAE/L∞=`0/0`，
 输入梯度有限且非零；文档记录当时全量 CPU 回归为 `113 passed, 1 skipped`。
@@ -794,8 +796,9 @@ OBJ mesh数组与文件、renderer faces及render-to-geometry mapping哈希。�
 `rho_nat_calibrated=false`、`lambda_spec_calibrated=false`和
 `formal_training_allowed=false`；loader对mesh或mapping不匹配直接失败。renderer
 接线只把3514个紧凑RGB参数scatter回完整`[21263,3]` Surface Delta，Support外
-严格为零。主入口仍显式拒绝`fixed_support`正式训练，避免现有legacy
-Action+Feature trainer绕过新Action-only目标与两级谱校准。
+严格为零。历史上主入口曾显式拒绝`fixed_support`正式训练，避免legacy
+Action+Feature trainer绕过新Action-only目标与两级谱校准；该临时阻断已由下文
+commit `d646117`的新正式分支替代，旧trainer仍不得进入该进程。
 
 因此后续顺序正式固定为：Production Support冻结与参数化接线（当前阶段）→
 `rho_nat=r_high(1_S)`校准→最多64轮Action-only Spectral Guard Calibration、
@@ -927,8 +930,46 @@ Active Texture环境成功建立，XML与真实纹理恢复前后hash一致且ba
 Support、`rho_nat`、谱基和lambda manifest仍必须找到真实同hash文件；未同步的
 原始mesh/texture则必须同时匹配Production Support与已接受lambda calibration的
 provenance，不能静默跳过。修正后原bundle独立复核通过。smoke manifest的
-`formal_training_allowed=true`只表示训练前工程Gate通过；主入口尚未接入新正式
-trainer，不能回退到legacy Action+Feature路径。
+`formal_training_allowed=true`只表示训练前工程Gate通过；它本身仍不是正式
+5000轮训练或rollout效果证据。
+
+commit `d6461179fbb71405c1c02fcc51f0ce585c03a7fe` 已把正式
+Fixed-Support Action+Spectral source路径接入`attack_openvla.py`。入口在解析配置
+后冻结Spatial task 0、Akita、train states 0--9、held-out states 10--19、5000轮、
+Surface Step=`2/255`、Surface-L∞=`128/255`、center crop与无Feature配置；还要求
+Production Support、`rho_nat`、谱基、lambda calibration及两步smoke五项artifact
+齐全，并显式绑定当前40位Git commit。GPU运行前会核验checkout HEAD和tracked
+worktree，且正式分支通过延迟导入保证legacy`training`/`optimization`未进入进程。
+
+正式trainer沿已通过的all-state Objective链路一次冻结states 0--9 clean token、
+主视角、MuJoCo可见性与全部共享纹理实例。每轮按0--9逐state计算
+Untargeted Clean-Action Margin Hinge的算术平均梯度，再计算冻结
+Spectral Naturalness梯度，通过同一个`FixedSupportTrainerCore`形成
+`g_total=g_action+lambda_spec*g_spec`并且只执行一次surface-normalized update。
+逐轮JSONL保存state ID/fingerprint、margin/hinge、两项梯度范数与cosine、加权
+谱/Action比、谱能量、联合残差和完整`SurfaceStepStats`；逐state证据增量落盘，
+终态保存3514×3紧凑参数、loss history和唯一部署bake，不保存重复的5000轮完整
+梯度数组。
+
+独立CPU evaluator会重新复核上游两步smoke与全部SHA-256，要求5000行step、
+50000行逐state证据、每轮states 0--9完整唯一、Surface step/L∞不越界、最终紧凑
+参数有限且符合Production Support规模，以及loss history逐值绑定。训练结束后入口
+先恢复clean asset，在同一held-out states 10--19运行Clean Control，再激活manifest
+绑定的最终bake运行Adversarial rollout。Gate只统计
+`clean_success and adversarial_failure`：至少3/10新增失败才通过；clean原有失败
+单独报告，不得计为纹理造成的失败。若Clean=10/10，才可把对抗条件的总失败数
+直接解释为新增失败。
+
+若该主候选未达到3/10新增失败，首个预注册诊断是保持同一Frozen Support、Action
+objective、states、步长、预算与训练轮数，仅关闭Spectral Guard的Fixed-Support
+Action-only control；在该对照之前不调整lambda、K_nat、Support或其他方法设计。
+两步smoke中`cos(g_A,g_S)=-0.771`与加权谱/Action比`0.279`继续作为重点风险，
+但`cos(g_A,g_total)=0.975`，目前没有依据提前改权。
+
+本次新增定向契约为`39 passed`；排除本机缺失nvdiffrast/完整LIBERO而无法收集的
+9个旧测试文件后，OpenVLA Attack CPU回归为`256 passed`。直接运行完整`tests`
+仍在collection阶段得到10个相同依赖缺失ImportError。真实CUDA、5000轮训练、
+正式evaluator与成对rollout均尚未运行，因此队列6e仍未通过。
 
 已冻结的第一项设计决定：谱方法在新候选中作为作用于最终 Surface Delta 的软
 自然性正则，只惩罚高频谱能量；它不再把扰动硬限制在前 K 个谱基中，也不是与

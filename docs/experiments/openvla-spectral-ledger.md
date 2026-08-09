@@ -61,6 +61,7 @@
 | 2026-08-09 | uniform Support谱自然性`rho_nat`校准 | `E_total/low/high=0.0215720/0.0194305/0.00214153`，`rho_nat=0.0992735862`；未运行模型、反传或rollout | OFT/Feature/wrist均不参与 | 连续K_nat=128+常数频带M-正交与常数模态审计通过，两个输入artifact独立复算无失败；只放行Action-only Spectral Guard Calibration，正式训练仍为false | [当前状态](../status/openvla-spectral-current.md) |
 | 2026-08-09 | states 0--9 Action-only Spectral Guard Calibration | 首个稳定窗口为iterations 1--5；`q_med=117.572826`，冻结`lambda_spec=0.000850536673`；逐轮Surface Step约`2/255`，delta达到`12/255` | Feature/wrist/OFT/legacy optimizer均未进入；谱/Action梯度cosine范围=`[-0.7981, -0.7821]` | 每轮10个state完整唯一且fingerprint绑定，第0轮与Objective Audit逐项一致，全部7项状态/RNG恢复与WSL独立evaluator通过；只放行新Action+Spectral trainer smoke，尚无攻击或迁移效果证据 | [当前状态](../status/openvla-spectral-current.md) |
 | 2026-08-09 | Fixed-Support Action+Spectral两步GPU smoke | Step 0谱梯度严格为0；Step 1 `r_high=0.788809`、谱梯度L2=`32.6384`，加权谱/Action比=`0.278799`；联合梯度逐值复算通过 | Feature/wrist/OFT/legacy optimizer均未进入；`cos(g_A,g_S)=-0.771003`，`cos(g_A,g_total)=0.975366` | 两步各一次`2/255` Surface update，Support外严格为0；bake/Active Texture/资产恢复与WSL独立复核通过。只证明正式联合训练链路，尚无攻击或迁移效果证据 | [当前状态](../status/openvla-spectral-current.md) |
+| 2026-08-09 | 正式Fixed-Support source trainer与paired Gate实现 | 尚未运行GPU/rollout；本地定向39 passed，可收集CPU回归256 passed | OFT/Feature/wrist/legacy optimizer不进入正式进程；5000轮evaluator与成对Gate均要求完整state fingerprint及SHA绑定 | commit `d646117`接入主入口、增量训练证据、独立CPU evaluator和Clean/Adversarial同state判定；完整tests仍因本机缺nvdiffrast/LIBERO在collection出现10个ImportError，队列6e未通过 | [当前状态](../status/openvla-spectral-current.md) |
 
 ## 当前待执行队列
 
@@ -75,7 +76,7 @@
 | 6b（已通过） | 校准`rho_nat=r_high(1_S)` | Production Support与K_nat=128连续几何频带 | uniform support probe能量可独立复算，artifact/hash/频带字段完整 | 已冻结`rho_nat=0.0992735862`，未自动增大K |
 | 6c（已通过） | 服务器Action-only Spectral Guard Calibration | runner/evaluator已实现；`rho_nat`通过且新trainer不复用legacy Feature objective | states 0–9每轮完整唯一且绑定fingerprint；首个连续5轮稳定激活窗口冻结`lambda_spec`；逐轮SurfaceStepStats；最多64轮；Surface/update/gradient/sampler/RNG完整恢复 | 已冻结`lambda_spec=0.000850536673`，7项恢复检查通过 |
 | 6d（已通过） | 服务器Fixed-Support Action+Spectral trainer两步工程smoke | 两级校准均通过；`4a061a2` runner复用正式Action objective、共享更新核心与冻结权重 | Step 0零点严格退化为Action-only；Step 1谱hinge/梯度激活，逐值复算联合梯度且每步只作一次update；bake/Active Texture/资产恢复通过 | `f73b183`正式bundle及WSL独立复核已通过 |
-| 6e（当前唯一门槛） | 正式Fixed-Support Action+Spectral source训练与held-out rollout | 两步smoke通过；主入口必须消费同一联合核心、冻结lambda和完整provenance，不得调用legacy trainer | 保存逐轮联合梯度诊断、SurfaceStepStats、最终参数/bake及资产恢复；held-out states 10–19至少3/10失败 | 先归因参数化/目标/部署输入，不做无依据网格扫描，不进入OFT |
+| 6e（当前唯一门槛） | 正式Fixed-Support Action+Spectral source训练与paired held-out rollout | 两步smoke通过；`d646117`已实现主入口、同一联合核心、冻结lambda和完整provenance，不调用legacy trainer；待服务器运行 | 5000轮/50000行证据、SurfaceStepStats、最终参数/bake及资产恢复均通过独立复核；同states 10–19 Clean/Adversarial配对后至少3/10 `clean success -> adversarial failure` | 首个对照固定为同Support/Action目标/训练设置但关闭Spectral Guard的Action-only control；在此前不改lambda/K_nat/Support，不进入OFT |
 | 7 | OFT开发期 rollout | 队列6e通过 | 旧0/10迁移基线上至少出现2/10失败信号 | 记录机制失败，不包装为迁移提升 |
 | 8 | 新任务/第三模型无偏验证 | 方法和超参数冻结 | 预注册门槛 | 区分开发期选择偏差与真实迁移 |
 
