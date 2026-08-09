@@ -23,6 +23,8 @@ Spectral Guard GPU Calibration runner实现基线：
 `839f5ec78f7eaae094989c394ddba01992e4a243`
 Spectral Guard GPU Calibration正式证据基线：
 `4f9b6bd95384a94719edce117c4ba61e7d493be1`
+Fixed-Support Action+Spectral两步smoke实现基线：
+`4a061a23365213c0d9a31348db21c2edbc6a8ad4`
 
 本文是 OpenVLA 谱纹理研究的**当前状态入口**。新一轮开发应先读本文，再按需
 进入专题文档；不要从长篇实验时间线推测当前优先级。历史实验索引见
@@ -54,7 +56,7 @@ Spectral Guard GPU Calibration正式证据基线：
 | Seed Score/density/smoothing | 已通过 | corrected canonical/repeat artifacts均从raw `G_s`独立复算；连续场与高分区域repeat稳定 |
 | Support Construction/coverage | 已通过，Production Support已冻结 | canonical/repeat均以`r=1`、seed 829通过；冻结3514个顶点/10542个RGB标量并绑定全部上游hash |
 | 谱自然性uniform Support校准 | 已通过 | 连续K_nat=128+常数频带通过数值审计；`rho_nat=0.0992735862`并由两个输入artifact独立复算 |
-| BPDA 下源攻击基线 | 未建立 | Fixed-Support renderer、`rho_nat`与`lambda_spec`校准已通过；下一门槛是新Action+Spectral trainer工程smoke，尚无正式训练或rollout结果 |
+| BPDA 下源攻击基线 | 未建立 | Fixed-Support renderer、`rho_nat`与`lambda_spec`校准已通过；Action+Spectral两步smoke已实现、待服务器GPU验收，尚无正式训练或rollout结果 |
 | BPDA 下 OFT 迁移信号 | 未开始 | 新源候选未过门槛前不得进入 OFT |
 | 无偏跨模型迁移与鲁棒性提升 | 未开始 | 需方法冻结后的新任务/第三模型与后续防御实验 |
 
@@ -113,8 +115,9 @@ candidate已经冻结为独立Production Fixed Support，renderer只允许通过
 mesh/mapping/provenance hash加载其3514个紧凑参数坐标。uniform Support probe
 的`rho_nat`也已通过纯CPU校准与独立复算。新Action-only Spectral Guard runner
 已在真实states 0--9上完成GPU calibration，`lambda_spec`与完整状态恢复证据均已
-通过独立复核。当前唯一下一门槛是实现并运行Fixed-Support Action+Spectral正式
-trainer的工程smoke；在该门槛通过前，正式训练和held-out rollout均不得开始。
+通过独立复核。Fixed-Support Action+Spectral正式trainer的两步工程smoke已实现；
+当前唯一下一门槛是在服务器运行并独立复核该smoke。在该门槛通过前，正式训练
+和held-out rollout均不得开始。
 
 真实 Spatial checkpoint 的 CPU 差分记录为 fused pixel values MAE/L∞=`0/0`，
 输入梯度有限且非零；文档记录当时全量 CPU 回归为 `113 passed, 1 skipped`。
@@ -831,7 +834,7 @@ margin/hinge、梯度L2/SHA与饱和统计。Feature、wrist、OFT及legacy
 Action+Feature optimizer均被进程级护栏排除。
 
 校准更新与后续正式trainer共同持有唯一
-`FixedSupportActionTrainerCore`，由它调用既有surface-normalized step和
+`FixedSupportTrainerCore`，由它调用既有surface-normalized step和
 Surface-L∞ projection；runner不得复制更新公式。逐轮权威长表保存配置
 `surface_step`和全部`SurfaceStepStats`。校准事务覆盖紧凑Surface参数、共享更新
 核心、all-state provider/sampler、gradient cache及Python/NumPy/Torch CPU/CUDA
@@ -864,6 +867,28 @@ Python/NumPy/Torch CPU/CUDA恢复检查通过。权威action frames、iterations
 该门槛只冻结`lambda_spec`；manifest仍正确保留
 `formal_training_allowed=false`，下一门槛为
 `fixed_support_action_spectral_training_smoke`。
+
+对该门槛的实现护栏已进一步明确：从零delta只运行一步无法验收谱项，因为此时
+`R_spec`及其梯度均为零。commit
+`4a061a23365213c0d9a31348db21c2edbc6a8ad4`因此实现严格两步smoke。Step 0从零点
+重算states 0--9，要求谱项严格为零，且Action token/loss/margin/hinge逐项复现
+已通过calibration的第0轮；正式联合trainer先形成
+`g_total=g_action+lambda_spec*g_spec`，再且仅调用一次共享Surface update。Step 1
+在第一次更新后的非零delta上重算完整目标，要求谱hinge激活且`g_spec`有限非零，
+随后执行第二次联合update。Action loss是否单步下降只记录，不是工程Gate。
+
+smoke保存两个step的四组完整float32紧凑梯度、三个时点的完整几何Surface Delta、
+逐state Action证据、两轮`SurfaceStepStats`与bake PNG。WSL evaluator从NPZ逐值
+复算`lambda_spec*g_spec`和`g_total`，验证3514×3参数规模、Support外严格为零、
+由delta复算step/L∞、Production Support/`rho_nat`/谱基/`lambda_spec` calibration
+全部hash绑定，并要求MuJoCo实际建立Active Texture环境及XML/真实纹理完整恢复。
+Feature、wrist、OFT与legacy optimizer继续由进程级和证据级双重护栏排除。
+
+本地定向回归为`20 passed`；在显式排除本机缺失nvdiffrast或LIBERO而无法收集的
+9个旧测试文件后，OpenVLA Attack CPU回归为`245 passed`。直接运行完整`tests`
+在collection阶段因本机未安装nvdiffrast与完整LIBERO出现10个ImportError；这些
+均发生在测试执行前，不是本次行为回归。真实CUDA import、两步数值与资产事务仍
+必须由服务器GPU smoke验收。
 
 已冻结的第一项设计决定：谱方法在新候选中作为作用于最终 Surface Delta 的软
 自然性正则，只惩罚高频谱能量；它不再把扰动硬限制在前 K 个谱基中，也不是与

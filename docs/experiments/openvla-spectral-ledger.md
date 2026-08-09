@@ -73,7 +73,7 @@
 | 6a（已通过） | 冻结canonical Production Fixed Support | Support Construction与repeat已通过 | 不重选点；绑定全部provenance，3514个紧凑参数坐标且正式训练标志为false | 已形成`openvla-production-fixed-support-v1` |
 | 6b（已通过） | 校准`rho_nat=r_high(1_S)` | Production Support与K_nat=128连续几何频带 | uniform support probe能量可独立复算，artifact/hash/频带字段完整 | 已冻结`rho_nat=0.0992735862`，未自动增大K |
 | 6c（已通过） | 服务器Action-only Spectral Guard Calibration | runner/evaluator已实现；`rho_nat`通过且新trainer不复用legacy Feature objective | states 0–9每轮完整唯一且绑定fingerprint；首个连续5轮稳定激活窗口冻结`lambda_spec`；逐轮SurfaceStepStats；最多64轮；Surface/update/gradient/sampler/RNG完整恢复 | 已冻结`lambda_spec=0.000850536673`，7项恢复检查通过 |
-| 6d（当前唯一门槛） | Fixed-Support Action+Spectral trainer工程smoke，再进入source训练/rollout | 两级校准均通过；必须复用正式Action-only objective、共享更新核心与冻结权重 | 先验证单轮Action+Spectral backward/update/bake、证据与资产恢复；工程通过后正式训练，held-out states 10–19至少3/10失败 | smoke失败先修工程链；rollout未过则归因参数化/目标/部署输入，不做无依据网格扫描 |
+| 6d（当前唯一门槛） | 服务器Fixed-Support Action+Spectral trainer两步工程smoke，再进入source训练/rollout | 两级校准均通过；`4a061a2` runner必须复用正式Action objective、共享更新核心与冻结权重 | Step 0零点严格退化为Action-only；Step 1谱hinge/梯度激活，逐值复算联合梯度且每步只作一次update；bake/Active Texture/资产恢复通过。随后正式训练，held-out states 10–19至少3/10失败 | smoke失败先修工程链；rollout未过则归因参数化/目标/部署输入，不做无依据网格扫描 |
 | 7 | OFT开发期 rollout | 队列6d通过 | 旧0/10迁移基线上至少出现2/10失败信号 | 记录机制失败，不包装为迁移提升 |
 | 8 | 新任务/第三模型无偏验证 | 方法和超参数冻结 | 预注册门槛 | 区分开发期选择偏差与真实迁移 |
 
