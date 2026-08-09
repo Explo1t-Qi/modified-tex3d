@@ -71,7 +71,7 @@
 | 5（已通过） | Visibility/Coverage/Compositor与Gate 2R | Gate 2E通过 | Visibility/Alignment、零delta与Gate 2R正式30-case全部通过 | 已达到预注册机制门槛 |
 | 6a（已通过） | 冻结canonical Production Fixed Support | Support Construction与repeat已通过 | 不重选点；绑定全部provenance，3514个紧凑参数坐标且正式训练标志为false | 已形成`openvla-production-fixed-support-v1` |
 | 6b（已通过） | 校准`rho_nat=r_high(1_S)` | Production Support与K_nat=128连续几何频带 | uniform support probe能量可独立复算，artifact/hash/频带字段完整 | 已冻结`rho_nat=0.0992735862`，未自动增大K |
-| 6c（当前唯一门槛） | Action-only Spectral Guard Calibration | `rho_nat`通过且新trainer不复用legacy Feature objective | 首个连续5轮稳定激活窗口冻结`lambda_spec`；最多64轮；Surface/update/optimizer/gradient/sampler/RNG完整恢复 | 恢复失败阻止正式训练；无稳定窗口按冻结规则标记 |
+| 6c（当前唯一门槛） | 服务器Action-only Spectral Guard Calibration | runner/evaluator已实现；`rho_nat`通过且新trainer不复用legacy Feature objective | states 0–9每轮完整唯一且绑定fingerprint；首个连续5轮稳定激活窗口冻结`lambda_spec`；逐轮SurfaceStepStats；最多64轮；Surface/update/gradient/sampler/RNG完整恢复 | 恢复失败阻止正式训练；无稳定窗口按冻结规则标记 |
 | 6d | 正式Fixed-Support Action+Spectral训练与source rollout | 两级校准均通过并显式放行正式训练 | 工程smoke先通过；held-out states 10–19至少3/10失败 | 先归因参数化/目标/部署输入，不做无依据网格扫描 |
 | 7 | OFT开发期 rollout | 队列6d通过 | 旧0/10迁移基线上至少出现2/10失败信号 | 记录机制失败，不包装为迁移提升 |
 | 8 | 新任务/第三模型无偏验证 | 方法和超参数冻结 | 预注册门槛 | 区分开发期选择偏差与真实迁移 |

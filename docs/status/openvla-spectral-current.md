@@ -19,6 +19,8 @@ Production Fixed Support冻结基线：
 `89d3bd8963805198f94f6e37ffe9c7d9b38fa3ef`
 谱自然性`rho_nat`校准基线：
 `2a684942a79c9ddf1d436f47bc579dc79aaf89d4`
+Spectral Guard GPU Calibration runner实现基线：
+`839f5ec78f7eaae094989c394ddba01992e4a243`
 
 本文是 OpenVLA 谱纹理研究的**当前状态入口**。新一轮开发应先读本文，再按需
 进入专题文档；不要从长篇实验时间线推测当前优先级。历史实验索引见
@@ -107,9 +109,10 @@ Seed Gradient Audit、Seed Score的归一化/跨state聚合/mesh平滑与repeat�
 以及Support Construction/coverage完整artifact契约现均已通过。canonical
 candidate已经冻结为独立Production Fixed Support，renderer只允许通过完整
 mesh/mapping/provenance hash加载其3514个紧凑参数坐标。uniform Support probe
-的`rho_nat`也已通过纯CPU校准与独立复算。当前唯一下一门槛是实现新Action-only
-trainer并执行最多64轮的Spectral Guard Calibration，以冻结`lambda_spec`并
-验证完整状态恢复。在该门槛通过前，正式训练和held-out rollout均不得开始。
+的`rho_nat`也已通过纯CPU校准与独立复算。新Action-only Spectral Guard runner
+及独立CPU evaluator已经实现；当前唯一下一门槛是在服务器执行真实states 0--9
+GPU calibration，以冻结`lambda_spec`并验证完整状态恢复。在该门槛通过前，
+正式训练和held-out rollout均不得开始。
 
 真实 Spatial checkpoint 的 CPU 差分记录为 fused pixel values MAE/L∞=`0/0`，
 输入梯度有限且非零；文档记录当时全量 CPU 回归为 `113 passed, 1 skipped`。
@@ -815,6 +818,23 @@ artifact记录全部129个特征值及mesh/mass/basis/Support semantic hash，�
 `rho_nat_calibrated=true`、`lambda_spec_calibrated=false`、
 `formal_training_allowed=false`。这只通过自然性阈值的数值/证据门槛，不提供
 源攻击或迁移效果证据，也不允许跳过Action-only Spectral Guard Calibration。
+
+commit `839f5ec78f7eaae094989c394ddba01992e4a243` 已实现真实GPU
+Spectral Guard runner与独立CPU bundle evaluator，但尚无服务器数值结果。
+runner一次性冻结states 0--9的initial/static-scene fingerprint、MuJoCo
+front-most instance alpha、全部共享纹理实例变换及clean teacher-forced token；
+每轮严格按0--9逐state构图和释放，再对10个Action loss/紧凑梯度作算术平均。
+每个iteration同时绑定完整、唯一且各一次的state ID/fingerprint，并另存逐state
+margin/hinge、梯度L2/SHA与饱和统计。Feature、wrist、OFT及legacy
+Action+Feature optimizer均被进程级护栏排除。
+
+校准更新与后续正式trainer共同持有唯一
+`FixedSupportActionTrainerCore`，由它调用既有surface-normalized step和
+Surface-L∞ projection；runner不得复制更新公式。逐轮权威长表保存配置
+`surface_step`和全部`SurfaceStepStats`。校准事务覆盖紧凑Surface参数、共享更新
+核心、all-state provider/sampler、gradient cache及Python/NumPy/Torch CPU/CUDA
+RNG；任一恢复验证失败即不生成可接受结果。当前这些只是实现与CPU契约证据，
+`lambda_spec`仍未冻结，正式训练仍未放行。
 
 已冻结的第一项设计决定：谱方法在新候选中作为作用于最终 Surface Delta 的软
 自然性正则，只惩罚高频谱能量；它不再把扰动硬限制在前 K 个谱基中，也不是与
