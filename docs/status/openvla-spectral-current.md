@@ -15,6 +15,8 @@ Seed Score与repeat稳定性正式证据基线：
 `870aec9933913908edbc931090a9c8d5346ec5e5`
 Support Construction与support-repeat正式证据基线：
 `144cd002aa39586f4a69712e3647fe9cb83ce6e9`
+Production Fixed Support冻结基线：
+`89d3bd8963805198f94f6e37ffe9c7d9b38fa3ef`
 
 本文是 OpenVLA 谱纹理研究的**当前状态入口**。新一轮开发应先读本文，再按需
 进入专题文档；不要从长篇实验时间线推测当前优先级。历史实验索引见
@@ -44,8 +46,8 @@ Support Construction与support-repeat正式证据基线：
 | Visibility/Coverage/Compositor | Gate 2R与全部前置Gate已通过 | 20/20对齐证据、10/10零delta states与70/70 action token通过；2R正式30/30 valid且全部cosine为正 |
 | Action Objective与Dense Seed Gradient | 已通过 | 新Action hinge语义、10个完整`G_s [21263,3]`及全部artifact/hash由服务器运行并在WSL独立复核 |
 | Seed Score/density/smoothing | 已通过 | corrected canonical/repeat artifacts均从raw `G_s`独立复算；连续场与高分区域repeat稳定 |
-| Support Construction/coverage | 已通过，尚未冻结生产Support | canonical/repeat均以`r=1`、seed 829通过；Support Jaccard=`0.997443`，完整artifact可独立重算 |
-| BPDA 下源攻击基线 | 未建立 | canonical Support candidate已满足固定面积与Primary Gate；生产Fixed Support仍需显式冻结并接入训练 |
+| Support Construction/coverage | 已通过，Production Support已冻结 | canonical/repeat均以`r=1`、seed 829通过；冻结3514个顶点/10542个RGB标量并绑定全部上游hash |
+| BPDA 下源攻击基线 | 未建立 | Fixed-Support renderer加载接线已完成；新trainer与`rho_nat/lambda_spec`校准未完成，正式训练仍被入口阻止 |
 | BPDA 下 OFT 迁移信号 | 未开始 | 新源候选未过门槛前不得进入 OFT |
 | 无偏跨模型迁移与鲁棒性提升 | 未开始 | 需方法冻结后的新任务/第三模型与后续防御实验 |
 
@@ -99,10 +101,12 @@ Visibility/Alignment audit、零 Surface Delta compositor Gate与Gate 2R均已�
 权威Gate 2R bundle来自同一commit `0b0b86a`的正式30-case。Fixed-Support
 Texture Parameterization纯计算契约、Action Objective GPU Audit、完整Dense
 Seed Gradient Audit、Seed Score的归一化/跨state聚合/mesh平滑与repeat稳定性，
-以及Support Construction/coverage完整artifact契约现均已通过。当前唯一下一
-门槛是显式决定是否把已接受的canonical candidate冻结为生产Fixed Vertex
-Support，并在冻结artifact后接入训练；现有audit仍明确
-`fixed_support_frozen=false`，不得直接当作训练输入。
+以及Support Construction/coverage完整artifact契约现均已通过。canonical
+candidate已经冻结为独立Production Fixed Support，renderer只允许通过完整
+mesh/mapping/provenance hash加载其3514个紧凑参数坐标。当前唯一下一科学门槛是
+用`delta_probe=1_S`校准`rho_nat`；随后才允许执行最多64轮的Action-only
+Spectral Guard Calibration以冻结`lambda_spec`并验证完整状态恢复。两级校准
+通过前，正式训练和held-out rollout均不得开始。
 
 真实 Spatial checkpoint 的 CPU 差分记录为 fused pixel values MAE/L∞=`0/0`，
 输入梯度有限且非零；文档记录当时全量 CPU 回归为 `113 passed, 1 skipped`。
@@ -759,6 +763,33 @@ coverage为`0.3592754`。两套selected Support交集/并集为3511/3520，Jacca
 再把该artifact接到已有Fixed-Support Texture Parameterization。首次因NumPy
 `bool_`无法写JSON而中止的`support_construction_canonical_20732ee_...`目录已
 改名保留为失败诊断，不进入正式证据。
+
+commit `89d3bd8963805198f94f6e37ffe9c7d9b38fa3ef` 随后新增
+`openvla-production-fixed-support-v1`冻结契约；它不重新选点，只从上述已接受的
+canonical candidate形成升序几何顶点ID的不可变紧凑坐标。正式本地冻结目录为
+`production_fixed_support_89d3bd8_20260809`，独立验收`gate_pass=true`：总几何
+顶点21263，Support顶点3514，可学习RGB标量10542，seed 829，实际面积比例
+`0.1000002119`，Primary/wrist最低effective coverage分别为
+`0.3592615/0.1556022`。artifact、manifest和Support mask语义SHA-256分别为
+`686a2becc3688b0cb6bdafef840d0920fb51e584dc860a0c95733b935d22fb6d`、
+`39cc70f58bf777919ef069d3defb3b1ba324ee072b215919a928f3c0bf422829`和
+`719a33c9b91fbeda0ef3bd506b429c157b03bde7a03406cf2b96461167eb4322`。
+
+该artifact同时绑定canonical manifest/candidate/coverage、Seed Score、Visibility、
+OBJ mesh数组与文件、renderer faces及render-to-geometry mapping哈希。冻结阶段
+强制声明`production_support_constructed=true`、`fixed_support_frozen=true`、
+`rho_nat_calibrated=false`、`lambda_spec_calibrated=false`和
+`formal_training_allowed=false`；loader对mesh或mapping不匹配直接失败。renderer
+接线只把3514个紧凑RGB参数scatter回完整`[21263,3]` Surface Delta，Support外
+严格为零。主入口仍显式拒绝`fixed_support`正式训练，避免现有legacy
+Action+Feature trainer绕过新Action-only目标与两级谱校准。
+
+因此后续顺序正式固定为：Production Support冻结与参数化接线（当前阶段）→
+`rho_nat=r_high(1_S)`校准→最多64轮Action-only Spectral Guard Calibration、
+`lambda_spec`冻结及完整状态恢复→正式Action+Spectral训练→held-out source
+states 10--19 rollout。单步backward/update/bake可以提前作为工程smoke，但只有
+走新Action-only+Spectral链路时才允许执行；未校准纹理不得进入rollout或反向
+影响Support与超参数决策。
 
 已冻结的第一项设计决定：谱方法在新候选中作为作用于最终 Surface Delta 的软
 自然性正则，只惩罚高频谱能量；它不再把扰动硬限制在前 K 个谱基中，也不是与

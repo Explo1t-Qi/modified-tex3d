@@ -47,6 +47,7 @@ from openvla_attack.configuration import (
     resolve_feature_objective,
     resolve_feature_view_mode,
     resolve_texture_parameterization,
+    validate_fixed_support_config,
     validate_gradient_norm_protection,
     validate_source_action_response_audit,
 )
@@ -92,6 +93,15 @@ def eval_libero(cfg: GenerateConfig) -> None:
     feature_view_mode: FeatureViewModeKind = resolve_feature_view_mode(
         cfg.feature_view_mode
     )
+    validate_fixed_support_config(
+        cfg,
+        texture_parameterization=texture_parameterization,
+    )
+    if texture_parameterization == "fixed_support":
+        raise ValueError(
+            "Production Fixed Support 已可加载，但 rho_nat、lambda_spec 与新 "
+            "Action-only trainer 尚未全部校准/接入；当前入口禁止正式训练"
+        )
     if (
         feature_view_mode == "primary_wrist"
         and feature_objective != "siglip_patch"
@@ -219,6 +229,7 @@ def eval_libero(cfg: GenerateConfig) -> None:
             scale_xyz=scale_xyz,
             epsilon=cfg.attack_epsilon,
             texture_parameterization=texture_parameterization,
+            fixed_support_path=cfg.fixed_support_path,
             spectral_basis_path=cfg.spectral_basis_path,
             spectral_basis_count=cfg.spectral_basis_count,
         ).to(model.device)

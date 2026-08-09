@@ -10,6 +10,7 @@ from openvla.experiments.robot.libero.openvla_attack.configuration import (
     resolve_feature_objective,
     resolve_feature_view_mode,
     resolve_texture_parameterization,
+    validate_fixed_support_config,
     validate_gradient_norm_protection,
     validate_source_action_response_audit,
 )
@@ -31,6 +32,46 @@ def test_draccus_decodes_spectral_parameterization_from_cli_string() -> None:
 def test_runtime_boundary_rejects_unknown_parameterization() -> None:
     with pytest.raises(ValueError, match="未知纹理参数化"):
         resolve_texture_parameterization("frequency_magic")
+
+
+def test_draccus_decodes_frozen_support_path_and_runtime_narrows_kind() -> None:
+    config = decoding.decode(
+        GenerateConfig,
+        {
+            "texture_parameterization": "fixed_support",
+            "fixed_support_path": "/tmp/production_fixed_support.npz",
+        },
+    )
+
+    assert resolve_texture_parameterization(
+        config.texture_parameterization
+    ) == "fixed_support"
+    validate_fixed_support_config(
+        config,
+        texture_parameterization="fixed_support",
+    )
+
+
+def test_fixed_support_config_requires_exclusive_artifact_path() -> None:
+    with pytest.raises(ValueError, match="必须提供"):
+        validate_fixed_support_config(
+            GenerateConfig(texture_parameterization="fixed_support"),
+            texture_parameterization="fixed_support",
+        )
+    with pytest.raises(ValueError, match="只能与"):
+        validate_fixed_support_config(
+            GenerateConfig(fixed_support_path="/tmp/support.npz"),
+            texture_parameterization="legacy_vertex",
+        )
+    with pytest.raises(ValueError, match="不能把 spectral_basis_path"):
+        validate_fixed_support_config(
+            GenerateConfig(
+                texture_parameterization="fixed_support",
+                fixed_support_path="/tmp/support.npz",
+                spectral_basis_path="/tmp/basis.npz",
+            ),
+            texture_parameterization="fixed_support",
+        )
 
 
 def test_draccus_decodes_and_runtime_narrows_siglip_objective() -> None:

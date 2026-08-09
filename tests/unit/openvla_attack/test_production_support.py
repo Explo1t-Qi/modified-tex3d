@@ -171,3 +171,29 @@ def test_freeze_runner_does_not_import_training_or_reconstruct_support() -> None
     assert "get_model" not in calls
     assert "backward" not in calls
     assert "formal_training_allowed=False" in source
+
+
+def test_attack_entry_blocks_fixed_support_before_spectral_calibration() -> None:
+    """现有legacy trainer不得提前消费已冻结但未校准的Support。"""
+
+    path = (
+        Path(__file__).resolve().parents[3]
+        / "openvla/experiments/robot/libero/attack_openvla.py"
+    )
+    source = path.read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    fixed_support_guards = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.If)
+        and ast.unparse(node.test)
+        == "texture_parameterization == 'fixed_support'"
+    ]
+
+    assert fixed_support_guards
+    assert any(
+        isinstance(node, ast.Raise)
+        for guard in fixed_support_guards
+        for node in ast.walk(guard)
+    )
+    assert "Action-only trainer" in source

@@ -23,7 +23,19 @@ from openvla_attack.renderer import (
     RendererEvidence,
     resolve_position_offset,
 )
-from openvla_attack.spectral_geometry import save_spectral_basis
+from openvla_attack.production_support import (
+    PRODUCTION_SUPPORT_SCHEMA_VERSION,
+    FrozenProductionSupport,
+    ProductionSupportProvenance,
+    array_sha256,
+    file_sha256,
+    write_production_support_artifact,
+)
+from openvla_attack.spectral_geometry import (
+    load_obj_geometry,
+    mesh_array_sha256,
+    save_spectral_basis,
+)
 
 
 def test_renderer_module_can_be_imported_without_creating_cuda_context() -> None:
@@ -221,6 +233,119 @@ def test_geometry_vertex_renderer_builds_surface_parameterization(
     torch.testing.assert_close(
         renderer.get_render_to_geometry_mapping(),
         torch.arange(3),
+    )
+
+
+def test_fixed_support_renderer_consumes_frozen_compact_coordinates(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    """Renderer 只加载冻结 Support，并把紧凑参数散射回完整几何顶点。"""
+
+    mesh_path = tmp_path / "triangle.obj"
+    mesh_path.write_text(
+        "\n".join(
+            [
+                "v 0 0 0",
+                "v 1 0 0",
+                "v 0 1 0",
+                "f 1 2 3",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    geometry_vertices, geometry_faces = load_obj_geometry(mesh_path)
+    support_mask = np.asarray([True, False, True], dtype=np.bool_)
+    render_to_geometry = np.arange(3, dtype=np.int64)
+    support = FrozenProductionSupport(
+        schema_version=PRODUCTION_SUPPORT_SCHEMA_VERSION,
+        provenance=ProductionSupportProvenance(
+            code_commit="1" * 40,
+            object_name="akita_black_bowl",
+            source_support_manifest_sha256="2" * 64,
+            source_candidate_artifact_sha256="3" * 64,
+            source_coverage_artifact_sha256="4" * 64,
+            seed_score_manifest_sha256="5" * 64,
+            seed_score_artifact_sha256="6" * 64,
+            visibility_manifest_sha256="7" * 64,
+            visibility_metrics_sha256="8" * 64,
+            mesh_file_sha256=file_sha256(mesh_path),
+            mesh_array_sha256=mesh_array_sha256(
+                geometry_vertices,
+                geometry_faces,
+            ),
+            renderer_faces_sha256=array_sha256(
+                geometry_faces.astype(np.int32)
+            ),
+            render_to_geometry_sha256=array_sha256(render_to_geometry),
+        ),
+        selected_candidate_index=0,
+        num_geometry_vertices=3,
+        support_mask=support_mask,
+        support_vertex_indices=np.asarray([0, 2], dtype=np.int64),
+        support_mask_sha256=array_sha256(support_mask),
+        compact_coordinate_order="ascending_geometry_vertex_id",
+        num_regions=1,
+        seed_vertex_ids=(0,),
+        total_surface_area=10.0,
+        target_area_fraction=0.1,
+        target_mass=1.0,
+        actual_mass=1.0,
+        actual_area_fraction=0.1,
+        primary_coverage_min_threshold=0.2,
+        primary_state_ids=(0,),
+        primary_statuses=("valid",),
+        primary_source_coverage=(0.3,),
+        primary_effective_coverage=(0.3,),
+        wrist_state_ids=(),
+        wrist_statuses=(),
+        wrist_source_coverage=(),
+        wrist_effective_coverage=(),
+        naturalness_k_nonconstant=128,
+        production_support_constructed=True,
+        fixed_support_frozen=True,
+        rho_nat_calibrated=False,
+        lambda_spec_calibrated=False,
+        formal_training_allowed=False,
+    )
+    support_path = tmp_path / "production_fixed_support.npz"
+    write_production_support_artifact(support_path, support)
+    monkeypatch.setattr(
+        "openvla_attack.renderer.dr.RasterizeCudaContext",
+        lambda: object(),
+    )
+    monkeypatch.setattr(
+        DifferentiableRenderer,
+        "_sample_uv_texture_at_vertices",
+        lambda renderer: torch.zeros(
+            (renderer.num_vertices, 3),
+            dtype=torch.float32,
+            device=renderer.device,
+        ),
+    )
+
+    renderer = DifferentiableRenderer(
+        mesh_path=mesh_path,
+        device=torch.device("cpu"),
+        texture_parameterization="fixed_support",
+        fixed_support_path=support_path,
+    )
+
+    assert renderer.get_texture_parameterization_name() == "fixed_support"
+    assert renderer.production_support is not None
+    assert renderer.production_support.support_mask_sha256 == array_sha256(
+        support_mask
+    )
+    assert renderer.get_texture_param().shape == (2, 3)
+    with torch.no_grad():
+        renderer.get_texture_param()[0] = torch.tensor([0.2, -0.1, 0.3])
+    geometry_delta = renderer.get_surface_delta()
+    assert geometry_delta.shape == (3, 3)
+    torch.testing.assert_close(
+        geometry_delta[1],
+        torch.zeros(3),
+        rtol=0.0,
+        atol=0.0,
     )
 
 

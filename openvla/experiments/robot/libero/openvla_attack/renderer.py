@@ -39,13 +39,21 @@ from numpy.typing import NDArray
 from PIL import Image
 
 from .configuration import TextureParameterizationKind
+from .production_support import (
+    FrozenProductionSupport,
+    array_sha256,
+    file_sha256,
+    load_production_support_artifact,
+)
 from .spectral_geometry import (
     build_render_to_geometry_map,
     load_obj_geometry,
     load_spectral_basis,
+    mesh_array_sha256,
     validate_basis_geometry,
 )
 from .texture_parameterization import (
+    FixedSupportTextureParameterization,
     GeometryVertexTextureParameterization,
     SpectralTextureParameterization,
     SurfaceStepStats,
@@ -141,7 +149,8 @@ class DifferentiableRenderer(nn.Module):
     """在保留原始 UV 的前提下施加可学习曲面颜色增量。
 
     ``legacy_vertex`` 保留原实现，优化 seam-split 渲染顶点的无界
-    ``adv_noise [V, 3]``。``geometry_vertex`` 与 ``spectral`` 共享新的
+    ``adv_noise [V, 3]``。``geometry_vertex``、``fixed_support`` 与
+    ``spectral`` 共享新的
     **Surface Delta** 路径：先在原始 UV texture 上采样 clean color，再把
     ``render_delta [V, 3]`` 插值到像素并相加。谱方法的唯一可学习参数为
     ``coefficients [K, 3]``。
@@ -158,6 +167,7 @@ class DifferentiableRenderer(nn.Module):
         texture_parameterization: TextureParameterizationKind = (
             "legacy_vertex"
         ),
+        fixed_support_path: Optional[PathLike] = None,
         spectral_basis_path: Optional[PathLike] = None,
         spectral_basis_count: int = 128,
     ) -> None:
@@ -174,7 +184,9 @@ class DifferentiableRenderer(nn.Module):
             epsilon: 实际 **Surface Delta** 的最大逐通道颜色扰动幅度。
             texture_parameterization: ``legacy_vertex`` 保留旧行为；
                 ``geometry_vertex`` 为公平的高维 UV 保真基线；
+                ``fixed_support`` 消费不可变 Production Support 的紧凑顶点参数；
                 ``spectral`` 优化低维谱系数。
+            fixed_support_path: ``fixed_support`` 模式必需的冻结 NPZ。
             spectral_basis_path: ``spectral`` 模式必需的 NPZ 谱基产物。
             spectral_basis_count: 从产物中取前 K 个非恒定低频模态。
         """
@@ -327,8 +339,10 @@ class DifferentiableRenderer(nn.Module):
         )
         self.surface_parameterization: Optional[
             GeometryVertexTextureParameterization
+            | FixedSupportTextureParameterization
             | SpectralTextureParameterization
         ] = None
+        self.production_support: Optional[FrozenProductionSupport] = None
         # spectral_eigenvalues: float [K]。仅 spectral adapter 设置；作为
         # buffer 随 module device 迁移，并与 basis 列严格同序。
         self.spectral_eigenvalues: Optional[Tensor]
@@ -352,6 +366,51 @@ class DifferentiableRenderer(nn.Module):
                     GeometryVertexTextureParameterization(
                         render_to_geometry,
                         num_geometry_vertices=len(geometry_vertices),
+                        epsilon=epsilon,
+                        device=device,
+                    )
+                )
+            elif texture_parameterization == "fixed_support":
+                if fixed_support_path is None:
+                    raise ValueError(
+                        "fixed_support 参数化必须提供 fixed_support_path"
+                    )
+                renderer_faces_sha256 = array_sha256(
+                    render_faces.astype(np.int32)
+                )
+                mapping_sha256 = array_sha256(
+                    render_to_geometry.astype(np.int64)
+                )
+                production_support = load_production_support_artifact(
+                    fixed_support_path,
+                    expected_mesh_file_sha256=file_sha256(mesh_path),
+                    expected_mesh_array_sha256=mesh_array_sha256(
+                        geometry_vertices,
+                        geometry_faces,
+                    ),
+                    expected_render_to_geometry_sha256=mapping_sha256,
+                )
+                if (
+                    production_support.provenance.renderer_faces_sha256
+                    != renderer_faces_sha256
+                ):
+                    raise ValueError(
+                        "Production Support renderer faces SHA-256 不匹配"
+                    )
+                if production_support.num_geometry_vertices != len(
+                    geometry_vertices
+                ):
+                    raise ValueError(
+                        "Production Support geometry vertex count 不匹配"
+                    )
+                self.production_support = production_support
+                self.surface_parameterization = (
+                    FixedSupportTextureParameterization(
+                        render_to_geometry,
+                        num_geometry_vertices=len(geometry_vertices),
+                        support_vertex_indices=(
+                            production_support.support_vertex_indices
+                        ),
                         epsilon=epsilon,
                         device=device,
                     )

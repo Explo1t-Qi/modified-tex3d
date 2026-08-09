@@ -13,6 +13,7 @@ from typing import Literal, Optional, TypeAlias, Union, cast
 TextureParameterizationKind: TypeAlias = Literal[
     "legacy_vertex",
     "geometry_vertex",
+    "fixed_support",
     "spectral",
 ]
 FeatureObjectiveKind: TypeAlias = Literal[
@@ -24,7 +25,7 @@ FeatureViewModeKind: TypeAlias = Literal[
     "primary_wrist",
 ]
 SUPPORTED_TEXTURE_PARAMETERIZATIONS: frozenset[str] = frozenset(
-    {"legacy_vertex", "geometry_vertex", "spectral"}
+    {"legacy_vertex", "geometry_vertex", "fixed_support", "spectral"}
 )
 SUPPORTED_FEATURE_OBJECTIVES: frozenset[str] = frozenset(
     {"last_hidden", "siglip_patch"}
@@ -107,6 +108,9 @@ class GenerateConfig:
     # Draccus 0.x 不支持直接解码 typing.Literal；eval_libero 会立即校验并收窄
     # 为 TextureParameterizationKind。
     texture_parameterization: str = "legacy_vertex"
+    # ``fixed_support`` 唯一允许消费的不可变 Production Support NPZ。该路径
+    # 只冻结参数空间；rho_nat/lambda_spec 校准通过前正式训练仍被入口阻止。
+    fixed_support_path: Optional[str] = None
     spectral_basis_path: Optional[str] = None
     spectral_basis_count: int = 128
     num_frames_to_attack: int = 20
@@ -165,6 +169,29 @@ class GenerateConfig:
     seed: int = 7
     run_id_note: Optional[str] = None
     unnorm_key: Optional[str] = None
+
+
+def validate_fixed_support_config(
+    cfg: GenerateConfig,
+    *,
+    texture_parameterization: TextureParameterizationKind,
+) -> None:
+    """保护 Production Support 路径与其他参数化模式的互斥边界。"""
+
+    if texture_parameterization == "fixed_support":
+        if cfg.fixed_support_path is None:
+            raise ValueError(
+                "fixed_support 参数化必须提供 fixed_support_path"
+            )
+        if cfg.spectral_basis_path is not None:
+            raise ValueError(
+                "fixed_support 参数化不能把 spectral_basis_path 当作可学习参数空间"
+            )
+        return
+    if cfg.fixed_support_path is not None:
+        raise ValueError(
+            "fixed_support_path 只能与 texture_parameterization='fixed_support' 同用"
+        )
 
 
 def validate_gradient_norm_protection(
