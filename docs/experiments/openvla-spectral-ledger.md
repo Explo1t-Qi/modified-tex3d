@@ -51,6 +51,7 @@
 | 2026-08-08 | Gate 2R state0 RGB smoke | 3/3响应充分且cosine=`0.566–0.656`；relative L2=`0.760–0.840` | OFT不参与；Action margin仅记录 | 最低同向门槛通过；surrogate不是高保真幅值模型，完成scatter可读性修正后进入正式30-case | [当前状态](../status/openvla-spectral-current.md) |
 | 2026-08-09 | Gate 2R states0–9首次正式尝试 | states0–8完成27/30 probe；state9在bake前触发generation/teacher argmax严格断言 | OFT不参与；fresh state9独立复现 | 不得把部分artifact计为Gate结果；先记录两路logit/margin定位cache数值分叉或对齐错误 | [当前状态](../status/openvla-spectral-current.md) |
 | 2026-08-09 | Gate 2R state9 action分叉诊断 | 仅index1分叉；generation class125 margin=`0.125`，teacher class125与120精确并列、margin=`0.0`；其余6/7一致 | OFT不参与；13个服务器定向测试通过 | 排除输入变异与系统性causal错位；严格检查改为clean class属于argmax集合，精确tie记录、负margin仍失败 | [当前状态](../status/openvla-spectral-current.md) |
+| 2026-08-09 | Gate 2R state9 exact-tie fix smoke | R/G/B cosine=`0.6238/0.5813/0.6510`，3/3 valid；24文件、3个NPZ与21个artifact独立复核无失败 | OFT不参与；teacher tie在manifest显式保留 | exact-tie修正通过单点验收；不与旧commit的27行拼接，待同commit正式30-case | [当前状态](../status/openvla-spectral-current.md) |
 
 ## 当前待执行队列
 
@@ -60,7 +61,7 @@
 | 2（已通过） | Gate 2C center-crop forward/VJP | 10个冻结CPU case | 全部case通过正式relative L2/cosine门槛 | 已达到数值门槛 |
 | 3（已通过） | Gate 1D deployment-path forward equivalence | 共享Policy Canvas与Effective View实现 | 逐阶段RGB、processor tensor、action sequence/token完全一致 | 已达到零误差门槛 |
 | 4（已通过） | Gate 2E backward/update/bake smoke | Gate 1D与2C通过 | 梯度有限非零、参数更新、Surface/asset约束通过 | 已达到全部工程门槛 |
-| 5（进行中） | Visibility/Coverage/Compositor与Gate 2R | Gate 2E通过 | Visibility/Alignment、零delta和Gate 2R state0 smoke已通过；正式运行在state9一致性断言暂停 | 只运行fresh state9诊断；停止正式30-case与Seed Audit |
+| 5（进行中） | Visibility/Coverage/Compositor与Gate 2R | Gate 2E通过 | Visibility/Alignment、零delta、Gate 2R state0和exact-tie修正后state9均已通过 | 下一步只运行同commit states0–9正式30-case；继续停止Seed Audit |
 | 6 | 谱自然性约束 + Fixed Vertex Support源候选 | 全部基础Gate通过 | held-out states 10–19至少3/10失败 | 先归因参数化/目标/部署输入，不做无依据网格扫描 |
 | 7 | OFT开发期 rollout | 队列6通过 | 旧0/10迁移基线上至少出现2/10失败信号 | 记录机制失败，不包装为迁移提升 |
 | 8 | 新任务/第三模型无偏验证 | 方法和超参数冻结 | 预注册门槛 | 区分开发期选择偏差与真实迁移 |

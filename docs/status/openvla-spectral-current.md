@@ -5,6 +5,8 @@
 `1884eb7500283eea9f3bcf8793a4410cd1396b87`
 服务器 Gate 2E 复核基线：
 `de880cee6ddabd827bfcb2c35340f0eec09fa687`
+Gate 2R exact-tie 语义修正基线：
+`cf4676dded3a0887a57904d21ea9119f06031b85`
 
 本文是 OpenVLA 谱纹理研究的**当前状态入口**。新一轮开发应先读本文，再按需
 进入专题文档；不要从长篇实验时间线推测当前优先级。历史实验索引见
@@ -31,7 +33,7 @@
 | 双视角与动态范数保护 | 机制已实现，源门槛未通过 | 两者均未把 held-out 源攻击恢复到预设的3/10失败 |
 | OpenVLA processor 预处理正确性 | Gate 1P 已通过 | states 0–9 pixel MAE/L∞=`0/0`，10/10序列和70/70 token一致 |
 | Deployment Effective View 与训练反传 | Gate 1D、2C、2E已通过 | 完整forward零误差；crop VJP对齐；五级梯度、单轮更新、bake/rollout/资产恢复通过 |
-| Visibility/Coverage/Compositor | Visibility/Alignment与Compositor零delta均已通过；Gate 2R state0 smoke通过、正式30-case因state 9 action一致性断言暂停 | 20/20对齐证据、10/10零delta states与70/70 action token通过；2R已完成states 0–8的27/30 probe，fresh state 9复现同一故障 |
+| Visibility/Coverage/Compositor | Visibility/Alignment与Compositor零delta均已通过；Gate 2R state0与state9单点均通过，待同commit正式30-case | 20/20对齐证据、10/10零delta states与70/70 action token通过；2R state9 exact tie显式记录、3/3 probe同向 |
 | BPDA 下源攻击基线 | 未建立 | Gate 2R与新参数化契约通过后才运行首个新候选 |
 | BPDA 下 OFT 迁移信号 | 未开始 | 新源候选未过门槛前不得进入 OFT |
 | 无偏跨模型迁移与鲁棒性提升 | 未开始 | 需方法冻结后的新任务/第三模型与后续防御实验 |
@@ -82,9 +84,9 @@ Gate 1D 通过后，commit `0399c8f` 已让 collector 与 Attack Training 端到
 证明梯度穿过 center-crop 与 processor 两层 BPDA 后能更新 Surface Delta、完成
 bake/rollout 并恢复资产，完整证据见下文。当前阻断项已转为真实
 Visibility/Alignment audit 与零 Surface Delta compositor Gate 已通过；当前只剩
-Gate 2R 的state 9 generation/teacher-forward分叉诊断。在根因确认
-且修正第三十二项严格一致性的tie-break语义后，重跑fresh state 9；
-正式30-case与Support Seed Audit 暂不继续。
+Gate 2R 在exact-tie修正后的同commit states 0–9正式30-case。新bundle完整
+通过前，不得把`696ee68`的states 0–8部分产物与`cf4676d`的state 9
+拼接成正式证据，Support Seed Audit 仍不继续。
 
 真实 Spatial checkpoint 的 CPU 差分记录为 fused pixel values MAE/L∞=`0/0`，
 输入梯度有限且非零；文档记录当时全量 CPU 回归为 `113 passed, 1 skipped`。
@@ -513,8 +515,30 @@ BF16/cache generation与全序列teacher forward的数值路径差异，加上�
 严格一致性检查因此修正为集合语义：clean generated class必须属于
 teacher-forward argmax集合，等价于冻结clean-class margin `m_a >= 0`。
 `m_a == 0`只接受精确并列并显式记录state/位置，不引入人为容差；
-任何`m_a < 0`仍作为输入/对齐失败严格中止。下一步只重跑fresh
-state 9验证这一修正能越过clean阶段并完成三个probe。
+任何`m_a < 0`仍作为输入/对齐失败严格中止。随后以fresh state 9验证
+这一修正能越过clean阶段并完成三个probe。
+
+commit `cf4676dded3a0887a57904d21ea9119f06031b85` 的fresh state 9已完整
+通过：R/G/B surrogate RMS为`0.00315460/0.00317653/0.00318386`，bake RMS
+为`0.00454027/0.00440261/0.00432564`，cosine为
+`0.623784/0.581268/0.651004`，3/3均为`valid`且通过预注册最低门槛。
+relative L2为`0.784816/0.825709/0.763823`，sign consistency为
+`0.354368/0.354156/0.413715`，继续支持“方向同向但非高保真幅值模型”的
+state0判断。exact tie在manifest中保留为state 9/action index 1，负margin
+位置为空。
+
+WSL已独立核对24个文件，在`allow_pickle=False`下加载3个NPZ，逐值复算
+全部response指标与Action margins，并验证21个artifact hash，失败项为空。
+pytest/log/manifest/JSONL/CSV SHA-256分别为：
+
+- `ea8cfbad58e22a948555e15c5785f92d88b73eddaf533ee059eab6946a2f343b`；
+- `ea2e0d6b5adeb8b9ad2aee23da75fc09094d6e9883d0f6454d86114ae1074d8a`；
+- `08c6243d8084e003181cf6f7e3b3996caa5af1b246ebc7ee56d6b2abb87b0c33`；
+- `59d8975b9fb452e4457cdc4ab26d334d1f1158494f8b627ea464ed854ab3f2fc`；
+- `fbfa65c32516c1cd22984eaffd21fca671a5c507d710b8c5eed07cee49637b57`。
+
+该state 9 bundle只证明修正和单点Gate成立，不替代同一code/config hash下的
+权威30行。下一步是在当前代码上正式重跑states 0–9。
 
 ### Gate 3：建立 BPDA 下的新源候选
 
