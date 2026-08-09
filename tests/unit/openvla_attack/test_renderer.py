@@ -231,6 +231,10 @@ def test_geometry_vertex_renderer_builds_surface_parameterization(
         torch.zeros((3, 3)),
     )
     torch.testing.assert_close(
+        renderer.get_geometry_surface_delta(),
+        torch.zeros((3, 3)),
+    )
+    torch.testing.assert_close(
         renderer.get_render_to_geometry_mapping(),
         torch.arange(3),
     )
@@ -341,6 +345,10 @@ def test_fixed_support_renderer_consumes_frozen_compact_coordinates(
         renderer.get_texture_param()[0] = torch.tensor([0.2, -0.1, 0.3])
     geometry_delta = renderer.get_surface_delta()
     assert geometry_delta.shape == (3, 3)
+    torch.testing.assert_close(
+        renderer.get_geometry_surface_delta(),
+        geometry_delta,
+    )
     torch.testing.assert_close(
         geometry_delta[1],
         torch.zeros(3),

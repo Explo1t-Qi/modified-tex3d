@@ -212,6 +212,7 @@ class SpectralGuardIteration:
 
     iteration: int
     action_loss: float
+    num_action_frames: int
     total_energy: float
     low_energy: float
     high_energy: float
@@ -237,6 +238,15 @@ class SpectralGuardCalibrationResult:
     lambda_spec: float
     calibration_status: str
     restore_evidence: StateRestoreEvidence
+
+
+@dataclass(frozen=True)
+class MeanActionGradient:
+    """当轮全部有效训练帧Action hinge的算术均值及其参数梯度。"""
+
+    loss: float
+    gradient: Tensor
+    num_frames: int
 
 
 def _clone_state(value: Any) -> Any:
@@ -407,7 +417,7 @@ def calibrate_spectral_guard(
     mutable_module: nn.Module,
     texture_parameter: nn.Parameter,
     geometry_delta_provider: Callable[[], Tensor],
-    mean_action_loss_provider: Callable[[], Tensor],
+    mean_action_gradient_provider: Callable[[], MeanActionGradient],
     action_only_update: Callable[[Tensor], None],
     regularizer: SpectralNaturalnessRegularizer,
     stateful_components: Mapping[str, StatefulComponent],
@@ -433,16 +443,18 @@ def calibrate_spectral_guard(
     restore_evidence: Optional[StateRestoreEvidence] = None
     try:
         for iteration in range(max_iterations):
-            action_loss = mean_action_loss_provider()
-            if action_loss.ndim != 0 or not bool(torch.isfinite(action_loss)):
-                raise SpectralGuardError("全部训练帧平均Action loss必须为有限scalar")
+            action_sample = mean_action_gradient_provider()
+            if not math.isfinite(action_sample.loss):
+                raise SpectralGuardError("全部训练帧平均Action loss必须有限")
+            if action_sample.num_frames <= 0:
+                raise SpectralGuardError("Action梯度均值必须覆盖至少一个训练帧")
+            action_gradient = action_sample.gradient
+            if action_gradient.shape != texture_parameter.shape:
+                raise SpectralGuardError("Action均值梯度shape与纹理参数不匹配")
+            if not bool(torch.isfinite(action_gradient).all()):
+                raise SpectralGuardError("Action均值梯度包含NaN/Inf")
             geometry_delta = geometry_delta_provider()
             terms = regularizer(geometry_delta)
-            action_gradient = torch.autograd.grad(
-                action_loss,
-                texture_parameter,
-                retain_graph=True,
-            )[0]
             spectral_gradient = torch.autograd.grad(
                 terms.penalty,
                 texture_parameter,
@@ -453,7 +465,8 @@ def calibrate_spectral_guard(
             )
             row = SpectralGuardIteration(
                 iteration=iteration,
-                action_loss=float(action_loss.detach().item()),
+                action_loss=float(action_sample.loss),
+                num_action_frames=action_sample.num_frames,
                 total_energy=float(terms.total_energy.detach().item()),
                 low_energy=float(terms.low_energy.detach().item()),
                 high_energy=float(terms.high_energy.detach().item()),

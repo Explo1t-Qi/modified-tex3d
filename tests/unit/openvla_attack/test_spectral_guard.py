@@ -10,6 +10,7 @@ import torch
 import torch.nn as nn
 
 from openvla.experiments.robot.libero.openvla_attack.spectral_guard import (
+    MeanActionGradient,
     SpectralGuardError,
     SpectralNaturalnessRegularizer,
     calibrate_spectral_guard,
@@ -52,6 +53,16 @@ def _regularizer(*, rho_nat: float) -> SpectralNaturalnessRegularizer:
     )
 
 
+def _mean_action_gradient(module: _CompactDelta) -> MeanActionGradient:
+    loss = torch.mean((module.coefficients - 0.5).square())
+    gradient = torch.autograd.grad(loss, module.coefficients)[0]
+    return MeanActionGradient(
+        loss=float(loss.detach().item()),
+        gradient=gradient.detach(),
+        num_frames=10,
+    )
+
+
 def test_regularizer_stopgrad_denominator_changes_training_gradient() -> None:
     delta = torch.tensor(
         [[0.2, -0.1, 0.3], [0.1, 0.4, -0.2]],
@@ -82,10 +93,6 @@ def test_calibration_selects_first_five_activation_window_and_restores() -> None
     original_gradient = module.coefficients.grad.clone()
     counter = _StatefulCounter()
 
-    def mean_action_loss() -> torch.Tensor:
-        # 模拟全部有效训练帧Action hinge的均值；目标只提供非零Action梯度。
-        return torch.mean((module.coefficients - 0.5).square())
-
     def action_only_update(gradient: torch.Tensor) -> None:
         with torch.no_grad():
             module.coefficients.add_(gradient, alpha=-0.2)
@@ -98,7 +105,7 @@ def test_calibration_selects_first_five_activation_window_and_restores() -> None
         mutable_module=module,
         texture_parameter=module.coefficients,
         geometry_delta_provider=module,
-        mean_action_loss_provider=mean_action_loss,
+        mean_action_gradient_provider=lambda: _mean_action_gradient(module),
         action_only_update=action_only_update,
         regularizer=_regularizer(rho_nat=0.1),
         stateful_components={"sampler_and_update": counter},
@@ -112,6 +119,7 @@ def test_calibration_selects_first_five_activation_window_and_restores() -> None
         min(1.0, 0.1 / result.q_median)
     )
     assert len(result.iterations) == 6
+    assert all(row.num_action_frames == 10 for row in result.iterations)
     assert result.restore_evidence.all_restored
     torch.testing.assert_close(
         module.coefficients,
@@ -130,9 +138,7 @@ def test_calibration_without_stable_activation_uses_frozen_fallback() -> None:
         mutable_module=module,
         texture_parameter=module.coefficients,
         geometry_delta_provider=module,
-        mean_action_loss_provider=lambda: torch.mean(
-            (module.coefficients - 0.5).square()
-        ),
+        mean_action_gradient_provider=lambda: _mean_action_gradient(module),
         action_only_update=lambda gradient: module.coefficients.data.add_(
             gradient, alpha=-0.1
         ),
@@ -157,9 +163,7 @@ def test_calibration_blocks_result_when_component_restore_is_false() -> None:
             mutable_module=module,
             texture_parameter=module.coefficients,
             geometry_delta_provider=module,
-            mean_action_loss_provider=lambda: torch.mean(
-                (module.coefficients - 0.5).square()
-            ),
+            mean_action_gradient_provider=lambda: _mean_action_gradient(module),
             action_only_update=lambda gradient: setattr(
                 broken, "value", broken.value + 1
             ),

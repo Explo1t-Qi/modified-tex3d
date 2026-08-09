@@ -610,6 +610,19 @@ class DifferentiableRenderer(nn.Module):
             capture.tensors.append(surface_delta)
         return surface_delta
 
+    def get_geometry_surface_delta(self) -> Tensor:
+        """返回原始OBJ几何顶点域的float ``[N_v,3]`` Surface Delta。
+
+        谱自然性能量只能在lumped mass与谱基共同定义的几何顶点域计算，不能
+        对UV seam复制后的renderer顶点重复计数。legacy参数化没有严格几何映射，
+        因而明确拒绝该调用。
+        """
+
+        parameterization = self.surface_parameterization
+        if parameterization is None:
+            raise RuntimeError("legacy_vertex不提供几何顶点Surface Delta")
+        return parameterization.geometry_delta()
+
     def step_surface_parameterization_(
         self,
         gradient: Tensor,
