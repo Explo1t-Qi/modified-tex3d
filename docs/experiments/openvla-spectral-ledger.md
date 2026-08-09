@@ -56,6 +56,7 @@
 | 2026-08-09 | 新Action Objective GPU Audit，states 0--9零delta dense geometry | 10/10 state、70/70 token通过；margin min=`0`，仅state9/index1 exact tie；五级梯度全部有限非零，dense L2=`0.2435--0.5751` | Feature/wrist/OFT均未进入；未保存完整seed gradient payload | metrics/manifest hash一致且WSL独立重算通过；随后同目录重跑仅触发防覆盖`FileExistsError`，不否定首次权威结果；允许进入Dense Seed Audit | [当前状态](../status/openvla-spectral-current.md) |
 | 2026-08-09 | Dense Seed Gradient Audit，states 0--9完整raw `G_s` | 10/10 state与10个float32 `[21263,3]` NPZ通过；637890个梯度值、10个唯一gradient hash；dense L2=`0.24379--0.57474` | 只使用source OpenVLA Action hinge；Feature/wrist/OFT/legacy optimizer均未进入，未计算score/density/coverage/support | WSL逐NPZ重载并重算文件/数组hash、梯度统计和Objective Gate均通过；与前序Objective Audit的tokens/margins/loss完全一致，gradient L2差异仅`0.037%--0.182%`；允许进入Seed Score契约实现，不允许直接生成Fixed Support | [当前状态](../status/openvla-spectral-current.md) |
 | 2026-08-09 | Akita Seed Score/density/smoothing与Dense repeat | canonical/repeat score均从10个raw `G_s`重算通过；normalization max/p99=`3.08--7.27`，smoothed density max/p99约`1.051` | repeat smoothed cosine/Spearman=`0.99999961/0.99999937`；top 0.1%/0.5%/1%/5% Jaccard=`1.000/0.981/0.981/0.993` | corrected artifacts绑定score commit `870aec9`并由WSL从raw NPZ独立复算；前15个局部峰完全一致，允许进入Support Construction契约实现，但尚未生成production support | [当前状态](../status/openvla-spectral-current.md) |
+| 2026-08-09 | Akita Support Construction/coverage与score repeat | canonical/repeat均在`r=1`、seed 829通过；Primary min=`0.359261/0.359275`，最差均为state5；面积比例=`0.1000002/0.1000246` | selected Support Jaccard=`0.997443`，逐Primary coverage最大差=`2.699e-4`；wrist只读 | commit `144cd00`完整保存逐实例/顶点contribution、candidate mask/region owner及最差state投影并独立重算通过；稳定性不设事后阈值，production support仍未冻结 | [当前状态](../status/openvla-spectral-current.md) |
 
 ## 当前待执行队列
 
@@ -66,7 +67,7 @@
 | 3（已通过） | Gate 1D deployment-path forward equivalence | 共享Policy Canvas与Effective View实现 | 逐阶段RGB、processor tensor、action sequence/token完全一致 | 已达到零误差门槛 |
 | 4（已通过） | Gate 2E backward/update/bake smoke | Gate 1D与2C通过 | 梯度有限非零、参数更新、Surface/asset约束通过 | 已达到全部工程门槛 |
 | 5（已通过） | Visibility/Coverage/Compositor与Gate 2R | Gate 2E通过 | Visibility/Alignment、零delta与Gate 2R正式30-case全部通过 | 已达到预注册机制门槛 |
-| 6（进行中） | 谱自然性约束 + Fixed Vertex Support源候选 | 全部基础Gate、Dense Seed与Seed Score稳定性复核通过 | 先实现并验证Support Construction/coverage契约；候选held-out states 10–19至少3/10失败 | 先归因参数化/目标/部署输入，不做无依据网格扫描 |
+| 6（进行中） | 谱自然性约束 + Fixed Vertex Support源候选 | Support Construction/coverage与support-repeat已通过 | 显式冻结canonical生产Support并接入训练；随后候选held-out states 10–19至少3/10失败 | 先归因参数化/目标/部署输入，不做无依据网格扫描 |
 | 7 | OFT开发期 rollout | 队列6通过 | 旧0/10迁移基线上至少出现2/10失败信号 | 记录机制失败，不包装为迁移提升 |
 | 8 | 新任务/第三模型无偏验证 | 方法和超参数冻结 | 预注册门槛 | 区分开发期选择偏差与真实迁移 |
 

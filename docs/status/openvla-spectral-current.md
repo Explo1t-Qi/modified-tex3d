@@ -13,6 +13,8 @@ Dense Seed Gradient Audit正式证据基线：
 `a7196e7b2a53bf36fa554ed46a51e5305529419d`
 Seed Score与repeat稳定性正式证据基线：
 `870aec9933913908edbc931090a9c8d5346ec5e5`
+Support Construction与support-repeat正式证据基线：
+`144cd002aa39586f4a69712e3647fe9cb83ce6e9`
 
 本文是 OpenVLA 谱纹理研究的**当前状态入口**。新一轮开发应先读本文，再按需
 进入专题文档；不要从长篇实验时间线推测当前优先级。历史实验索引见
@@ -42,7 +44,8 @@ Seed Score与repeat稳定性正式证据基线：
 | Visibility/Coverage/Compositor | Gate 2R与全部前置Gate已通过 | 20/20对齐证据、10/10零delta states与70/70 action token通过；2R正式30/30 valid且全部cosine为正 |
 | Action Objective与Dense Seed Gradient | 已通过 | 新Action hinge语义、10个完整`G_s [21263,3]`及全部artifact/hash由服务器运行并在WSL独立复核 |
 | Seed Score/density/smoothing | 已通过 | corrected canonical/repeat artifacts均从raw `G_s`独立复算；连续场与高分区域repeat稳定 |
-| BPDA 下源攻击基线 | 未建立 | Seed Score已通过；Fixed Support尚未构造，首个新候选不得提前运行 |
+| Support Construction/coverage | 已通过，尚未冻结生产Support | canonical/repeat均以`r=1`、seed 829通过；Support Jaccard=`0.997443`，完整artifact可独立重算 |
+| BPDA 下源攻击基线 | 未建立 | canonical Support candidate已满足固定面积与Primary Gate；生产Fixed Support仍需显式冻结并接入训练 |
 | BPDA 下 OFT 迁移信号 | 未开始 | 新源候选未过门槛前不得进入 OFT |
 | 无偏跨模型迁移与鲁棒性提升 | 未开始 | 需方法冻结后的新任务/第三模型与后续防御实验 |
 
@@ -94,11 +97,12 @@ bake/rollout 并恢复资产，完整证据见下文。当前阻断项已转为�
 Visibility/Alignment audit、零 Surface Delta compositor Gate与Gate 2R均已通过。
 旧`696ee68`的states 0–8部分产物和`cf4676d`的state 9仍不作拼接证据；
 权威Gate 2R bundle来自同一commit `0b0b86a`的正式30-case。Fixed-Support
-Texture Parameterization纯计算契约、Action Objective GPU Audit和完整Dense
-Seed Gradient Audit、Seed Score的归一化/跨state聚合/mesh平滑及repeat稳定性
-复核现均已通过。当前唯一下一门槛是把已冻结的连通区域、固定面积、seed分离和
-Primary coverage规则实现为可测试的Support Construction/evidence contract；
-契约通过前仍不得生成或冻结生产Fixed Vertex Support。
+Texture Parameterization纯计算契约、Action Objective GPU Audit、完整Dense
+Seed Gradient Audit、Seed Score的归一化/跨state聚合/mesh平滑与repeat稳定性，
+以及Support Construction/coverage完整artifact契约现均已通过。当前唯一下一
+门槛是显式决定是否把已接受的canonical candidate冻结为生产Fixed Vertex
+Support，并在冻结artifact后接入训练；现有audit仍明确
+`fixed_support_frozen=false`，不得直接当作训练输入。
 
 真实 Spatial checkpoint 的 CPU 差分记录为 fused pixel values MAE/L∞=`0/0`，
 输入梯度有限且非零；文档记录当时全量 CPU 回归为 `113 passed, 1 skipped`。
@@ -705,6 +709,56 @@ comparison JSON/log SHA-256为
 按设计触发防覆盖`FileExistsError`；首次comparison还引用了错误时间戳目录。
 这些产物只保留为诊断历史，不进入正式证据。上述三个`corrected`目录是唯一
 权威score/stability记录。
+
+Support Construction/coverage 的 CPU-only 双层 evidence contract 已在commit
+`144cd002aa39586f4a69712e3647fe9cb83ce6e9`完成并用上述corrected score运行。
+它从已验收Visibility NPZ重放逐`(state, view, instance, vertex)`的source/effective
+投影分子：先对冻结的512→224 area downsample与center crop求source-space伴随
+权重，再把`alpha * beta`按严格geometry corner mapping散射到原始OBJ顶点。
+完整contribution与candidate NPZ保存逐实例分母、全顶点分子、support mask、
+region owner、seed、区域质量/周长/compactness和逐state coverage；加载时禁用
+pickle，并从score与contribution独立重算全部候选。20个真实view的全Support
+effective coverage为`0.998986--1.000000`，伴随分母最大绝对重放误差
+`2.454e-5`。这与既有alignment recall一致，没有把裁剪外或renderer未对齐像素
+误记为可控投影。
+
+实现对文档未逐字规定的“多区域如何交替取frontier”采用按seed顺序的确定性
+round-robin，每轮每个未满区域各取一次自身best-first顶点。当前正式结果在
+`r=1`即通过，因此该调度没有影响本轮seed、mask或Gate；若后续方法变体确实
+进入`r>=2`，必须在比较调度变体前先把这一低层语义显式复核，不能用结果反调。
+
+正式canonical run为`support_construction_canonical_144cd00_20260809`：第一个
+候选`r=1`即通过，seed为原始OBJ顶点829，选择3514个顶点/10542个RGB标量，
+目标/实际mass为`0.0071906672/0.0071906824`，实际面积比例
+`0.1000002119`；唯一region完整且离散overshoot小于最后一个边界顶点mass。
+Primary states 0--9全部为`valid`，effective coverage min/mean/median为
+`0.3592615/0.3626509/0.3624516`，最差原始state ID为5，显著高于预先冻结的
+`0.20`硬Gate。wrist proxy继续只读，其min为`0.1556022`，没有参与seed、增长、
+区域数或Gate。coverage/candidate/manifest SHA-256分别为
+`bc589979281807f9d2706f7c79380fd43b42eb96c4ce77628c6b63b13570fbdc`、
+`def9dfdfd9466c74f10dbc8bc5f85b9a023e9b95478566a4ac0c361150ebc254`、
+`abbb1bc22ee41fef6bbe38c1e1f420d1e47711262f659d4c737a0190e38e768e`。
+最差state的MuJoCo mask、renderer mask和`alpha*w_S` effective投影均已保存并
+人工抽查；两张可见mask对齐，Support投影是其真子区域，未见裁剪/坐标翻转。
+
+按预先约定又用repeat score运行完全相同的构造，目录为
+`support_construction_repeat_144cd00_20260809`。它同样在`r=1`通过，seed仍为
+829，最差state仍为5；选择3517个顶点，面积比例`0.1000245587`，Primary min
+coverage为`0.3592754`。两套selected Support交集/并集为3511/3520，Jaccard
+`0.9974432`；最大逐Primary effective coverage差`2.699e-4`，面积比例差
+`2.435e-5`。support-repeat比较没有预注册或事后追加通过阈值，只完成
+“gradient稳定→score稳定→最终support稳定”的只读证据闭环，不据结果修改任何
+算法或门槛。repeat candidate/manifest SHA-256为
+`1da6c4fdef9b762d4b80d085f43d3d583afa89486bb7fab55a9faa5f95c17508`与
+`cc2747cb04ac326a86343822272c35d485911e7ab2c58812a83738689fbb67ca`。
+
+上述结果客观支持canonical candidate在当前规则下稳定且通过Gate，但两个audit
+仍同时声明`production_support_constructed=false`与
+`fixed_support_frozen=false`。因此它们不能被训练入口直接消费；下一步必须先
+形成单独、不可变、绑定canonical candidate hash的生产Support冻结artifact，
+再把该artifact接到已有Fixed-Support Texture Parameterization。首次因NumPy
+`bool_`无法写JSON而中止的`support_construction_canonical_20732ee_...`目录已
+改名保留为失败诊断，不进入正式证据。
 
 已冻结的第一项设计决定：谱方法在新候选中作为作用于最终 Surface Delta 的软
 自然性正则，只惩罚高频谱能量；它不再把扰动硬限制在前 K 个谱基中，也不是与
