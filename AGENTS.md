@@ -125,3 +125,17 @@
   `git diff --check`、相关测试并检查 `git status --short`。
 - Codex 负责本地代码、文档和 commit；用户负责 push 到 GitHub、服务器 pull
   和服务器实验。未经明确请求，Codex 不 push、不操作服务器。
+
+## Agent skills
+
+### Issue tracker
+
+本仓库使用 GitHub Issues；具体命令约定见 `docs/agents/issue-tracker.md`。
+
+### Triage labels
+
+使用五个标准 triage role 名称；映射见 `docs/agents/triage-labels.md`。
+
+### Domain docs
+
+本仓库采用单一根级 `CONTEXT.md`；消费规则见 `docs/agents/domain.md`。
