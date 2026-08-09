@@ -27,6 +27,10 @@ Fixed-Support Action+Spectral两步smoke实现基线：
 `4a061a23365213c0d9a31348db21c2edbc6a8ad4`
 Fixed-Support Action+Spectral两步smoke正式证据基线：
 `f73b1833fa8f77e15de1579d8b674332bda6980d`
+正式5000轮Fixed-Support Action+Spectral训练基线：
+`0aca5253caa7525605c3d6ce537468bd917f8d90`
+正式paired source Gate恢复评估基线：
+`88e5162a9d9c1e222c240bd1a0d78fce596e3384`
 
 本文是 OpenVLA 谱纹理研究的**当前状态入口**。新一轮开发应先读本文，再按需
 进入专题文档；不要从长篇实验时间线推测当前优先级。历史实验索引见
@@ -58,7 +62,7 @@ Fixed-Support Action+Spectral两步smoke正式证据基线：
 | Seed Score/density/smoothing | 已通过 | corrected canonical/repeat artifacts均从raw `G_s`独立复算；连续场与高分区域repeat稳定 |
 | Support Construction/coverage | 已通过，Production Support已冻结 | canonical/repeat均以`r=1`、seed 829通过；冻结3514个顶点/10542个RGB标量并绑定全部上游hash |
 | 谱自然性uniform Support校准 | 已通过 | 连续K_nat=128+常数频带通过数值审计；`rho_nat=0.0992735862`并由两个输入artifact独立复算 |
-| BPDA 下源攻击基线 | 未建立 | Fixed-Support renderer、两级校准与Action+Spectral两步GPU smoke均已通过；下一门槛是正式source trainer接入、训练与held-out rollout |
+| BPDA 下源攻击基线 | 主候选未过门槛 | Fixed-Support Action+Spectral完成5000轮训练；paired states 10--19为Clean 9/10、Adversarial 8/10，仅2/10新增失败，低于预注册3/10门槛 |
 | BPDA 下 OFT 迁移信号 | 未开始 | 新源候选未过门槛前不得进入 OFT |
 | 无偏跨模型迁移与鲁棒性提升 | 未开始 | 需方法冻结后的新任务/第三模型与后续防御实验 |
 
@@ -117,11 +121,11 @@ candidate已经冻结为独立Production Fixed Support，renderer只允许通过
 mesh/mapping/provenance hash加载其3514个紧凑参数坐标。uniform Support probe
 的`rho_nat`也已通过纯CPU校准与独立复算。新Action-only Spectral Guard runner
 已在真实states 0--9上完成GPU calibration，`lambda_spec`与完整状态恢复证据均已
-通过独立复核。Fixed-Support Action+Spectral正式trainer的两步工程smoke也已在
-服务器通过并由WSL独立复核。正式核心现已接入主入口，并已通过本地CPU契约
-回归；当前唯一下一门槛是在服务器核验该commit并运行5000轮source training，
-随后在同一held-out states 10--19上执行成对Clean/Adversarial rollout。OFT仍
-不得提前进入。
+通过独立复核。Fixed-Support Action+Spectral正式trainer的两步工程smoke、5000轮
+source training及同一held-out states 10--19成对Clean/Adversarial rollout均已
+完成并通过artifact完整性复核。主候选只造成2/10个paired新增失败，未达到3/10
+source门槛。当前唯一下一诊断是同一Frozen Support与训练设置的Fixed-Support
+Action-only control；OFT仍不得提前进入。
 
 真实 Spatial checkpoint 的 CPU 差分记录为 fused pixel values MAE/L∞=`0/0`，
 输入梯度有限且非零；文档记录当时全量 CPU 回归为 `113 passed, 1 skipped`。
@@ -1001,12 +1005,31 @@ JSONL逐值一致，联合梯度残差始终为0。float32 cosine最大上溢仅
 约束相对Action已很弱。Surface Delta在第92次update附近首次触及预算边界，末轮
 L∞为`0.501480`。这些只能解释训练机制，尚不能替代source rollout效果。
 
-下一操作不是重跑训练，而是由恢复入口消费已通过的原formal manifest及原bake，
-再次核验当前checkout、冻结配置、五项上游hash和完整训练bundle后，明确跳过全部
-梯度计算与5000轮update，只运行states 10--19的Clean/Adversarial paired rollout。
-paired artifact写回原训练目录，并同时绑定原training manifest/bake SHA与执行恢复
-流程的Git commit。修正后的原bundle独立复核与恢复入口回归均已纳入测试；本机
-可收集OpenVLA Attack CPU回归为`257 passed`。该rollout完成前队列6e仍未判定。
+服务器在commit `88e5162a9d9c1e222c240bd1a0d78fce596e3384`使用恢复入口完成
+paired source rollout，耗时约10分31秒。日志明确记录跳过全部梯度计算与5000轮
+update，并直接复用原正式bake。Clean在state 15失败，为9/10成功；Adversarial在
+states 10、19失败，为8/10成功。按预注册配对语义，真正的
+`clean success -> adversarial failure`为states 10、19，共2/10；state 15属于
+pre-existing clean failure，且在Adversarial条件下恢复成功，不能计为攻击造成的
+失败。因此队列6e的科学Gate为`false`，未达到至少3/10新增失败的门槛。
+
+`paired_source_gate.json`绑定原training manifest、原bake及恢复评估commit，WSL
+独立校验器从逐state pairs重算全部字段后返回artifact完整性`gate_pass=true`且无
+failure；这里的完整性通过不得与artifact内部的科学Gate `gate_pass=false`混淆。
+恢复流程结束后Original XML与真实MuJoCo纹理均已恢复。paired artifact、恢复GPU
+日志和rollout文本的SHA-256依次为
+`0d8dfd62771dceffedb50c2d27320988864efb67158dcab45d15d2a197bb129f`、
+`b53ab498fb9c6ea7ce58f63a844e5c4fc2628feaa278075055e035332563d2cb`和
+`306b6f25ff1b1613ed008340b792edfad21dbc46c51e16eeb7ba2b8c68522678`。
+
+该结果证明主候选存在非零source作用，但不足以宣称达到源攻击门槛，也不能单凭
+2/10结果归因于Spectral Guard。按预注册顺序，当前唯一下一诊断是保持同一Frozen
+Support、Action objective、states、surface step、Surface L∞预算和5000轮训练，
+仅关闭Spectral Guard的Fixed-Support Action-only control，并同样执行paired
+Clean/Adversarial rollout。若Action-only达到至少3/10而主候选仅2/10，才支持
+guard削弱source强度的机制判断；若Action-only仍不超过2/10，则证据更指向Fixed
+Support或Action objective本身。该对照完成前不调整lambda、K_nat或Support，且不
+进入OFT。
 
 原正式training manifest与GPU日志SHA-256分别为
 `f7e05cacf1490846d1272bfaea4d719edbac78b8b463cfed676f423c74255e94`和
