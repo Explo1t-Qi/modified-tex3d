@@ -155,7 +155,7 @@ def test_gpu_runner_uses_new_objective_and_shared_trainer_not_legacy() -> None:
 
     assert "openvla_attack.optimization" not in imported_modules
     assert "openvla_attack.training" not in imported_modules
-    assert "FixedSupportActionTrainerCore" in source
+    assert "FixedSupportTrainerCore" in source
     assert "untargeted_clean_action_margin_hinge" in source
     assert 'tuple(range(10))' in source
     assert "frame_evidence_history" in source

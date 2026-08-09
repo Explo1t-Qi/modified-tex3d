@@ -53,7 +53,7 @@ from openvla_attack.assets import (  # noqa: E402
 from openvla_attack.compositing import TextureRenderInstance  # noqa: E402
 from openvla_attack.configuration import GenerateConfig  # noqa: E402
 from openvla_attack.fixed_support_training import (  # noqa: E402
-    FixedSupportActionTrainerCore,
+    FixedSupportTrainerCore,
 )
 from openvla_attack.image_preprocessing import (  # noqa: E402
     DifferentiableOpenVLAImageProcessor,
@@ -167,7 +167,7 @@ def _parse_args(argv: Optional[Sequence[str]] = None) -> SpectralGuardGpuConfig:
     return SpectralGuardGpuConfig(**vars(parser.parse_args(argv)))
 
 
-def _sha256_array(value: np.ndarray) -> str:
+def sha256_array(value: np.ndarray) -> str:
     array = np.ascontiguousarray(value)
     digest = hashlib.sha256()
     digest.update(str(array.dtype).encode("ascii"))
@@ -176,8 +176,8 @@ def _sha256_array(value: np.ndarray) -> str:
     return digest.hexdigest()
 
 
-def _tensor_sha256(value: torch.Tensor) -> str:
-    return _sha256_array(value.detach().cpu().numpy())
+def tensor_sha256(value: torch.Tensor) -> str:
+    return sha256_array(value.detach().cpu().numpy())
 
 
 def _rgb_tensor(image: np.ndarray, device: torch.device) -> torch.Tensor:
@@ -197,7 +197,7 @@ def _prompt(task_description: str) -> str:
     )
 
 
-def _loaded_legacy_optimizer_modules() -> tuple[str, ...]:
+def loaded_legacy_optimizer_modules() -> tuple[str, ...]:
     """拒绝当前进程加载legacy Action+Feature训练实现。"""
 
     suffixes = (
@@ -233,7 +233,7 @@ def _build_instances(
     )
 
 
-def _capture_action_frame(
+def capture_action_frame(
     *,
     cfg: SpectralGuardGpuConfig,
     state_id: int,
@@ -350,7 +350,7 @@ def _capture_action_frame(
         clean_classes = clean_objective.clean_classes.detach().to(torch.int64)
         return FrozenGuardActionFrame(
             state_id=state_id,
-            initial_state_sha256=_sha256_array(np.asarray(initial_state)),
+            initial_state_sha256=sha256_array(np.asarray(initial_state)),
             static_scene_sha256=transaction.before.fingerprint_sha256,
             clean_source_rgb=clean_source_tensor.detach(),
             mujoco_instance_alpha=alpha,
@@ -459,7 +459,7 @@ class AllStateActionGradientProvider:
                     "action_gradient_l2": float(
                         torch.linalg.vector_norm(gradient).item()
                     ),
-                    "action_gradient_sha256": _tensor_sha256(gradient),
+                    "action_gradient_sha256": tensor_sha256(gradient),
                     "saturated_pixel_fraction": (
                         composition.saturated_pixel_fraction
                     ),
@@ -481,7 +481,7 @@ class AllStateActionGradientProvider:
         )
 
 
-def _write_jsonl(path: Path, rows: Sequence[dict[str, Any]]) -> None:
+def write_jsonl(path: Path, rows: Sequence[dict[str, Any]]) -> None:
     with path.open("x", encoding="utf-8") as handle:
         for row in rows:
             handle.write(json.dumps(row, sort_keys=True) + "\n")
@@ -508,7 +508,7 @@ def run_spectral_guard_gpu_calibration(cfg: SpectralGuardGpuConfig) -> Path:
         raise ValueError(f"未知object_name: {cfg.object_name}")
     if not torch.cuda.is_available():
         raise RuntimeError("Spectral Guard GPU Calibration需要真实CUDA")
-    legacy_modules = _loaded_legacy_optimizer_modules()
+    legacy_modules = loaded_legacy_optimizer_modules()
     if legacy_modules:
         raise RuntimeError(f"Spectral Guard进程加载了legacy optimizer: {legacy_modules}")
     if LIBERO_ROOT not in sys.path:
@@ -611,7 +611,7 @@ def run_spectral_guard_gpu_calibration(cfg: SpectralGuardGpuConfig) -> Path:
     )
     description_env.close()
     frames = tuple(
-        _capture_action_frame(
+        capture_action_frame(
             cfg=cfg,
             state_id=state_id,
             initial_state=initial_states[state_id],
@@ -638,7 +638,7 @@ def run_spectral_guard_gpu_calibration(cfg: SpectralGuardGpuConfig) -> Path:
         image_preprocessor=image_preprocessor,
         policy_view_transform=policy_view_transform,
     )
-    trainer_core = FixedSupportActionTrainerCore(
+    trainer_core = FixedSupportTrainerCore(
         renderer,
         surface_step=cfg.attack_surface_step,
     )
@@ -663,15 +663,15 @@ def run_spectral_guard_gpu_calibration(cfg: SpectralGuardGpuConfig) -> Path:
         surface_step=cfg.attack_surface_step,
         max_iterations=expected_iterations,
     )
-    legacy_modules = _loaded_legacy_optimizer_modules()
+    legacy_modules = loaded_legacy_optimizer_modules()
     if legacy_modules:
         raise RuntimeError(f"校准期间加载了legacy optimizer: {legacy_modules}")
     if len(provider.frame_evidence_history) != 10 * len(result.iterations):
         raise RuntimeError("逐state证据数量与校准iterations不一致")
 
     iteration_rows = [asdict(row) for row in result.iterations]
-    _write_jsonl(iteration_path, iteration_rows)
-    _write_jsonl(frame_path, provider.frame_evidence_history)
+    write_jsonl(iteration_path, iteration_rows)
+    write_jsonl(frame_path, provider.frame_evidence_history)
     manifest = {
         "schema_version": SPECTRAL_GUARD_SCHEMA_VERSION,
         "code_commit": cfg.code_commit,

@@ -7,6 +7,8 @@ import torch.nn as nn
 
 from openvla.experiments.robot.libero.openvla_attack.fixed_support_training import (
     FixedSupportActionTrainerCore,
+    FixedSupportTrainerCore,
+    FixedSupportTrainingError,
 )
 from openvla.experiments.robot.libero.openvla_attack.texture_parameterization import (
     FixedSupportTextureParameterization,
@@ -19,6 +21,7 @@ class _Renderer:
     epsilon = 0.5
 
     def __init__(self) -> None:
+        self.step_call_count = 0
         self.parameterization = FixedSupportTextureParameterization(
             render_to_geometry=torch.arange(4),
             num_geometry_vertices=4,
@@ -40,6 +43,7 @@ class _Renderer:
         gradient: torch.Tensor,
         surface_step: float,
     ) -> SurfaceStepStats:
+        self.step_call_count += 1
         return surface_normalized_step_(
             self.parameterization,
             gradient,
@@ -79,3 +83,125 @@ def test_shared_trainer_core_state_round_trip_restores_update_count() -> None:
 
     assert trainer.update_count == 0
     assert trainer.surface_step == 0.1
+
+
+def test_combined_training_gradient_is_summed_before_exactly_one_update() -> None:
+    renderer = _Renderer()
+    trainer = FixedSupportTrainerCore(renderer, surface_step=0.1)
+    action_gradient = torch.tensor(
+        [[2.0, -1.0, 0.5], [-4.0, 0.25, 1.0]],
+        dtype=torch.float32,
+    )
+    spectral_gradient = torch.tensor(
+        [[-3.0, 2.0, 1.0], [1.5, -0.5, -2.0]],
+        dtype=torch.float32,
+    )
+
+    update = trainer.apply_action_spectral_gradients(
+        action_gradient,
+        spectral_gradient,
+        lambda_spec=0.25,
+    )
+
+    expected_weighted = spectral_gradient * 0.25
+    expected_total = action_gradient + expected_weighted
+    torch.testing.assert_close(
+        update.weighted_spectral_gradient,
+        expected_weighted,
+        rtol=0.0,
+        atol=0.0,
+    )
+    torch.testing.assert_close(
+        update.total_gradient,
+        expected_total,
+        rtol=0.0,
+        atol=0.0,
+    )
+    assert update.combination_residual_linf == 0.0
+    assert renderer.step_call_count == 1
+    assert trainer.update_count == 1
+    assert update.surface_step_stats.actual_surface_step <= 0.1 + 1e-7
+
+
+def test_zero_spectral_gradient_reduces_exactly_to_action_update() -> None:
+    renderer = _Renderer()
+    trainer = FixedSupportTrainerCore(renderer, surface_step=0.1)
+    action_gradient = torch.tensor(
+        [[1.0, -2.0, 3.0], [0.5, -0.25, 0.125]],
+        dtype=torch.float32,
+    )
+
+    update = trainer.apply_action_spectral_gradients(
+        action_gradient,
+        torch.zeros_like(action_gradient),
+        lambda_spec=0.0008505366725298619,
+    )
+
+    torch.testing.assert_close(
+        update.total_gradient,
+        action_gradient,
+        rtol=0.0,
+        atol=0.0,
+    )
+    assert update.spectral_gradient_l2 == 0.0
+    assert update.weighted_spectral_gradient_l2 == 0.0
+    assert update.weighted_spectral_action_ratio == 0.0
+    assert update.action_spectral_cosine is None
+    assert renderer.step_call_count == 1
+
+
+def test_zero_action_gradient_still_allows_spectral_restoration_update() -> None:
+    renderer = _Renderer()
+    trainer = FixedSupportTrainerCore(renderer, surface_step=0.1)
+    spectral_gradient = torch.tensor(
+        [[1.0, -2.0, 3.0], [0.5, -0.25, 0.125]],
+        dtype=torch.float32,
+    )
+
+    update = trainer.apply_action_spectral_gradients(
+        torch.zeros_like(spectral_gradient),
+        spectral_gradient,
+        lambda_spec=0.5,
+    )
+
+    torch.testing.assert_close(
+        update.total_gradient,
+        spectral_gradient * 0.5,
+        rtol=0.0,
+        atol=0.0,
+    )
+    assert update.action_spectral_cosine is None
+    assert update.weighted_spectral_action_ratio is None
+    assert renderer.step_call_count == 1
+
+
+def test_combined_training_rejects_invalid_lambda_and_gradient_shape() -> None:
+    trainer = FixedSupportTrainerCore(_Renderer(), surface_step=0.1)
+    gradient = torch.ones((2, 3))
+
+    for invalid_lambda in (-0.1, float("nan"), 1.1):
+        try:
+            trainer.apply_action_spectral_gradients(
+                gradient,
+                gradient,
+                lambda_spec=invalid_lambda,
+            )
+        except FixedSupportTrainingError:
+            pass
+        else:
+            raise AssertionError("非法lambda_spec必须失败")
+
+    try:
+        trainer.apply_action_spectral_gradients(
+            gradient,
+            torch.ones((3, 3)),
+            lambda_spec=0.1,
+        )
+    except FixedSupportTrainingError:
+        pass
+    else:
+        raise AssertionError("不匹配的spectral梯度shape必须失败")
+
+
+def test_legacy_action_core_name_is_compatibility_alias() -> None:
+    assert FixedSupportActionTrainerCore is FixedSupportTrainerCore
