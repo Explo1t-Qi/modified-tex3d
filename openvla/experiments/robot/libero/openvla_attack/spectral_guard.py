@@ -28,6 +28,7 @@ from .spectral_naturalness import (
     SpectralNaturalnessError,
     load_rho_nat_calibration_artifact,
 )
+from .texture_parameterization import SurfaceStepStats
 
 
 class SpectralGuardError(RuntimeError):
@@ -213,6 +214,8 @@ class SpectralGuardIteration:
     iteration: int
     action_loss: float
     num_action_frames: int
+    action_state_ids: tuple[int, ...]
+    action_state_fingerprints: tuple[str, ...]
     total_energy: float
     low_energy: float
     high_energy: float
@@ -225,6 +228,8 @@ class SpectralGuardIteration:
     spectral_gradient_l2: float
     q_t: Optional[float]
     gradient_cosine: Optional[float]
+    configured_surface_step: float
+    surface_step_stats: SurfaceStepStats
 
 
 @dataclass(frozen=True)
@@ -247,6 +252,8 @@ class MeanActionGradient:
     loss: float
     gradient: Tensor
     num_frames: int
+    state_ids: tuple[int, ...]
+    state_fingerprints: tuple[str, ...]
 
 
 def _clone_state(value: Any) -> Any:
@@ -418,9 +425,11 @@ def calibrate_spectral_guard(
     texture_parameter: nn.Parameter,
     geometry_delta_provider: Callable[[], Tensor],
     mean_action_gradient_provider: Callable[[], MeanActionGradient],
-    action_only_update: Callable[[Tensor], None],
+    action_only_update: Callable[[Tensor], SurfaceStepStats],
     regularizer: SpectralNaturalnessRegularizer,
     stateful_components: Mapping[str, StatefulComponent],
+    expected_state_fingerprints: Mapping[int, str],
+    surface_step: float,
     max_iterations: int = 64,
     stable_window_size: int = 5,
 ) -> SpectralGuardCalibrationResult:
@@ -430,6 +439,17 @@ def calibrate_spectral_guard(
         raise SpectralGuardError("Spectral Guard最多允许64轮校准")
     if stable_window_size != 5:
         raise SpectralGuardError("第一版稳定激活窗口必须固定为连续5轮")
+    expected_state_ids = tuple(sorted(expected_state_fingerprints))
+    if expected_state_ids != tuple(range(10)):
+        raise SpectralGuardError("正式校准必须固定且完整使用states 0-9")
+    if any(
+        len(fingerprint) != 64
+        or any(character not in "0123456789abcdef" for character in fingerprint)
+        for fingerprint in expected_state_fingerprints.values()
+    ):
+        raise SpectralGuardError("正式校准state fingerprint必须为SHA-256")
+    if not math.isfinite(surface_step) or surface_step <= 0.0:
+        raise SpectralGuardError("surface_step必须为有限正数")
     initial_delta = geometry_delta_provider().detach()
     if float(initial_delta.abs().amax().item()) != 0.0:
         raise SpectralGuardError("Spectral Guard校准必须从零Surface Delta开始")
@@ -448,6 +468,20 @@ def calibrate_spectral_guard(
                 raise SpectralGuardError("全部训练帧平均Action loss必须有限")
             if action_sample.num_frames <= 0:
                 raise SpectralGuardError("Action梯度均值必须覆盖至少一个训练帧")
+            if action_sample.num_frames != 10:
+                raise SpectralGuardError("每轮Action梯度必须恰好覆盖10个训练state")
+            if action_sample.state_ids != expected_state_ids:
+                raise SpectralGuardError(
+                    "每轮Action states必须按0-9完整、唯一且各参与一次"
+                )
+            if len(set(action_sample.state_ids)) != 10:
+                raise SpectralGuardError("每轮Action states包含重复ID")
+            expected_fingerprints = tuple(
+                expected_state_fingerprints[state_id]
+                for state_id in expected_state_ids
+            )
+            if action_sample.state_fingerprints != expected_fingerprints:
+                raise SpectralGuardError("每轮Action state fingerprint绑定不一致")
             action_gradient = action_sample.gradient
             if action_gradient.shape != texture_parameter.shape:
                 raise SpectralGuardError("Action均值梯度shape与纹理参数不匹配")
@@ -463,10 +497,25 @@ def calibrate_spectral_guard(
                 action_gradient,
                 spectral_gradient,
             )
+            step_stats = action_only_update(action_gradient.detach())
+            step_values = (
+                step_stats.direction_surface_max,
+                step_stats.parameter_scale,
+                step_stats.projection_scale,
+                step_stats.step_cap_scale,
+                step_stats.actual_surface_step,
+                step_stats.max_abs_delta,
+            )
+            if not all(math.isfinite(value) for value in step_values):
+                raise SpectralGuardError("SurfaceStepStats包含NaN/Inf")
+            if step_stats.actual_surface_step > surface_step + 1e-7:
+                raise SpectralGuardError("实际Surface step超过配置上限")
             row = SpectralGuardIteration(
                 iteration=iteration,
                 action_loss=float(action_sample.loss),
                 num_action_frames=action_sample.num_frames,
+                action_state_ids=action_sample.state_ids,
+                action_state_fingerprints=action_sample.state_fingerprints,
                 total_energy=float(terms.total_energy.detach().item()),
                 low_energy=float(terms.low_energy.detach().item()),
                 high_energy=float(terms.high_energy.detach().item()),
@@ -481,6 +530,8 @@ def calibrate_spectral_guard(
                 spectral_gradient_l2=spectral_norm,
                 q_t=q_t,
                 gradient_cosine=cosine,
+                configured_surface_step=surface_step,
+                surface_step_stats=step_stats,
             )
             rows.append(row)
             selected_window = _stable_window(
@@ -489,7 +540,6 @@ def calibrate_spectral_guard(
             )
             if selected_window is not None:
                 break
-            action_only_update(action_gradient.detach())
     finally:
         restore_evidence = restore_calibration_state(
             mutable_module,

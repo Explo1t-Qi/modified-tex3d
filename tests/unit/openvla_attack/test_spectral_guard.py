@@ -15,6 +15,12 @@ from openvla.experiments.robot.libero.openvla_attack.spectral_guard import (
     SpectralNaturalnessRegularizer,
     calibrate_spectral_guard,
 )
+from openvla.experiments.robot.libero.openvla_attack.texture_parameterization import (
+    SurfaceStepStats,
+)
+
+
+_STATE_FINGERPRINTS = {state_id: f"{state_id:x}" * 64 for state_id in range(10)}
 
 
 class _StatefulCounter:
@@ -60,6 +66,19 @@ def _mean_action_gradient(module: _CompactDelta) -> MeanActionGradient:
         loss=float(loss.detach().item()),
         gradient=gradient.detach(),
         num_frames=10,
+        state_ids=tuple(range(10)),
+        state_fingerprints=tuple(_STATE_FINGERPRINTS.values()),
+    )
+
+
+def _step_stats(module: _CompactDelta, actual_step: float) -> SurfaceStepStats:
+    return SurfaceStepStats(
+        direction_surface_max=1.0,
+        parameter_scale=0.2,
+        projection_scale=1.0,
+        step_cap_scale=1.0,
+        actual_surface_step=actual_step,
+        max_abs_delta=float(module.coefficients.detach().abs().amax().item()),
     )
 
 
@@ -93,13 +112,18 @@ def test_calibration_selects_first_five_activation_window_and_restores() -> None
     original_gradient = module.coefficients.grad.clone()
     counter = _StatefulCounter()
 
-    def action_only_update(gradient: torch.Tensor) -> None:
+    def action_only_update(gradient: torch.Tensor) -> SurfaceStepStats:
+        before = module.coefficients.detach().clone()
         with torch.no_grad():
             module.coefficients.add_(gradient, alpha=-0.2)
         counter.value += 1
         # 校准内部对所有RNG的消费都必须在结束后恢复。
         np.random.random()
         torch.rand(1)
+        actual_step = float(
+            (module.coefficients.detach() - before).abs().amax().item()
+        )
+        return _step_stats(module, actual_step)
 
     result = calibrate_spectral_guard(
         mutable_module=module,
@@ -109,6 +133,8 @@ def test_calibration_selects_first_five_activation_window_and_restores() -> None
         action_only_update=action_only_update,
         regularizer=_regularizer(rho_nat=0.1),
         stateful_components={"sampler_and_update": counter},
+        expected_state_fingerprints=_STATE_FINGERPRINTS,
+        surface_step=0.2,
     )
 
     assert result.calibration_status == "calibrated_stable_activation"
@@ -131,6 +157,18 @@ def test_calibration_selects_first_five_activation_window_and_restores() -> None
     assert counter.value == 4
 
 
+def _simple_update(
+    module: _CompactDelta,
+    gradient: torch.Tensor,
+) -> SurfaceStepStats:
+    before = module.coefficients.detach().clone()
+    module.coefficients.data.add_(gradient, alpha=-0.1)
+    actual_step = float(
+        (module.coefficients.detach() - before).abs().amax().item()
+    )
+    return _step_stats(module, actual_step)
+
+
 def test_calibration_without_stable_activation_uses_frozen_fallback() -> None:
     module = _CompactDelta()
 
@@ -139,11 +177,11 @@ def test_calibration_without_stable_activation_uses_frozen_fallback() -> None:
         texture_parameter=module.coefficients,
         geometry_delta_provider=module,
         mean_action_gradient_provider=lambda: _mean_action_gradient(module),
-        action_only_update=lambda gradient: module.coefficients.data.add_(
-            gradient, alpha=-0.1
-        ),
+        action_only_update=lambda gradient: _simple_update(module, gradient),
         regularizer=_regularizer(rho_nat=1.0),
         stateful_components={},
+        expected_state_fingerprints=_STATE_FINGERPRINTS,
+        surface_step=0.2,
         max_iterations=6,
     )
 
@@ -152,6 +190,46 @@ def test_calibration_without_stable_activation_uses_frozen_fallback() -> None:
     assert result.lambda_spec == 1.0
     assert result.selected_window_start is None
     assert result.restore_evidence.all_restored
+
+
+@pytest.mark.parametrize(
+    "state_ids",
+    (
+        tuple(range(9)),
+        (0, 1, 2, 3, 4, 5, 6, 7, 8, 8),
+        tuple(reversed(range(10))),
+    ),
+)
+def test_calibration_rejects_incomplete_duplicate_or_reordered_states(
+    state_ids: tuple[int, ...],
+) -> None:
+    module = _CompactDelta()
+
+    def invalid_sample() -> MeanActionGradient:
+        sample = _mean_action_gradient(module)
+        return MeanActionGradient(
+            loss=sample.loss,
+            gradient=sample.gradient,
+            num_frames=len(state_ids),
+            state_ids=state_ids,
+            state_fingerprints=tuple(
+                _STATE_FINGERPRINTS[state_id] for state_id in state_ids
+            ),
+        )
+
+    with pytest.raises(SpectralGuardError, match="10个|0-9"):
+        calibrate_spectral_guard(
+            mutable_module=module,
+            texture_parameter=module.coefficients,
+            geometry_delta_provider=module,
+            mean_action_gradient_provider=invalid_sample,
+            action_only_update=lambda gradient: _step_stats(module, 0.0),
+            regularizer=_regularizer(rho_nat=1.0),
+            stateful_components={},
+            expected_state_fingerprints=_STATE_FINGERPRINTS,
+            surface_step=0.2,
+            max_iterations=1,
+        )
 
 
 def test_calibration_blocks_result_when_component_restore_is_false() -> None:
@@ -164,10 +242,13 @@ def test_calibration_blocks_result_when_component_restore_is_false() -> None:
             texture_parameter=module.coefficients,
             geometry_delta_provider=module,
             mean_action_gradient_provider=lambda: _mean_action_gradient(module),
-            action_only_update=lambda gradient: setattr(
-                broken, "value", broken.value + 1
+            action_only_update=lambda gradient: (
+                setattr(broken, "value", broken.value + 1)
+                or _step_stats(module, 0.0)
             ),
             regularizer=_regularizer(rho_nat=1.0),
             stateful_components={"broken": broken},
+            expected_state_fingerprints=_STATE_FINGERPRINTS,
+            surface_step=0.2,
             max_iterations=1,
         )
