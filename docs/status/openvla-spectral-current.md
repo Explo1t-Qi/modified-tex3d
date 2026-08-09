@@ -25,6 +25,8 @@ Spectral Guard GPU Calibration正式证据基线：
 `4f9b6bd95384a94719edce117c4ba61e7d493be1`
 Fixed-Support Action+Spectral两步smoke实现基线：
 `4a061a23365213c0d9a31348db21c2edbc6a8ad4`
+Fixed-Support Action+Spectral两步smoke正式证据基线：
+`f73b1833fa8f77e15de1579d8b674332bda6980d`
 
 本文是 OpenVLA 谱纹理研究的**当前状态入口**。新一轮开发应先读本文，再按需
 进入专题文档；不要从长篇实验时间线推测当前优先级。历史实验索引见
@@ -56,7 +58,7 @@ Fixed-Support Action+Spectral两步smoke实现基线：
 | Seed Score/density/smoothing | 已通过 | corrected canonical/repeat artifacts均从raw `G_s`独立复算；连续场与高分区域repeat稳定 |
 | Support Construction/coverage | 已通过，Production Support已冻结 | canonical/repeat均以`r=1`、seed 829通过；冻结3514个顶点/10542个RGB标量并绑定全部上游hash |
 | 谱自然性uniform Support校准 | 已通过 | 连续K_nat=128+常数频带通过数值审计；`rho_nat=0.0992735862`并由两个输入artifact独立复算 |
-| BPDA 下源攻击基线 | 未建立 | Fixed-Support renderer、`rho_nat`与`lambda_spec`校准已通过；Action+Spectral两步smoke已实现、待服务器GPU验收，尚无正式训练或rollout结果 |
+| BPDA 下源攻击基线 | 未建立 | Fixed-Support renderer、两级校准与Action+Spectral两步GPU smoke均已通过；下一门槛是正式source trainer接入、训练与held-out rollout |
 | BPDA 下 OFT 迁移信号 | 未开始 | 新源候选未过门槛前不得进入 OFT |
 | 无偏跨模型迁移与鲁棒性提升 | 未开始 | 需方法冻结后的新任务/第三模型与后续防御实验 |
 
@@ -115,9 +117,9 @@ candidate已经冻结为独立Production Fixed Support，renderer只允许通过
 mesh/mapping/provenance hash加载其3514个紧凑参数坐标。uniform Support probe
 的`rho_nat`也已通过纯CPU校准与独立复算。新Action-only Spectral Guard runner
 已在真实states 0--9上完成GPU calibration，`lambda_spec`与完整状态恢复证据均已
-通过独立复核。Fixed-Support Action+Spectral正式trainer的两步工程smoke已实现；
-当前唯一下一门槛是在服务器运行并独立复核该smoke。在该门槛通过前，正式训练
-和held-out rollout均不得开始。
+通过独立复核。Fixed-Support Action+Spectral正式trainer的两步工程smoke也已在
+服务器通过并由WSL独立复核。当前唯一下一门槛是把已验收的正式核心接入source
+training，保存正式训练artifact并运行held-out states 10--19；OFT仍不得提前进入。
 
 真实 Spatial checkpoint 的 CPU 差分记录为 fused pixel values MAE/L∞=`0/0`，
 输入梯度有限且非零；文档记录当时全量 CPU 回归为 `113 passed, 1 skipped`。
@@ -887,8 +889,46 @@ Feature、wrist、OFT与legacy optimizer继续由进程级和证据级双重护�
 本地定向回归为`20 passed`；在显式排除本机缺失nvdiffrast或LIBERO而无法收集的
 9个旧测试文件后，OpenVLA Attack CPU回归为`245 passed`。直接运行完整`tests`
 在collection阶段因本机未安装nvdiffrast与完整LIBERO出现10个ImportError；这些
-均发生在测试执行前，不是本次行为回归。真实CUDA import、两步数值与资产事务仍
-必须由服务器GPU smoke验收。
+均发生在测试执行前，不是本次行为回归。在该实现提交时，真实CUDA import、
+两步数值与资产事务仍待服务器GPU smoke验收。
+
+服务器随后在commit `f73b1833fa8f77e15de1579d8b674332bda6980d`完成正式
+两步smoke；服务器定向CPU回归为`20 passed`，runner内置独立验收及修正后的WSL
+evaluator均返回`gate_pass=true`且无failure。Step 0的Action loss为
+`12.2232146`、`||g_A||_2=0.0992591`，全部谱能量与谱梯度严格为零；完整token、
+margin、hinge与calibration第0轮逐项一致，`g_total`逐值等于`g_A`。
+
+第一次Action-only等价update后，Step 1的`r_high=0.7888087`、
+hinge=`0.6895351`、`||g_S||_2=32.6384430`，证明正式谱分支真实激活。冻结
+`lambda_spec=0.000850536673`后，`||lambda*g_S||_2=0.0277602`，相对Action
+梯度比为`0.2787987`；`cos(g_A,g_S)=-0.7710031`，而
+`cos(g_A,g_total)=0.9753664`，联合梯度L2为`0.0801417`。四组完整梯度artifact
+逐值满足`lambda*g_S`及`g_total=g_A+lambda*g_S`。Action loss从
+`12.2232146`变为`12.3392862`只作诊断；它不影响工程Gate，也不能解释为方法
+效果。
+
+两个实际Surface Step均为`0.00784313772`；完整几何delta L∞依次为
+`0/0.00784313772/0.0121839214`，Support外全部三个时点均为0，像素/通道饱和
+比例均为0。bake PNG与Active Texture SHA-256同为
+`19a6b8ab117b5f1abb4f818615ce2c5ec490cfde88f809bcab3ba222658ea134`；MuJoCo
+Active Texture环境成功建立，XML与真实纹理恢复前后hash一致且backup已删除。
+
+权威action frames、arrays、steps、manifest、GPU log与pytest log SHA-256分别为
+`57332250beaf30d624eb64a1705bf969d84c75ff22dfab54b2c8b6ddd2e2c94a`、
+`0f15d4cc2709d6a506369c4928e73e8e12d88aa99a89ca892429126a750d0b66`、
+`aeebe436f481e7d47379cbeb65527bffce80aa0bdd08530d9ffb924703d48258`、
+`edc47ff113045825c696b6037c098e72cd132bca1f4537505c5bfdb71a46aae3`、
+`2d3c62f04fb5f8004128be8ea1de235710dac68c6f5fe72a747388409c6e1628`与
+`9b9376449a836ad3b5e248bdee76af89736335dec2c043ef17cac6f5e5e9d696`。
+
+初次WSL evaluator失败只因manifest记录服务器绝对LIBERO路径且谱基被rsync到
+不同相对目录，不是实验失败。commit
+`afa7c06aaa158e706ee32cb25155b0fca1bb4d3f`新增路径移动回归：Production
+Support、`rho_nat`、谱基和lambda manifest仍必须找到真实同hash文件；未同步的
+原始mesh/texture则必须同时匹配Production Support与已接受lambda calibration的
+provenance，不能静默跳过。修正后原bundle独立复核通过。smoke manifest的
+`formal_training_allowed=true`只表示训练前工程Gate通过；主入口尚未接入新正式
+trainer，不能回退到legacy Action+Feature路径。
 
 已冻结的第一项设计决定：谱方法在新候选中作为作用于最终 Surface Delta 的软
 自然性正则，只惩罚高频谱能量；它不再把扰动硬限制在前 K 个谱基中，也不是与
