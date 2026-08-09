@@ -11,6 +11,8 @@ Gate 2R 正式30-case证据基线：
 `0b0b86ae5d2b831e1cbd8df411404e64cf7e9e51`
 Dense Seed Gradient Audit正式证据基线：
 `a7196e7b2a53bf36fa554ed46a51e5305529419d`
+Seed Score与repeat稳定性正式证据基线：
+`870aec9933913908edbc931090a9c8d5346ec5e5`
 
 本文是 OpenVLA 谱纹理研究的**当前状态入口**。新一轮开发应先读本文，再按需
 进入专题文档；不要从长篇实验时间线推测当前优先级。历史实验索引见
@@ -39,7 +41,8 @@ Dense Seed Gradient Audit正式证据基线：
 | Deployment Effective View 与训练反传 | Gate 1D、2C、2E已通过 | 完整forward零误差；crop VJP对齐；五级梯度、单轮更新、bake/rollout/资产恢复通过 |
 | Visibility/Coverage/Compositor | Gate 2R与全部前置Gate已通过 | 20/20对齐证据、10/10零delta states与70/70 action token通过；2R正式30/30 valid且全部cosine为正 |
 | Action Objective与Dense Seed Gradient | 已通过 | 新Action hinge语义、10个完整`G_s [21263,3]`及全部artifact/hash由服务器运行并在WSL独立复核 |
-| BPDA 下源攻击基线 | 未建立 | Dense Seed已通过；Seed Score与Fixed Support尚未构造，首个新候选不得提前运行 |
+| Seed Score/density/smoothing | 已通过 | corrected canonical/repeat artifacts均从raw `G_s`独立复算；连续场与高分区域repeat稳定 |
+| BPDA 下源攻击基线 | 未建立 | Seed Score已通过；Fixed Support尚未构造，首个新候选不得提前运行 |
 | BPDA 下 OFT 迁移信号 | 未开始 | 新源候选未过门槛前不得进入 OFT |
 | 无偏跨模型迁移与鲁棒性提升 | 未开始 | 需方法冻结后的新任务/第三模型与后续防御实验 |
 
@@ -92,10 +95,10 @@ Visibility/Alignment audit、零 Surface Delta compositor Gate与Gate 2R均已�
 旧`696ee68`的states 0–8部分产物和`cf4676d`的state 9仍不作拼接证据；
 权威Gate 2R bundle来自同一commit `0b0b86a`的正式30-case。Fixed-Support
 Texture Parameterization纯计算契约、Action Objective GPU Audit和完整Dense
-Seed Gradient Audit现均已通过。Seed Score的归一化、跨state聚合与mesh平滑
-evidence contract已在本地实现，当前唯一下一门槛是服务器从正式Akita OBJ生成
-权威score artifact，并完成一次同commit Dense repeat的稳定性复核；在这两项
-通过前不得从本轮`G_s`直接生成生产Fixed Vertex Support。
+Seed Gradient Audit、Seed Score的归一化/跨state聚合/mesh平滑及repeat稳定性
+复核现均已通过。当前唯一下一门槛是把已冻结的连通区域、固定面积、seed分离和
+Primary coverage规则实现为可测试的Support Construction/evidence contract；
+契约通过前仍不得生成或冻结生产Fixed Vertex Support。
 
 真实 Spatial checkpoint 的 CPU 差分记录为 fused pixel values MAE/L∞=`0/0`，
 输入梯度有限且非零；文档记录当时全量 CPU 回归为 `113 passed, 1 skipped`。
@@ -655,7 +658,7 @@ score、density、coverage和production support均未计算。Dense Seed Gradien
 Gate据此正式通过；下一步只允许实现Seed Score及其evidence contract，不能直接
 从artifact生成Fixed Vertex Support。
 
-Seed Score/density/smoothing纯CPU契约已实现，尚待服务器正式artifact验收。
+Seed Score/density/smoothing纯CPU契约已实现并通过服务器正式artifact验收。
 它逐state保存`max(abs(G_s))`归一化scale、absolute component p99与
 `max/p99`，并完整保存`[S,N_v]`归一化梯度范数、`[N_v,3]`均值梯度、mean
 sensitivity、RGB direction consistency、`q_i`、barycentric lumped mass、
@@ -670,13 +673,38 @@ cosine、smoothed Spearman、top `0.1%/0.5%/1%/5%` Jaccard及前100个局部峰
 Jaccard；按本轮建议只报告分布，不预注册通过阈值，也不生成候选Support。
 相关Objective/Dense/geometry/score纵向CPU测试共47项通过。
 
-使用历史K=128谱基中同一Akita mesh arrays对正式Dense bundle做的本地非权威
-预演确认几何顶点/face为`21263/42522`，重算mass与旧谱基逐值一致；linear
-residual=`6.02e-14`、mass conservation error=`7.49e-16`且没有负density。
-逐state normalization `max/p99`范围为`3.08--7.24`；raw score、raw density与
-smoothed density的`max/p99`分别为`2.71/6.51/1.05`，局部峰数为42。该结果只
-排除明显数值故障，不能替代直接绑定服务器OBJ file hash的正式artifact，也不能
-回答repeat高分区域是否稳定。
+正式canonical run为
+`seed_score_original_corrected_870aec9_20260809_123241`，直接绑定score commit
+`870aec9933913908edbc931090a9c8d5346ec5e5`、原始Dense bundle与服务器Akita
+OBJ file/array hash；repeat run使用同一score commit和第二套同Dense实现的raw
+`G_s`。两套score artifact均由WSL从各自10个Dense NPZ、内嵌`21263/42522`
+vertices/faces完整重算，decision均为10/10通过，无负density且未构造Support。
+canonical manifest/artifact/log SHA-256分别为
+`c589f3c3a2ac7eadf032d5960186b5e122e72594baeeefbf44a00c45c5367d39`、
+`9067331ef000e0351e66d4d3b3673847dd00ff0945b72f58516197175980160b`、
+`70b94615565a5514a420b07cc1f59003c066e8618802d7bd38aaf85fa1f5aac7`；
+repeat对应为
+`4e311db4a5f72dae0cdc6ff7c63192728f2ced760eed09cce8a079329f870cfd`、
+`0fed4dc1f2c6010adb673dfbc91da70d6b918323023d70670fcfa27a21206657`、
+`92803b4e96f6513a102c415d00b17fdf628a95b05533edb55ccd6276341c5273`。
+
+canonical/repeat的normalization `max/p99`范围分别为`3.08--7.24`与
+`3.09--7.27`；raw score、raw density、smoothed density的`max/p99`分别为
+`2.709/6.510/1.0511`与`2.714/6.476/1.0513`。repeat raw score/raw density/
+smoothed density cosine为`0.9999849/0.9999833/0.9999996`，smoothed Spearman
+为`0.9999994`；top `0.1%/0.5%/1%/5%` Jaccard为
+`1.000/0.9815/0.9814/0.9925`。local peak总数为42/40，前40峰Jaccard
+`0.8605`，但最高15个峰ID及顺序完全一致；差异只出现在更低优先级局部峰。
+comparison JSON/log SHA-256为
+`f4894f555333ffa3b9c794d24699d76756fd155b488b9ade282e345e71c6f97e`与
+`21febbda5d446b7f834008bf0029c4506e12e49c956cc55ccd6276341c5273`。
+这些结果没有显示max-normalization导致高分区域不稳定，因此不追加repeat、
+不修改冻结公式，也不为迎合本次结果追补阈值。
+
+首次score运行误把score code provenance写成`a7196e7`，随后重复运行同目录又
+按设计触发防覆盖`FileExistsError`；首次comparison还引用了错误时间戳目录。
+这些产物只保留为诊断历史，不进入正式证据。上述三个`corrected`目录是唯一
+权威score/stability记录。
 
 已冻结的第一项设计决定：谱方法在新候选中作为作用于最终 Surface Delta 的软
 自然性正则，只惩罚高频谱能量；它不再把扰动硬限制在前 K 个谱基中，也不是与
