@@ -212,7 +212,10 @@ def untargeted_clean_action_margin_hinge(
         logits,
         clean_generated_token_ids,
     )
-    action_logits: Tensor = action_tokens.logits
+    # 模型 forward 通常处于 bfloat16 autocast。margin 的减法、max 与跨 token
+    # mean 统一提升到 float32，避免小优势在低精度归约中丢失；cast 保留到原始
+    # logits 的 autograd 链。
+    action_logits: Tensor = action_tokens.logits.float()
     if not bool(torch.isfinite(action_logits).all().item()):
         raise ValueError("action logits 包含 NaN/Inf")
 

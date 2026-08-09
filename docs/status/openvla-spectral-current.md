@@ -599,6 +599,15 @@ Dense Seed Audit。现有旧优化器仍显式调用 legacy objective，不得�
 接入该类，也不存在生产 Fixed Support；Objective GPU Audit 与后续 Dense Seed
 Audit 仍必须使用全顶点 `GeometryVertexTextureParameterization`。
 
+Objective GPU Audit runner 与纯 CPU evidence contract 现已实现，等待服务器
+验收。正式 runner 固定 Action hinge 为唯一 objective，逐 state 复用全部共享
+纹理实例、MuJoCo front-most alpha、visibility-masked compositor、精确
+center-crop 与 checkpoint BPDA；参考参数为全几何顶点 `[N_v,3]` 且严格为零。
+每行证据保存完整 clean token/classes、margin/hinge、五级梯度统计及 dense
+gradient hash；Feature/wrist/OFT、参数更新、Support Construction 和完整 seed
+gradient payload 均不进入该命令。CPU evidence/objective/parameterization 相关
+测试当前共28项通过。服务器 states 0--9 未通过前，不得运行 Dense Seed Audit。
+
 已冻结的第一项设计决定：谱方法在新候选中作为作用于最终 Surface Delta 的软
 自然性正则，只惩罚高频谱能量；它不再把扰动硬限制在前 K 个谱基中，也不是与
 顶点扰动相加的第二个可学习分量。

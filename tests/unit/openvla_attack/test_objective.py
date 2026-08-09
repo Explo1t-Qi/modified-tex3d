@@ -137,6 +137,26 @@ def test_margin_hinge_fails_without_action_tokens() -> None:
         untargeted_clean_action_margin_hinge(logits, clean_labels)
 
 
+def test_margin_hinge_promotes_bfloat16_logits_to_float32() -> None:
+    """真实 autocast logits 应用 float32 计算 margin，同时保留梯度。"""
+    logits = torch.zeros(
+        (1, 2, 32000),
+        dtype=torch.bfloat16,
+        requires_grad=True,
+    )
+    clean_labels = torch.tensor([[0, 31744]], dtype=torch.long)
+    with torch.no_grad():
+        logits[0, 0, 31744] = 1.0
+
+    result = untargeted_clean_action_margin_hinge(logits, clean_labels)
+    result.loss.backward()
+
+    assert result.margins.dtype == torch.float32
+    assert result.loss.dtype == torch.float32
+    assert logits.grad is not None
+    assert logits.grad.dtype == torch.bfloat16
+
+
 def test_action_logit_extraction_reuses_tail_alignment_and_causal_shift() -> None:
     """诊断读取的位置必须与实际攻击损失完全一致。"""
     labels = torch.tensor([[5, 31744, 31999]], dtype=torch.long)
