@@ -159,12 +159,18 @@ class FixedSupportTrainerCore:
         if action_norm == 0.0 or total_norm == 0.0:
             action_total_cosine = None
         else:
-            action_total_cosine = float(
+            raw_action_total_cosine = float(
                 torch.dot(
                     action_gradient.reshape(-1),
                     total_gradient.reshape(-1),
                 ).item()
                 / (action_norm * total_norm)
+            )
+            # float32 dot/norm归约在理论±1附近可产生约1e-7量级上溢；cosine
+            # 证据裁剪到数学定义域，不改变已经形成的total gradient或更新。
+            action_total_cosine = max(
+                -1.0,
+                min(1.0, raw_action_total_cosine),
             )
         recombined = action_gradient + weighted_spectral
         residual_linf = float(

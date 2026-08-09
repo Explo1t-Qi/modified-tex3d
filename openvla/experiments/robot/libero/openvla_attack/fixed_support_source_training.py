@@ -88,6 +88,44 @@ class FormalSourceTrainingResult:
     num_iterations: int
 
 
+def load_completed_formal_source_training(
+    manifest_path: str | Path,
+) -> FormalSourceTrainingResult:
+    """独立复核并恢复已完成训练的不可变产物引用，不重新执行任何update。"""
+
+    from .formal_source_training_evidence import (
+        evaluate_formal_source_training_bundle,
+    )
+
+    resolved_manifest = Path(manifest_path).resolve()
+    decision = evaluate_formal_source_training_bundle(resolved_manifest)
+    if not decision.gate_pass:
+        raise FormalSourceTrainingError(
+            "已完成正式训练bundle未通过独立复核: "
+            + "; ".join(decision.failures)
+        )
+    manifest = json.loads(resolved_manifest.read_text(encoding="utf-8"))
+    root = resolved_manifest.parent
+    result = FormalSourceTrainingResult(
+        manifest_path=resolved_manifest,
+        parameter_path=root / str(manifest["parameter_relative_path"]),
+        baked_texture_path=root / str(
+            manifest["baked_texture_relative_path"]
+        ),
+        loss_history_path=root / str(
+            manifest["loss_history_relative_path"]
+        ),
+        steps_path=root / str(manifest["steps_relative_path"]),
+        action_frames_path=root / str(
+            manifest["action_frames_relative_path"]
+        ),
+        num_iterations=int(manifest["num_iterations"]),
+    )
+    if result.num_iterations != 5000:
+        raise FormalSourceTrainingError("恢复入口只接受完整5000轮正式训练")
+    return result
+
+
 def loaded_legacy_optimizer_modules() -> tuple[str, ...]:
     """返回当前进程中已加载的 legacy Action+Feature 实现。"""
 
@@ -603,4 +641,35 @@ def run_formal_source_training_for_task(
     )
     if loaded_legacy_optimizer_modules():
         raise FormalSourceTrainingError("正式训练期间加载了legacy optimizer")
+    return result
+
+
+def prepare_completed_formal_training_for_evaluation(
+    *,
+    cfg: Any,
+) -> FormalSourceTrainingResult:
+    """核验当前checkout/config和旧训练provenance，放行后置paired rollout。"""
+
+    verify_executing_commit(str(cfg.code_commit))
+    manifest_path = cfg.fixed_support_formal_training_manifest_path
+    if manifest_path is None:
+        raise FormalSourceTrainingError("恢复paired rollout缺少正式training manifest")
+    inputs = load_formal_training_inputs(
+        production_support_path=cfg.fixed_support_path,
+        rho_nat_calibration_path=cfg.rho_nat_calibration_path,
+        spectral_basis_path=cfg.spectral_naturalness_basis_path,
+        spectral_guard_manifest_path=cfg.spectral_guard_manifest_path,
+        training_smoke_manifest_path=(
+            cfg.fixed_support_training_smoke_manifest_path
+        ),
+    )
+    validate_formal_config_against_smoke(cfg, inputs)
+    result = load_completed_formal_source_training(manifest_path)
+    manifest = json.loads(result.manifest_path.read_text(encoding="utf-8"))
+    if manifest.get("input_sha256") != dict(inputs.input_sha256):
+        raise FormalSourceTrainingError(
+            "已完成训练未绑定当前命令提供的同一组冻结artifact"
+        )
+    if loaded_legacy_optimizer_modules():
+        raise FormalSourceTrainingError("恢复paired rollout进程加载了legacy optimizer")
     return result

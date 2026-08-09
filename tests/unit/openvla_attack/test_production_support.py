@@ -190,5 +190,7 @@ def test_attack_entry_routes_fixed_support_without_top_level_legacy_import() -> 
     ]
     assert top_level_training_imports == []
     assert "run_formal_source_training_for_task" in source
+    assert "prepare_completed_formal_training_for_evaluation" in source
+    assert "跳过全部梯度计算与5000轮update" in source
     assert "_run_fixed_support_paired_source_gate" in source
     assert "texture_parameterization != \"fixed_support\"" in source

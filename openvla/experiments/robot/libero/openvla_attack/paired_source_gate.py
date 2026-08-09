@@ -80,6 +80,13 @@ def _validate_sha256(value: str, *, field_name: str) -> None:
         raise PairedSourceGateError(f"{field_name}必须是64位小写SHA-256")
 
 
+def _validate_git_sha(value: str, *, field_name: str) -> None:
+    if len(value) != 40 or any(
+        character not in "0123456789abcdef" for character in value
+    ):
+        raise PairedSourceGateError(f"{field_name}必须是40位小写Git SHA")
+
+
 def _index_outcomes(
     outcomes: Sequence[StateRolloutOutcome],
     *,
@@ -170,6 +177,7 @@ def write_paired_source_gate_artifact(
     decision: PairedSourceGateDecision,
     training_manifest_sha256: str,
     baked_texture_sha256: str,
+    evaluation_code_commit: str,
 ) -> Path:
     """以拒绝覆盖方式保存成对结果及其正式训练 provenance。"""
 
@@ -181,11 +189,16 @@ def write_paired_source_gate_artifact(
         baked_texture_sha256,
         field_name="baked_texture_sha256",
     )
+    _validate_git_sha(
+        evaluation_code_commit,
+        field_name="evaluation_code_commit",
+    )
     resolved = Path(path)
     payload = {
         "schema_version": PAIRED_SOURCE_GATE_SCHEMA_VERSION,
         "training_manifest_sha256": training_manifest_sha256,
         "baked_texture_sha256": baked_texture_sha256,
+        "evaluation_code_commit": evaluation_code_commit,
         "eval_state_ids": list(EXPECTED_EVAL_STATE_IDS),
         "minimum_attack_induced_failures": MIN_ATTACK_INDUCED_FAILURES,
         **{
@@ -269,6 +282,13 @@ def evaluate_paired_source_gate_artifact(
             _validate_sha256(str(payload.get(name)), field_name=name)
         except PairedSourceGateError as error:
             failures.append(str(error))
+    try:
+        _validate_git_sha(
+            str(payload.get("evaluation_code_commit")),
+            field_name="evaluation_code_commit",
+        )
+    except PairedSourceGateError as error:
+        failures.append(str(error))
     if file_sha256(training_manifest_path) != payload.get(
         "training_manifest_sha256"
     ):

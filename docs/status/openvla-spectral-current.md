@@ -980,6 +980,39 @@ Action-only control；在该对照之前不调整lambda、K_nat、Support或其�
 目标、lambda或任何方法配置；修正后本地定向`18 passed`、可收集回归仍为
 `256 passed`。正式GPU运行应使用包含该follow-up的最终commit。
 
+服务器在commit `0aca5253caa7525605c3d6ce537468bd917f8d90`完成了全部
+5000轮正式训练，耗时约2小时52分；5000行step、50000行逐state Action证据、
+终态3514×3参数、loss history、bake PNG和formal manifest均已完整落盘。训练后
+独立evaluator在step 101错误拒绝`cos(g_A,g_total)=1+O(10^-7)`，随后因循环提前
+break级联报告step行数和loss history错误，因此尚未进入paired rollout。资产事务
+仍在异常路径完整恢复XML与真实纹理。
+
+对完整bundle的只读复核表明这不是训练失败：五个输出文件SHA-256全部与manifest
+一致，行数精确为5000/50000，iteration和states 0--9完整唯一，loss history与
+JSONL逐值一致，联合梯度残差始终为0。float32 cosine最大上溢仅
+`4.79e-7`；Surface Step和L∞最大值相对理论边界也只多约`3e-8`，均属于已有数值
+容差范围。修正后的WSL evaluator对原bundle返回`gate_pass=true`且无failure；
+同时扩展rsync路径解析到更深的同步目录祖先，仍只接受文件名与SHA-256同时匹配。
+
+训练机制证据初步显示Action loss从`12.2232`降至`8.55536`，全程最小值
+`8.37500`；Spectral hinge在4999/5000轮激活。加权谱/Action梯度比从首个非零步
+约`0.2829`降至末轮`0.0002785`，中位数`0.0007493`；
+`cos(g_A,g_total)`最低`0.974777`，说明冻结guard没有改变Action主方向，但后期
+约束相对Action已很弱。Surface Delta在第92次update附近首次触及预算边界，末轮
+L∞为`0.501480`。这些只能解释训练机制，尚不能替代source rollout效果。
+
+下一操作不是重跑训练，而是由恢复入口消费已通过的原formal manifest及原bake，
+再次核验当前checkout、冻结配置、五项上游hash和完整训练bundle后，明确跳过全部
+梯度计算与5000轮update，只运行states 10--19的Clean/Adversarial paired rollout。
+paired artifact写回原训练目录，并同时绑定原training manifest/bake SHA与执行恢复
+流程的Git commit。修正后的原bundle独立复核与恢复入口回归均已纳入测试；本机
+可收集OpenVLA Attack CPU回归为`257 passed`。该rollout完成前队列6e仍未判定。
+
+原正式training manifest与GPU日志SHA-256分别为
+`f7e05cacf1490846d1272bfaea4d719edbac78b8b463cfed676f423c74255e94`和
+`b3e518e85d7e4ed3d4bb6c7cae24f8fc4c7276c965a32d19219a4107bd2e022d`；其余
+step/action-frame/parameter/bake/loss SHA由该manifest逐项绑定。
+
 已冻结的第一项设计决定：谱方法在新候选中作为作用于最终 Surface Delta 的软
 自然性正则，只惩罚高频谱能量；它不再把扰动硬限制在前 K 个谱基中，也不是与
 顶点扰动相加的第二个可学习分量。

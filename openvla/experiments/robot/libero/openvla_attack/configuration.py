@@ -118,6 +118,9 @@ class GenerateConfig:
     rho_nat_calibration_path: Optional[str] = None
     spectral_guard_manifest_path: Optional[str] = None
     fixed_support_training_smoke_manifest_path: Optional[str] = None
+    # 仅用于5000轮训练已完成但后置evaluator/rollout中止的恢复流程。提供后主
+    # 入口必须独立复核该正式manifest并直接使用其原bake，禁止再次训练。
+    fixed_support_formal_training_manifest_path: Optional[str] = None
     # 正式 GPU 运行必须显式绑定即将执行的完整 Git commit；上游校准和 smoke
     # 可以来自较早 commit，但其文件 SHA-256 必须逐项匹配。
     code_commit: Optional[str] = None
@@ -230,6 +233,9 @@ def validate_fixed_support_config(
         "spectral_guard_manifest_path": cfg.spectral_guard_manifest_path,
         "fixed_support_training_smoke_manifest_path": (
             cfg.fixed_support_training_smoke_manifest_path
+        ),
+        "fixed_support_formal_training_manifest_path": (
+            cfg.fixed_support_formal_training_manifest_path
         ),
         "code_commit": cfg.code_commit,
     }

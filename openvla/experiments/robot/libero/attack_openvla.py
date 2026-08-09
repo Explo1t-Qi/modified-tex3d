@@ -84,9 +84,9 @@ def _run_fixed_support_paired_source_gate(
     state_partition: InitialStatePartition,
     episode_runner: LiberoEpisodeRunner,
     runtime_assets: RuntimeAssetTransaction,
-    artifact_store: AttackArtifactStore,
     training_manifest_path: Path,
     baked_texture_path: Path,
+    evaluation_code_commit: str,
     log_file: TextIO,
 ) -> None:
     """在同一held-out states上依次运行clean与最终bake，并保存成对Gate。"""
@@ -167,12 +167,13 @@ def _run_fixed_support_paired_source_gate(
         outcomes["clean"],
         outcomes["adversarial"],
     )
-    paired_path = artifact_store.attack_directory / "paired_source_gate.json"
+    paired_path = training_manifest_path.parent / "paired_source_gate.json"
     write_paired_source_gate_artifact(
         paired_path,
         decision=decision,
         training_manifest_sha256=file_sha256(training_manifest_path),
         baked_texture_sha256=file_sha256(baked_texture_path),
+        evaluation_code_commit=evaluation_code_commit,
     )
     artifact_decision = evaluate_paired_source_gate_artifact(paired_path)
     if not artifact_decision.gate_pass:
@@ -495,22 +496,40 @@ def eval_libero(cfg: GenerateConfig) -> None:
                         raise RuntimeError(
                             "正式Fixed-Support训练需要OpenVLA processor"
                         )
-                    from openvla_attack.fixed_support_source_training import (
-                        run_formal_source_training_for_task,
-                    )
+                    if (
+                        cfg.fixed_support_formal_training_manifest_path
+                        is not None
+                    ):
+                        from openvla_attack.fixed_support_source_training import (
+                            prepare_completed_formal_training_for_evaluation,
+                        )
 
-                    fixed_training_result = run_formal_source_training_for_task(
-                        cfg=cfg,
-                        task=task,
-                        task_description=train_task_desc,
-                        initial_states=state_partition.train_states,
-                        initial_state_ids=state_partition.train_state_ids,
-                        asset=obj_cfg,
-                        model=model,
-                        processor=processor,
-                        renderer=renderer,
-                        artifact_store=artifact_store,
-                    )
+                        fixed_training_result = (
+                            prepare_completed_formal_training_for_evaluation(
+                                cfg=cfg,
+                            )
+                        )
+                        print(
+                            "[INFO] 已通过正式training manifest恢复；"
+                            "跳过全部梯度计算与5000轮update"
+                        )
+                    else:
+                        from openvla_attack.fixed_support_source_training import (
+                            run_formal_source_training_for_task,
+                        )
+
+                        fixed_training_result = run_formal_source_training_for_task(
+                            cfg=cfg,
+                            task=task,
+                            task_description=train_task_desc,
+                            initial_states=state_partition.train_states,
+                            initial_state_ids=state_partition.train_state_ids,
+                            asset=obj_cfg,
+                            model=model,
+                            processor=processor,
+                            renderer=renderer,
+                            artifact_store=artifact_store,
+                        )
                 else:
                     if attack_trainer is None:
                         raise RuntimeError(
@@ -565,11 +584,11 @@ def eval_libero(cfg: GenerateConfig) -> None:
                         state_partition=state_partition,
                         episode_runner=episode_runner,
                         runtime_assets=runtime_assets,
-                        artifact_store=artifact_store,
                         training_manifest_path=(
                             fixed_training_result.manifest_path
                         ),
                         baked_texture_path=trained_tex_path,
+                        evaluation_code_commit=str(cfg.code_commit),
                         log_file=log_file,
                     )
                     # paired helper已经依次完成clean和adversarial rollout；不要再

@@ -7,6 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
+import pytest
 import torch
 import torch.nn as nn
 
@@ -15,6 +16,8 @@ from openvla.experiments.robot.libero.openvla_attack.artifacts import (
 )
 from openvla.experiments.robot.libero.openvla_attack.fixed_support_source_training import (
     FormalTrainingInputs,
+    FormalSourceTrainingError,
+    load_completed_formal_source_training,
     run_formal_source_training,
 )
 from openvla.experiments.robot.libero.openvla_attack.formal_source_training_evidence import (
@@ -195,6 +198,48 @@ def test_formal_training_writes_incremental_evidence_and_final_artifacts(
     assert result.baked_texture_path.is_file()
 
 
+def test_completed_training_recovery_only_returns_existing_artifact_paths(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    names = {
+        "parameter_relative_path": "parameter.pt",
+        "baked_texture_relative_path": "baked.png",
+        "loss_history_relative_path": "loss.npy",
+        "steps_relative_path": "steps.jsonl",
+        "action_frames_relative_path": "frames.jsonl",
+    }
+    for name in names.values():
+        (tmp_path / name).write_bytes(b"existing")
+    manifest_path = tmp_path / "formal_source_training_manifest.json"
+    manifest_path.write_text(
+        json.dumps({**names, "num_iterations": 5000}),
+        encoding="utf-8",
+    )
+    evaluator_name = (
+        "openvla.experiments.robot.libero.openvla_attack."
+        "formal_source_training_evidence."
+        "evaluate_formal_source_training_bundle"
+    )
+    monkeypatch.setattr(
+        evaluator_name,
+        lambda path: SimpleNamespace(gate_pass=True, failures=()),
+    )
+
+    result = load_completed_formal_source_training(manifest_path)
+
+    assert result.num_iterations == 5000
+    assert result.baked_texture_path == tmp_path / "baked.png"
+    assert result.parameter_path.read_bytes() == b"existing"
+
+    monkeypatch.setattr(
+        evaluator_name,
+        lambda path: SimpleNamespace(gate_pass=False, failures=("bad",)),
+    )
+    with pytest.raises(FormalSourceTrainingError, match="bad"):
+        load_completed_formal_source_training(manifest_path)
+
+
 def test_cpu_evaluator_rejects_no_evidence_and_accepts_complete_sequence(
     tmp_path,
     monkeypatch,
@@ -273,3 +318,23 @@ def test_cpu_evaluator_rejects_no_evidence_and_accepts_complete_sequence(
 
     assert complete.gate_pass is True
     assert complete.failures == ()
+
+    # 真实服务器bundle同时暴露了两个边界：float32 cosine在理论1附近可上溢
+    # 约5e-7；rsync后上游artifact位于manifest目录的第三层祖先兄弟目录。
+    rows = [json.loads(line) for line in result.steps_path.read_text().splitlines()]
+    rows[101]["action_total_cosine"] = 1.0000004788342158
+    with result.steps_path.open("w", encoding="utf-8") as handle:
+        for row in rows:
+            handle.write(json.dumps(row, sort_keys=True) + "\n")
+    manifest = json.loads(result.manifest_path.read_text(encoding="utf-8"))
+    manifest["steps_sha256"] = file_sha256(result.steps_path)
+    manifest["input_paths"] = {
+        name: f"/server/tex3d/artifacts/{Path(path).name}"
+        for name, path in manifest["input_paths"].items()
+    }
+    result.manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    moved_bundle = evaluate_formal_source_training_bundle(result.manifest_path)
+
+    assert moved_bundle.gate_pass is True
+    assert moved_bundle.failures == ()

@@ -82,6 +82,7 @@ def test_gate_artifact_binds_training_and_bake(tmp_path) -> None:
         decision=decision,
         training_manifest_sha256="a" * 64,
         baked_texture_sha256="b" * 64,
+        evaluation_code_commit="c" * 40,
     )
 
     payload = json.loads(path.read_text(encoding="utf-8"))
@@ -114,6 +115,7 @@ def test_paired_artifact_is_recomputed_and_binds_local_training_bundle(
         decision=decision,
         training_manifest_sha256=file_sha256(training_manifest_path),
         baked_texture_sha256=file_sha256(baked_path),
+        evaluation_code_commit="c" * 40,
     )
 
     artifact_decision = evaluate_paired_source_gate_artifact(path)

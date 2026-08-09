@@ -113,11 +113,15 @@ def test_formal_fixed_support_experiment_freezes_candidate_and_state_split() -> 
         alpha_feature=0.0,
         live_test_enabled=False,
         unnorm_key="libero_spatial_no_noops",
+        fixed_support_formal_training_manifest_path="/tmp/formal.json",
     )
 
     validate_formal_fixed_support_experiment(
         config,
         texture_parameterization="fixed_support",
+    )
+    assert config.fixed_support_formal_training_manifest_path == (
+        "/tmp/formal.json"
     )
 
     config.eval_init_state_ids = "10-18"

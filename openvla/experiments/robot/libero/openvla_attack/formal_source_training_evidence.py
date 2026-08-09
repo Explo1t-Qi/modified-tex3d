@@ -30,6 +30,7 @@ from .seed_score_audit import file_sha256
 
 FORMAL_NUM_ITERATIONS: Final[int] = 5000
 NUMERIC_TOLERANCE: Final[float] = 1e-7
+COSINE_TOLERANCE: Final[float] = 1e-6
 
 
 @dataclass(frozen=True)
@@ -73,8 +74,10 @@ def _resolve_by_hash(
     candidates: list[Path] = [original, manifest_root / original]
     # rsync通常把各run放在experiments_inbox的兄弟目录。只搜索manifest根及
     # 两级祖先，避免意外遍历整个仓库或用户目录。
-    for root in (manifest_root, manifest_root.parent, manifest_root.parent.parent):
+    search_roots = (manifest_root, *tuple(manifest_root.parents)[:5])
+    for root in search_roots:
         if root.is_dir():
+            candidates.append(root / original.name)
             candidates.extend(root.glob(f"*/{original.name}"))
             candidates.extend(root.glob(f"*/*/{original.name}"))
     checked: set[Path] = set()
@@ -228,9 +231,9 @@ def evaluate_formal_source_training_bundle(
             if row.get("combination_residual_linf") != 0.0:
                 failures.append(f"step {iteration}联合梯度残差不为零")
                 break
-            if not -1.0 - NUMERIC_TOLERANCE <= float(
+            if not -1.0 - COSINE_TOLERANCE <= float(
                 row["action_total_cosine"]
-            ) <= 1.0 + NUMERIC_TOLERANCE:
+            ) <= 1.0 + COSINE_TOLERANCE:
                 failures.append(f"step {iteration} Action/total cosine越界")
                 break
             stats = row.get("surface_step_stats", {})
