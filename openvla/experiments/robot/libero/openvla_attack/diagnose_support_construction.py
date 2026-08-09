@@ -103,6 +103,16 @@ def _load_visibility_rows(path: Path) -> list[dict[str, Any]]:
     return rows
 
 
+def _json_default(value: Any) -> Any:
+    """只允许 NumPy scalar 转为等值 Python scalar，拒绝静默展开数组。"""
+
+    if isinstance(value, np.generic):
+        return value.item()
+    raise TypeError(
+        f"Support manifest 包含不可序列化类型: {type(value).__name__}"
+    )
+
+
 def _save_alpha(path: Path, alpha: torch.Tensor) -> str:
     array = (
         alpha.detach()
@@ -406,7 +416,13 @@ def run_support_construction_audit(
         "legacy_optimization_used": False,
     }
     manifest_path.write_text(
-        json.dumps(manifest, indent=2, sort_keys=True) + "\n",
+        json.dumps(
+            manifest,
+            indent=2,
+            sort_keys=True,
+            default=_json_default,
+        )
+        + "\n",
         encoding="utf-8",
     )
     print(

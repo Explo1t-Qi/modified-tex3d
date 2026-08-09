@@ -3,7 +3,14 @@
 from __future__ import annotations
 
 import ast
+import json
 from pathlib import Path
+
+import numpy as np
+
+from openvla.experiments.robot.libero.openvla_attack.diagnose_support_construction import (
+    _json_default,
+)
 
 
 MODULE_ROOT = (
@@ -54,3 +61,17 @@ def test_repeat_runner_only_compares_existing_candidate_artifacts() -> None:
     assert "load_seed_score_artifact_arrays" not in called
     assert '"threshold_registered": False' in source
     assert '"fixed_support_frozen": False' in source
+
+
+def test_manifest_json_encoder_accepts_numpy_scalars_but_not_arrays() -> None:
+    encoded = json.dumps(
+        {"gate": np.bool_(True), "count": np.int64(3)},
+        default=_json_default,
+    )
+    assert json.loads(encoded) == {"gate": True, "count": 3}
+    try:
+        json.dumps({"mask": np.zeros(2)}, default=_json_default)
+    except TypeError as error:
+        assert "ndarray" in str(error)
+    else:
+        raise AssertionError("manifest 不得静默展开 ndarray")
