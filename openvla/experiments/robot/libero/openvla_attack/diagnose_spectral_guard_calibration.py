@@ -399,6 +399,17 @@ class AllStateActionGradientProvider:
     def load_state_dict(self, state_dict: dict[str, Any]) -> None:
         self.call_count = int(state_dict["call_count"])
 
+    def drain_frame_evidence(self) -> tuple[dict[str, Any], ...]:
+        """移交并清空逐state证据，供5000轮正式训练增量落盘。
+
+        校准和两步 smoke 仍可直接读取 ``frame_evidence_history``；正式训练每轮
+        调用本方法，避免在内存中长期保留50000行 margins 与 gradient hash。
+        """
+
+        rows = tuple(self.frame_evidence_history)
+        self.frame_evidence_history.clear()
+        return rows
+
     def __call__(self) -> MeanActionGradient:
         parameter = self.renderer.get_texture_param()
         losses: list[float] = []

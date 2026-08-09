@@ -137,7 +137,7 @@ class AttackArtifactStore:
         """
         # baked_texture: float CPU NHWC [1, tex_h, tex_w, 3]。
         baked_texture: torch.Tensor = (
-            renderer.get_baked_adv_texture().squeeze(0).cpu()
+            renderer.get_baked_adv_texture().detach().squeeze(0).cpu()
         )
         texture_pixels: np.ndarray = np.rint(
             baked_texture.numpy() * 255.0
@@ -163,6 +163,7 @@ class AttackArtifactStore:
         tags: dict[str, str] = {
             "legacy_vertex": "Vertex_Noise",
             "geometry_vertex": "Geometry_Vertex_Delta",
+            "fixed_support": "Fixed_Support_Delta",
             "spectral": "Spectral_Coefficients",
         }
         if parameterization_name not in tags:

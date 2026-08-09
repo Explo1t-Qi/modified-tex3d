@@ -48,6 +48,7 @@ from openvla_attack.configuration import (
     resolve_feature_view_mode,
     resolve_texture_parameterization,
     validate_fixed_support_config,
+    validate_formal_fixed_support_experiment,
     validate_gradient_norm_protection,
     validate_source_action_response_audit,
 )
@@ -55,7 +56,6 @@ from openvla_attack.evaluation import (
     LiberoEpisodeRunner,
     RolloutResult,
 )
-from openvla_attack.frame_collection import TrainingProcessor
 from openvla_attack.renderer import (
     AdversarialTextureLoadResult,
     DifferentiableRenderer,
@@ -66,10 +66,6 @@ from openvla_attack.state_selection import (
     InitialStatePartition,
     select_initial_state_partition,
 )
-from openvla_attack.training import (
-    AttackTrainer,
-    AttackTrainingModel,
-)
 
 sys.path.append(str(Path(__file__).parent.parent))
 
@@ -79,6 +75,122 @@ if OPENVLA_REPO_ROOT not in sys.path:
 
 from openvla_utils import get_processor
 from robot_utils import DATE_TIME, get_model, set_seed_everywhere
+
+
+def _run_fixed_support_paired_source_gate(
+    *,
+    task: Any,
+    task_id: int,
+    state_partition: InitialStatePartition,
+    episode_runner: LiberoEpisodeRunner,
+    runtime_assets: RuntimeAssetTransaction,
+    artifact_store: AttackArtifactStore,
+    training_manifest_path: Path,
+    baked_texture_path: Path,
+    log_file: TextIO,
+) -> None:
+    """在同一held-out states上依次运行clean与最终bake，并保存成对Gate。"""
+
+    from openvla_attack.fixed_support_source_training import (
+        loaded_legacy_optimizer_modules,
+    )
+    from openvla_attack.paired_source_gate import (
+        EXPECTED_EVAL_STATE_IDS,
+        StateRolloutOutcome,
+        evaluate_paired_source_gate_artifact,
+        evaluate_paired_source_gate,
+        state_fingerprint,
+        write_paired_source_gate_artifact,
+    )
+    from openvla_attack.seed_score_audit import file_sha256
+
+    if tuple(state_partition.eval_state_ids) != EXPECTED_EVAL_STATE_IDS:
+        raise RuntimeError("正式source Gate必须精确使用held-out states 10-19")
+    if loaded_legacy_optimizer_modules():
+        raise RuntimeError("正式paired rollout进程加载了legacy optimizer")
+
+    outcomes: dict[str, list[StateRolloutOutcome]] = {
+        "clean": [],
+        "adversarial": [],
+    }
+    condition: str
+    for condition in ("clean", "adversarial"):
+        if condition == "clean":
+            runtime_assets.restore(
+                context=f"Task {task_id} paired clean control",
+                remove_backups=False,
+            )
+        else:
+            mirrored = runtime_assets.activate_texture(
+                baked_texture_path,
+                mirror_real_texture=True,
+            )
+            if not mirrored:
+                raise RuntimeError("正式paired rollout未同步激活真实MuJoCo texture")
+        for offset, (state_id, initial_state) in enumerate(
+            zip(
+                state_partition.eval_state_ids,
+                state_partition.eval_states,
+            )
+        ):
+            rollout_result = episode_runner.run(
+                task=task,
+                initial_state=initial_state,
+                task_id=task_id,
+                episode_index=offset,
+            )
+            outcome = StateRolloutOutcome(
+                state_id=int(state_id),
+                initial_state_sha256=state_fingerprint(initial_state),
+                success=bool(rollout_result.success),
+            )
+            outcomes[condition].append(outcome)
+            log_str = (
+                f"Task: {task_id} | Condition: {condition} | "
+                f"State: {state_id} | Success: {rollout_result.success}"
+            )
+            print(log_str)
+            log_file.write(log_str + "\n")
+            log_file.flush()
+            video_index = offset + (1 if condition == "clean" else 11)
+            save_rollout_video(
+                rollout_result.replay_images,
+                video_index,
+                success=rollout_result.success,
+                task_description=(
+                    f"{condition}: {rollout_result.task_description}"
+                ),
+                log_file=log_file,
+            )
+
+    decision = evaluate_paired_source_gate(
+        outcomes["clean"],
+        outcomes["adversarial"],
+    )
+    paired_path = artifact_store.attack_directory / "paired_source_gate.json"
+    write_paired_source_gate_artifact(
+        paired_path,
+        decision=decision,
+        training_manifest_sha256=file_sha256(training_manifest_path),
+        baked_texture_sha256=file_sha256(baked_texture_path),
+    )
+    artifact_decision = evaluate_paired_source_gate_artifact(paired_path)
+    if not artifact_decision.gate_pass:
+        raise RuntimeError(
+            "paired source gate artifact独立复核失败: "
+            + "; ".join(artifact_decision.failures)
+        )
+    summary = (
+        "PAIRED SOURCE GATE | "
+        f"clean_success={decision.clean_successes}/10 | "
+        f"adversarial_failure={decision.adversarial_failures}/10 | "
+        "attack_induced_failure="
+        f"{decision.attack_induced_failures}/10 | "
+        f"gate_pass={decision.gate_pass}"
+    )
+    print(f"[DONE] {summary}")
+    log_file.write(summary + "\n")
+    log_file.flush()
 
 
 @draccus.wrap()
@@ -97,11 +209,10 @@ def eval_libero(cfg: GenerateConfig) -> None:
         cfg,
         texture_parameterization=texture_parameterization,
     )
-    if texture_parameterization == "fixed_support":
-        raise ValueError(
-            "Production Fixed Support 已可加载，但 rho_nat、lambda_spec 与新 "
-            "Action-only trainer 尚未全部校准/接入；当前入口禁止正式训练"
-        )
+    validate_formal_fixed_support_experiment(
+        cfg,
+        texture_parameterization=texture_parameterization,
+    )
     if (
         feature_view_mode == "primary_wrist"
         and feature_objective != "siglip_patch"
@@ -211,8 +322,8 @@ def eval_libero(cfg: GenerateConfig) -> None:
     )
 
     # 2.3 加载策略模型及其输入 processor。
-    model: AttackTrainingModel = get_model(cfg)
-    processor: Optional[TrainingProcessor] = (
+    model: Any = get_model(cfg)
+    processor: Optional[Any] = (
         get_processor(cfg)
         if cfg.model_family == "openvla"
         else None
@@ -265,12 +376,16 @@ def eval_libero(cfg: GenerateConfig) -> None:
         video_resolution=video_resolution,
         max_steps=300,
     )
-    attack_trainer: Optional[AttackTrainer] = None
-    if renderer is not None:
+    attack_trainer: Optional[Any] = None
+    if renderer is not None and texture_parameterization != "fixed_support":
         if processor is None:
             raise RuntimeError(
                 "OpenVLA 攻击训练需要 Hugging Face processor"
             )
+        # Legacy Action+Feature模块只允许在旧参数化分支延迟导入；正式
+        # Fixed-Support进程必须保证它们从未进入sys.modules。
+        from openvla_attack.training import AttackTrainer
+
         attack_trainer = AttackTrainer(
             cfg=cfg,
             model=model,
@@ -359,9 +474,9 @@ def eval_libero(cfg: GenerateConfig) -> None:
 
             if cfg.enable_attack and cfg.load_texture_path is None:
                 print(f"[INFO] Attack training for Task {task_id}...")
-                if attack_trainer is None or renderer is None:
+                if renderer is None:
                     raise RuntimeError(
-                        "攻击已启用，但 renderer/trainer 尚未初始化"
+                        "攻击已启用，但 renderer 尚未初始化"
                     )
                 renderer.reset_texture()
 
@@ -372,18 +487,46 @@ def eval_libero(cfg: GenerateConfig) -> None:
                 )
                 dummy_env.close()
 
-                # 3. 在 train 内采集训练帧；4. 使用这些帧优化对抗纹理。
-                attack_trainer.train(
-                    task=task,
-                    task_description=train_task_desc,
-                    fallback_initial_state=state_partition.train_states[0],
-                    task_id=task_id,
-                    num_iters=cfg.attack_iters,
-                    initial_states=state_partition.train_states,
-                    initial_state_ids=(
-                        state_partition.train_state_ids
-                    ),
-                )
+                # 3. 在 train states采集冻结Action输入；4. 使用对应参数化的
+                # 唯一trainer优化纹理。Fixed-Support分支不导入legacy trainer。
+                fixed_training_result: Optional[Any] = None
+                if texture_parameterization == "fixed_support":
+                    if processor is None:
+                        raise RuntimeError(
+                            "正式Fixed-Support训练需要OpenVLA processor"
+                        )
+                    from openvla_attack.fixed_support_source_training import (
+                        run_formal_source_training_for_task,
+                    )
+
+                    fixed_training_result = run_formal_source_training_for_task(
+                        cfg=cfg,
+                        task=task,
+                        task_description=train_task_desc,
+                        initial_states=state_partition.train_states,
+                        initial_state_ids=state_partition.train_state_ids,
+                        asset=obj_cfg,
+                        model=model,
+                        processor=processor,
+                        renderer=renderer,
+                        artifact_store=artifact_store,
+                    )
+                else:
+                    if attack_trainer is None:
+                        raise RuntimeError(
+                            "legacy攻击已启用，但trainer尚未初始化"
+                        )
+                    attack_trainer.train(
+                        task=task,
+                        task_description=train_task_desc,
+                        fallback_initial_state=state_partition.train_states[0],
+                        task_id=task_id,
+                        num_iters=cfg.attack_iters,
+                        initial_states=state_partition.train_states,
+                        initial_state_ids=(
+                            state_partition.train_state_ids
+                        ),
+                    )
                 if (
                     cfg.spectral_gradient_audit_only
                     or cfg.source_action_response_audit_enabled
@@ -399,16 +542,39 @@ def eval_libero(cfg: GenerateConfig) -> None:
                     )
                     continue
 
-                # 5.1 保存长期保留的最终攻击纹理。
-                trained_tex_path: Path = artifact_store.save_trained_texture(
-                    task_id=task_id,
-                    timestamp=DATE_TIME,
-                    renderer=renderer,
-                )
+                # 5.1 保存长期保留的最终攻击纹理。正式trainer已经把bake与
+                # parameter/manifest原子地绑定，禁止再次bake产生另一份部署输入。
+                trained_tex_path: Path
+                if fixed_training_result is not None:
+                    trained_tex_path = fixed_training_result.baked_texture_path
+                else:
+                    trained_tex_path = artifact_store.save_trained_texture(
+                        task_id=task_id,
+                        timestamp=DATE_TIME,
+                        renderer=renderer,
+                    )
                 print(
                     f"[INFO] Task {task_id} texture saved → "
                     f"{trained_tex_path}"
                 )
+
+                if fixed_training_result is not None:
+                    _run_fixed_support_paired_source_gate(
+                        task=task,
+                        task_id=task_id,
+                        state_partition=state_partition,
+                        episode_runner=episode_runner,
+                        runtime_assets=runtime_assets,
+                        artifact_store=artifact_store,
+                        training_manifest_path=(
+                            fixed_training_result.manifest_path
+                        ),
+                        baked_texture_path=trained_tex_path,
+                        log_file=log_file,
+                    )
+                    # paired helper已经依次完成clean和adversarial rollout；不要再
+                    # 落入legacy单条件评估，也不要用总失败数命名攻击成功率。
+                    continue
 
                 # 5.2 将最终纹理激活到 MuJoCo 运行资产。
                 mirrored_real_texture = runtime_assets.activate_texture(
@@ -459,7 +625,12 @@ def eval_libero(cfg: GenerateConfig) -> None:
                     log_file=log_file,
                 )
 
-        if (
+        if texture_parameterization == "fixed_support":
+            print("\n[DONE] Fixed-Support paired source evaluation completed.")
+            log_file.write(
+                "\nFIXED-SUPPORT PAIRED SOURCE EVALUATION COMPLETED\n"
+            )
+        elif (
             cfg.spectral_gradient_audit_only
             or cfg.source_action_response_audit_enabled
         ):

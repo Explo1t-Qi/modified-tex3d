@@ -111,6 +111,16 @@ class GenerateConfig:
     # ``fixed_support`` 唯一允许消费的不可变 Production Support NPZ。该路径
     # 只冻结参数空间；rho_nat/lambda_spec 校准通过前正式训练仍被入口阻止。
     fixed_support_path: Optional[str] = None
+    # 固定 Support 的可学习空间仍不使用 ``spectral_basis_path``。以下四个
+    # artifact 只定义 Spectral Naturalness Guard，并由正式 source trainer
+    # 与已通过的两步 smoke 共同绑定。
+    spectral_naturalness_basis_path: Optional[str] = None
+    rho_nat_calibration_path: Optional[str] = None
+    spectral_guard_manifest_path: Optional[str] = None
+    fixed_support_training_smoke_manifest_path: Optional[str] = None
+    # 正式 GPU 运行必须显式绑定即将执行的完整 Git commit；上游校准和 smoke
+    # 可以来自较早 commit，但其文件 SHA-256 必须逐项匹配。
+    code_commit: Optional[str] = None
     spectral_basis_path: Optional[str] = None
     spectral_basis_count: int = 128
     num_frames_to_attack: int = 20
@@ -187,11 +197,139 @@ def validate_fixed_support_config(
             raise ValueError(
                 "fixed_support 参数化不能把 spectral_basis_path 当作可学习参数空间"
             )
+        required_artifacts = {
+            "spectral_naturalness_basis_path": (
+                cfg.spectral_naturalness_basis_path
+            ),
+            "rho_nat_calibration_path": cfg.rho_nat_calibration_path,
+            "spectral_guard_manifest_path": cfg.spectral_guard_manifest_path,
+            "fixed_support_training_smoke_manifest_path": (
+                cfg.fixed_support_training_smoke_manifest_path
+            ),
+        }
+        missing = [
+            name for name, value in required_artifacts.items() if value is None
+        ]
+        if missing:
+            raise ValueError(
+                "fixed_support 正式训练缺少冻结artifact: "
+                + ", ".join(missing)
+            )
+        if cfg.code_commit is None or len(cfg.code_commit) != 40 or any(
+            character not in "0123456789abcdef"
+            for character in cfg.code_commit
+        ):
+            raise ValueError("fixed_support 正式训练要求40位小写code_commit")
         return
-    if cfg.fixed_support_path is not None:
+    fixed_support_only_values = {
+        "fixed_support_path": cfg.fixed_support_path,
+        "spectral_naturalness_basis_path": (
+            cfg.spectral_naturalness_basis_path
+        ),
+        "rho_nat_calibration_path": cfg.rho_nat_calibration_path,
+        "spectral_guard_manifest_path": cfg.spectral_guard_manifest_path,
+        "fixed_support_training_smoke_manifest_path": (
+            cfg.fixed_support_training_smoke_manifest_path
+        ),
+        "code_commit": cfg.code_commit,
+    }
+    configured = [
+        name
+        for name, value in fixed_support_only_values.items()
+        if value is not None
+    ]
+    if configured:
         raise ValueError(
-            "fixed_support_path 只能与 texture_parameterization='fixed_support' 同用"
+            "Fixed-Support正式训练字段只能与 "
+            "texture_parameterization='fixed_support' 同用: "
+            + ", ".join(configured)
         )
+
+
+def validate_formal_fixed_support_experiment(
+    cfg: GenerateConfig,
+    *,
+    texture_parameterization: TextureParameterizationKind,
+) -> None:
+    """冻结第一轮正式 source candidate 的方法与数据边界。
+
+    该校验只在 ``fixed_support`` 路径生效。所有 legacy Feature、动态保护、
+    audit、预训练纹理加载和 live-test 开关均被拒绝，防止 CLI 中看似无害的旧
+    默认值悄悄改变已通过 smoke 的 Action+Spectral 数值语义。
+    """
+
+    if texture_parameterization != "fixed_support":
+        return
+    if not cfg.enable_attack:
+        raise ValueError("正式Fixed-Support source训练要求enable_attack=True")
+    frozen_values = {
+        "model_family": (cfg.model_family, "openvla"),
+        "object_name": (cfg.object_name, "akita_black_bowl"),
+        "task_suite_name": (cfg.task_suite_name, "libero_spatial"),
+        "task_id": (cfg.task_id, 0),
+        "attack_iters": (cfg.attack_iters, 5000),
+        "num_train_init_states": (cfg.num_train_init_states, 10),
+        "num_trials_per_task": (cfg.num_trials_per_task, 10),
+        "train_init_state_ids": (cfg.train_init_state_ids, "0-9"),
+        "eval_init_state_ids": (cfg.eval_init_state_ids, "10-19"),
+        "center_crop": (cfg.center_crop, True),
+        "alpha_action": (cfg.alpha_action, 1.0),
+        "alpha_feature": (cfg.alpha_feature, 0.0),
+        "feature_view_mode": (cfg.feature_view_mode, "primary"),
+        "unnorm_key": (cfg.unnorm_key, "libero_spatial_no_noops"),
+        "live_test_enabled": (cfg.live_test_enabled, False),
+        "load_in_8bit": (cfg.load_in_8bit, False),
+        "load_in_4bit": (cfg.load_in_4bit, False),
+        "override_mesh_path": (cfg.override_mesh_path, None),
+        "override_texture_path": (cfg.override_texture_path, None),
+        "override_xml_path": (cfg.override_xml_path, None),
+        "save_attack_artifacts": (cfg.save_attack_artifacts, True),
+    }
+    mismatches = [
+        f"{name}={actual!r}（要求{expected!r}）"
+        for name, (actual, expected) in frozen_values.items()
+        if actual != expected
+    ]
+    if mismatches:
+        raise ValueError(
+            "正式Fixed-Support source配置偏离冻结候选: "
+            + "; ".join(mismatches)
+        )
+    if not cfg.require_disjoint_init_states:
+        raise ValueError("正式source Gate要求train/eval states互斥")
+    forbidden = {
+        "load_texture_path": cfg.load_texture_path is not None,
+        "gradient_norm_protection_enabled": (
+            cfg.gradient_norm_protection_enabled
+        ),
+        "spectral_gradient_audit_enabled": cfg.spectral_gradient_audit_enabled,
+        "spectral_gradient_audit_only": cfg.spectral_gradient_audit_only,
+        "source_action_response_audit_enabled": (
+            cfg.source_action_response_audit_enabled
+        ),
+        "frame_collect_with_policy": cfg.frame_collect_with_policy,
+        "collect_grasp_frames": cfg.collect_grasp_frames,
+    }
+    enabled = [name for name, value in forbidden.items() if value]
+    if enabled:
+        raise ValueError(
+            "正式Fixed-Support source路径禁止legacy/诊断开关: "
+            + ", ".join(enabled)
+        )
+    if not math.isclose(
+        cfg.attack_surface_step,
+        2.0 / 255.0,
+        rel_tol=0.0,
+        abs_tol=1e-15,
+    ):
+        raise ValueError("正式source训练冻结Surface Step=2/255")
+    if not math.isclose(
+        cfg.attack_epsilon,
+        128.0 / 255.0,
+        rel_tol=0.0,
+        abs_tol=1e-15,
+    ):
+        raise ValueError("正式source训练冻结Surface-Linf预算=128/255")
 
 
 def validate_gradient_norm_protection(

@@ -11,6 +11,7 @@ from openvla.experiments.robot.libero.openvla_attack.configuration import (
     resolve_feature_view_mode,
     resolve_texture_parameterization,
     validate_fixed_support_config,
+    validate_formal_fixed_support_experiment,
     validate_gradient_norm_protection,
     validate_source_action_response_audit,
 )
@@ -40,6 +41,11 @@ def test_draccus_decodes_frozen_support_path_and_runtime_narrows_kind() -> None:
         {
             "texture_parameterization": "fixed_support",
             "fixed_support_path": "/tmp/production_fixed_support.npz",
+            "spectral_naturalness_basis_path": "/tmp/basis.npz",
+            "rho_nat_calibration_path": "/tmp/rho.npz",
+            "spectral_guard_manifest_path": "/tmp/guard.json",
+            "fixed_support_training_smoke_manifest_path": "/tmp/smoke.json",
+            "code_commit": "a" * 40,
         },
     )
 
@@ -69,6 +75,67 @@ def test_fixed_support_config_requires_exclusive_artifact_path() -> None:
                 texture_parameterization="fixed_support",
                 fixed_support_path="/tmp/support.npz",
                 spectral_basis_path="/tmp/basis.npz",
+                spectral_naturalness_basis_path="/tmp/naturalness.npz",
+                rho_nat_calibration_path="/tmp/rho.npz",
+                spectral_guard_manifest_path="/tmp/guard.json",
+                fixed_support_training_smoke_manifest_path="/tmp/smoke.json",
+                code_commit="a" * 40,
+            ),
+            texture_parameterization="fixed_support",
+        )
+
+
+def test_fixed_support_config_requires_all_calibrated_artifacts_and_commit() -> None:
+    with pytest.raises(ValueError, match="缺少冻结artifact"):
+        validate_fixed_support_config(
+            GenerateConfig(
+                texture_parameterization="fixed_support",
+                fixed_support_path="/tmp/support.npz",
+            ),
+            texture_parameterization="fixed_support",
+        )
+
+
+def test_formal_fixed_support_experiment_freezes_candidate_and_state_split() -> None:
+    config = GenerateConfig(
+        texture_parameterization="fixed_support",
+        fixed_support_path="/tmp/support.npz",
+        spectral_naturalness_basis_path="/tmp/naturalness.npz",
+        rho_nat_calibration_path="/tmp/rho.npz",
+        spectral_guard_manifest_path="/tmp/guard.json",
+        fixed_support_training_smoke_manifest_path="/tmp/smoke.json",
+        code_commit="a" * 40,
+        task_id=0,
+        attack_iters=5000,
+        num_trials_per_task=10,
+        train_init_state_ids="0-9",
+        eval_init_state_ids="10-19",
+        alpha_feature=0.0,
+        live_test_enabled=False,
+        unnorm_key="libero_spatial_no_noops",
+    )
+
+    validate_formal_fixed_support_experiment(
+        config,
+        texture_parameterization="fixed_support",
+    )
+
+    config.eval_init_state_ids = "10-18"
+    with pytest.raises(ValueError, match="偏离冻结候选"):
+        validate_formal_fixed_support_experiment(
+            config,
+            texture_parameterization="fixed_support",
+        )
+    with pytest.raises(ValueError, match="40位小写code_commit"):
+        validate_fixed_support_config(
+            GenerateConfig(
+                texture_parameterization="fixed_support",
+                fixed_support_path="/tmp/support.npz",
+                spectral_naturalness_basis_path="/tmp/naturalness.npz",
+                rho_nat_calibration_path="/tmp/rho.npz",
+                spectral_guard_manifest_path="/tmp/guard.json",
+                fixed_support_training_smoke_manifest_path="/tmp/smoke.json",
+                code_commit="not-a-commit",
             ),
             texture_parameterization="fixed_support",
         )

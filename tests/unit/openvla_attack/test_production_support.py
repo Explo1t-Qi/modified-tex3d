@@ -173,8 +173,8 @@ def test_freeze_runner_does_not_import_training_or_reconstruct_support() -> None
     assert "formal_training_allowed=False" in source
 
 
-def test_attack_entry_blocks_fixed_support_before_spectral_calibration() -> None:
-    """现有legacy trainer不得提前消费已冻结但未校准的Support。"""
+def test_attack_entry_routes_fixed_support_without_top_level_legacy_import() -> None:
+    """正式分支必须走新trainer，且模块导入阶段不能加载legacy optimizer。"""
 
     path = (
         Path(__file__).resolve().parents[3]
@@ -182,18 +182,13 @@ def test_attack_entry_blocks_fixed_support_before_spectral_calibration() -> None
     )
     source = path.read_text(encoding="utf-8")
     tree = ast.parse(source)
-    fixed_support_guards = [
+    top_level_training_imports = [
         node
-        for node in ast.walk(tree)
-        if isinstance(node, ast.If)
-        and ast.unparse(node.test)
-        == "texture_parameterization == 'fixed_support'"
+        for node in tree.body
+        if isinstance(node, (ast.Import, ast.ImportFrom))
+        and "training" in ast.unparse(node)
     ]
-
-    assert fixed_support_guards
-    assert any(
-        isinstance(node, ast.Raise)
-        for guard in fixed_support_guards
-        for node in ast.walk(guard)
-    )
-    assert "Action-only trainer" in source
+    assert top_level_training_imports == []
+    assert "run_formal_source_training_for_task" in source
+    assert "_run_fixed_support_paired_source_gate" in source
+    assert "texture_parameterization != \"fixed_support\"" in source
