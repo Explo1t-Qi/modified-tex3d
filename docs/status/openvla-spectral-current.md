@@ -17,6 +17,8 @@ Support Construction与support-repeat正式证据基线：
 `144cd002aa39586f4a69712e3647fe9cb83ce6e9`
 Production Fixed Support冻结基线：
 `89d3bd8963805198f94f6e37ffe9c7d9b38fa3ef`
+谱自然性`rho_nat`校准基线：
+`2a684942a79c9ddf1d436f47bc579dc79aaf89d4`
 
 本文是 OpenVLA 谱纹理研究的**当前状态入口**。新一轮开发应先读本文，再按需
 进入专题文档；不要从长篇实验时间线推测当前优先级。历史实验索引见
@@ -47,7 +49,8 @@ Production Fixed Support冻结基线：
 | Action Objective与Dense Seed Gradient | 已通过 | 新Action hinge语义、10个完整`G_s [21263,3]`及全部artifact/hash由服务器运行并在WSL独立复核 |
 | Seed Score/density/smoothing | 已通过 | corrected canonical/repeat artifacts均从raw `G_s`独立复算；连续场与高分区域repeat稳定 |
 | Support Construction/coverage | 已通过，Production Support已冻结 | canonical/repeat均以`r=1`、seed 829通过；冻结3514个顶点/10542个RGB标量并绑定全部上游hash |
-| BPDA 下源攻击基线 | 未建立 | Fixed-Support renderer加载接线已完成；新trainer与`rho_nat/lambda_spec`校准未完成，正式训练仍被入口阻止 |
+| 谱自然性uniform Support校准 | 已通过 | 连续K_nat=128+常数频带通过数值审计；`rho_nat=0.0992735862`并由两个输入artifact独立复算 |
+| BPDA 下源攻击基线 | 未建立 | Fixed-Support renderer加载接线与`rho_nat`已完成；新trainer及`lambda_spec`校准未完成，正式训练仍被入口阻止 |
 | BPDA 下 OFT 迁移信号 | 未开始 | 新源候选未过门槛前不得进入 OFT |
 | 无偏跨模型迁移与鲁棒性提升 | 未开始 | 需方法冻结后的新任务/第三模型与后续防御实验 |
 
@@ -103,10 +106,10 @@ Texture Parameterization纯计算契约、Action Objective GPU Audit、完整Den
 Seed Gradient Audit、Seed Score的归一化/跨state聚合/mesh平滑与repeat稳定性，
 以及Support Construction/coverage完整artifact契约现均已通过。canonical
 candidate已经冻结为独立Production Fixed Support，renderer只允许通过完整
-mesh/mapping/provenance hash加载其3514个紧凑参数坐标。当前唯一下一科学门槛是
-用`delta_probe=1_S`校准`rho_nat`；随后才允许执行最多64轮的Action-only
-Spectral Guard Calibration以冻结`lambda_spec`并验证完整状态恢复。两级校准
-通过前，正式训练和held-out rollout均不得开始。
+mesh/mapping/provenance hash加载其3514个紧凑参数坐标。uniform Support probe
+的`rho_nat`也已通过纯CPU校准与独立复算。当前唯一下一门槛是实现新Action-only
+trainer并执行最多64轮的Spectral Guard Calibration，以冻结`lambda_spec`并
+验证完整状态恢复。在该门槛通过前，正式训练和held-out rollout均不得开始。
 
 真实 Spatial checkpoint 的 CPU 差分记录为 fused pixel values MAE/L∞=`0/0`，
 输入梯度有限且非零；文档记录当时全量 CPU 回归为 `113 passed, 1 skipped`。
@@ -790,6 +793,28 @@ Action+Feature trainer绕过新Action-only目标与两级谱校准。
 states 10--19 rollout。单步backward/update/bake可以提前作为工程smoke，但只有
 走新Action-only+Spectral链路时才允许执行；未校准纹理不得进入rollout或反向
 影响Support与超参数决策。
+
+commit `2a684942a79c9ddf1d436f47bc579dc79aaf89d4` 随后实现纯CPU
+`openvla-spectral-naturalness-calibration-v1`契约。它从Production Support构造
+float64 `[21263,3]` uniform probe，并从连续K512谱基产物只取mass-normalized
+常数模态与前128个非恒定模态；不加载模型、renderer或训练器。正式目录
+`rho_nat_calibration_2a68494_20260809`经同一对输入artifact独立重算后
+`gate_pass=true`。谱基文件SHA-256为
+`0ab987b4bc4a27b175c90382296571219dfe79a04832c6ec8be848eb02825d61`；
+M-正交L∞误差为`3.0713e-15`，常数模态L∞误差为`8.7486e-14`。
+`lambda_128=22332.0216539`，总面积为`0.07190667182`，无量纲cutoff为
+`1605.82135214`。
+
+uniform probe的`E_total/E_low/E_high`分别为
+`0.0215720472522/0.0194305127606/0.00214153449160`；使用冻结数值常数
+`epsilon=1e-12`得到`rho_nat=0.0992735861583`。校准artifact与manifest
+SHA-256分别为
+`23d2ee024ac330be98ed63d151cbee4965ad89db62b841ae17442898afda3beb`和
+`bb41b0c56b6ff1ddfd9223aaa6d8f7dd4d5c097cc5d94ad6e95a577f0144bd3b`。
+artifact记录全部129个特征值及mesh/mass/basis/Support semantic hash，并强制
+`rho_nat_calibrated=true`、`lambda_spec_calibrated=false`、
+`formal_training_allowed=false`。这只通过自然性阈值的数值/证据门槛，不提供
+源攻击或迁移效果证据，也不允许跳过Action-only Spectral Guard Calibration。
 
 已冻结的第一项设计决定：谱方法在新候选中作为作用于最终 Surface Delta 的软
 自然性正则，只惩罚高频谱能量；它不再把扰动硬限制在前 K 个谱基中，也不是与
