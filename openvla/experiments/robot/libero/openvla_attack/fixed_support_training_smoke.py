@@ -60,13 +60,32 @@ def _load_jsonl(path: Path) -> list[dict[str, Any]]:
     return rows
 
 
-def _resolve_input_path(raw_path: Any, *, manifest_root: Path) -> Path:
+def _resolve_input_path(
+    raw_path: Any,
+    *,
+    manifest_root: Path,
+    expected_sha256: Any,
+) -> Path:
     if not isinstance(raw_path, str) or not raw_path:
         raise ValueError("上游input path必须是非空字符串")
     path = Path(raw_path)
-    if path.is_absolute() or path.exists():
-        return path.resolve()
-    return (manifest_root / path).resolve()
+    candidates = (
+        path,
+        manifest_root / path,
+        manifest_root / "spectral_basis" / path.name,
+        manifest_root.parent / "spectral_basis" / path.name,
+    )
+    checked: list[str] = []
+    for candidate in candidates:
+        resolved = candidate.resolve()
+        if str(resolved) in checked:
+            continue
+        checked.append(str(resolved))
+        if resolved.is_file() and file_sha256(resolved) == expected_sha256:
+            return resolved
+    raise FileNotFoundError(
+        f"找不到SHA-256匹配的同步artifact: {raw_path}; candidates={checked}"
+    )
 
 
 def _is_sha256(value: Any) -> bool:
@@ -127,17 +146,35 @@ def evaluate_fixed_support_training_smoke_bundle(
 
         input_paths = manifest["input_paths"]
         input_hashes = manifest["input_sha256"]
+        required_input_names = (
+            "production_support",
+            "rho_nat_calibration",
+            "spectral_basis",
+            "spectral_guard_manifest",
+        )
         resolved_inputs = {
-            name: _resolve_input_path(path, manifest_root=root)
-            for name, path in input_paths.items()
+            name: _resolve_input_path(
+                input_paths[name],
+                manifest_root=root,
+                expected_sha256=input_hashes[name],
+            )
+            for name in required_input_names
         }
+        optional_inputs: dict[str, Path | None] = {}
+        for name in ("mesh", "texture"):
+            try:
+                optional_inputs[name] = _resolve_input_path(
+                    input_paths[name],
+                    manifest_root=root,
+                    expected_sha256=input_hashes[name],
+                )
+            except FileNotFoundError:
+                optional_inputs[name] = None
         for name in (
             "production_support",
             "rho_nat_calibration",
             "spectral_basis",
             "spectral_guard_manifest",
-            "mesh",
-            "texture",
         ):
             if file_sha256(resolved_inputs[name]) != input_hashes[name]:
                 failures.append(f"上游{name} SHA-256不匹配")
@@ -209,6 +246,16 @@ def evaluate_fixed_support_training_smoke_bundle(
         "spectral_basis"
     ) != manifest.get("input_sha256", {}).get("spectral_basis"):
         failures.append("校准与smoke未绑定同一谱基")
+    if manifest.get("input_sha256", {}).get("mesh") != (
+        support.provenance.mesh_file_sha256
+    ) or calibration_manifest.get("input_sha256", {}).get("mesh") != (
+        manifest.get("input_sha256", {}).get("mesh")
+    ):
+        failures.append("mesh未同时绑定Production Support与lambda校准provenance")
+    if calibration_manifest.get("input_sha256", {}).get("texture") != (
+        manifest.get("input_sha256", {}).get("texture")
+    ):
+        failures.append("clean texture未绑定lambda校准provenance")
 
     action = arrays["action_gradients"]
     spectral = arrays["spectral_gradients"]
@@ -408,12 +455,19 @@ def evaluate_fixed_support_training_smoke_bundle(
             failures.append("Step 0未逐项复现已通过的Action-only校准零点")
 
     try:
-        clean_pixels = np.asarray(Image.open(resolved_inputs["texture"]).convert("RGB"))
         baked_pixels = np.asarray(Image.open(baked_path).convert("RGB"))
-        if clean_pixels.shape != baked_pixels.shape or np.array_equal(
-            clean_pixels, baked_pixels
-        ):
-            failures.append("bake PNG未产生真实像素变化")
+        clean_texture_path = optional_inputs["texture"]
+        if clean_texture_path is None:
+            if manifest.get("baked_texture_sha256") == manifest.get(
+                "input_sha256", {}
+            ).get("texture"):
+                failures.append("bake PNG hash与clean texture相同")
+        else:
+            clean_pixels = np.asarray(Image.open(clean_texture_path).convert("RGB"))
+            if clean_pixels.shape != baked_pixels.shape or np.array_equal(
+                clean_pixels, baked_pixels
+            ):
+                failures.append("bake PNG未产生真实像素变化")
     except OSError as error:
         failures.append(f"clean/bake PNG无法读取: {error}")
     if manifest.get("active_texture_sha256") != manifest.get(

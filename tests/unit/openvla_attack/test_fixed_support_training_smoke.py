@@ -35,7 +35,7 @@ def _write_jsonl(path: Path, rows: list[dict[str, object]]) -> None:
     )
 
 
-def _write_support(path: Path) -> None:
+def _write_support(path: Path, *, mesh_file_sha256: str = "9" * 64) -> None:
     mask = np.asarray([False, True, False, True], dtype=np.bool_)
     support = FrozenProductionSupport(
         schema_version=PRODUCTION_SUPPORT_SCHEMA_VERSION,
@@ -49,7 +49,7 @@ def _write_support(path: Path) -> None:
             seed_score_artifact_sha256="6" * 64,
             visibility_manifest_sha256="7" * 64,
             visibility_metrics_sha256="8" * 64,
-            mesh_file_sha256="9" * 64,
+            mesh_file_sha256=mesh_file_sha256,
             mesh_array_sha256="a" * 64,
             renderer_faces_sha256="b" * 64,
             render_to_geometry_sha256="c" * 64,
@@ -169,8 +169,6 @@ def _write_guard_bundle(
 
 
 def _write_passing_bundle(tmp_path: Path) -> Path:
-    support_path = tmp_path / "support.npz"
-    _write_support(support_path)
     rho_path = tmp_path / "rho.npz"
     basis_path = tmp_path / "basis.npz"
     mesh_path = tmp_path / "mesh.obj"
@@ -186,12 +184,19 @@ def _write_passing_bundle(tmp_path: Path) -> Path:
     baked = np.zeros((2, 2, 3), dtype=np.uint8)
     baked[0, 0, 0] = 1
     Image.fromarray(baked).save(baked_path)
+    support_path = tmp_path / "support.npz"
+    _write_support(
+        support_path,
+        mesh_file_sha256=file_sha256(mesh_path),
+    )
 
     fingerprints = {state_id: f"{state_id:x}" * 64 for state_id in range(10)}
     upstream_hashes = {
         "production_support": file_sha256(support_path),
         "rho_nat_calibration": file_sha256(rho_path),
         "spectral_basis": file_sha256(basis_path),
+        "mesh": file_sha256(mesh_path),
+        "texture": file_sha256(clean_path),
     }
     guard_path = _write_guard_bundle(
         tmp_path,
@@ -354,6 +359,32 @@ def test_bundle_rejects_missing_step_one_spectral_gradient(tmp_path: Path) -> No
     assert not decision.gate_pass
     assert any("Step 1谱梯度必须非零" in item for item in decision.failures)
     assert any("weighted spectral梯度不可逐值复算" in item for item in decision.failures)
+
+
+def test_bundle_resolves_relocated_basis_and_uses_asset_provenance(
+    tmp_path: Path,
+) -> None:
+    manifest_path = _write_passing_bundle(tmp_path)
+    manifest = json.loads(manifest_path.read_text())
+    relocated_dir = tmp_path / "spectral_basis"
+    relocated_dir.mkdir()
+    original_basis = Path(manifest["input_paths"]["spectral_basis"])
+    relocated_basis = relocated_dir / original_basis.name
+    original_basis.rename(relocated_basis)
+    manifest["input_paths"]["spectral_basis"] = (
+        f"experiments/spectral_basis/{original_basis.name}"
+    )
+    mesh_path = Path(manifest["input_paths"]["mesh"])
+    texture_path = Path(manifest["input_paths"]["texture"])
+    manifest["input_paths"]["mesh"] = "/server/LIBERO/mesh.obj"
+    manifest["input_paths"]["texture"] = "/server/LIBERO/texture.png"
+    mesh_path.unlink()
+    texture_path.unlink()
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    decision = evaluate_fixed_support_training_smoke_bundle(manifest_path)
+
+    assert decision.gate_pass, decision.failures
 
 
 def test_gpu_runner_uses_combined_core_and_excludes_legacy_objectives() -> None:
