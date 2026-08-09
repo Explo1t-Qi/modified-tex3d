@@ -60,6 +60,11 @@ def _jsonl_rows(path: Path) -> Iterator[tuple[int, dict[str, Any]]]:
             yield line_number, value
 
 
+def _line_count(path: Path) -> int:
+    with path.open("r", encoding="utf-8") as handle:
+        return sum(1 for _ in handle)
+
+
 def _resolve_by_hash(
     raw_path: Any,
     *,
@@ -190,11 +195,9 @@ def evaluate_formal_source_training_bundle(
         resolved_epsilon = float(epsilon)
 
     step_losses: list[float] = []
-    step_count = 0
     try:
         for line_number, row in _jsonl_rows(output_paths["steps"]):
             iteration = line_number - 1
-            step_count += 1
             if row.get("iteration") != iteration:
                 failures.append(f"step {iteration}索引不连续")
                 break
@@ -259,13 +262,11 @@ def evaluate_formal_source_training_bundle(
             step_losses.append(float(row["action_loss"]))
     except (OSError, TypeError, ValueError, json.JSONDecodeError) as error:
         failures.append(f"step JSONL无法复核: {error}")
-    if step_count != FORMAL_NUM_ITERATIONS:
+    if _line_count(output_paths["steps"]) != FORMAL_NUM_ITERATIONS:
         failures.append(f"step JSONL行数不是{FORMAL_NUM_ITERATIONS}")
 
-    frame_count = 0
     try:
         for line_number, row in _jsonl_rows(output_paths["action_frames"]):
-            frame_count += 1
             iteration, state_id = divmod(line_number - 1, 10)
             if row.get("iteration") != iteration or row.get("state_id") != state_id:
                 failures.append("逐state Action证据未按iteration/state 0-9排列")
@@ -277,7 +278,7 @@ def evaluate_formal_source_training_bundle(
                 break
     except (OSError, TypeError, ValueError, json.JSONDecodeError) as error:
         failures.append(f"Action frame JSONL无法复核: {error}")
-    if frame_count != FORMAL_NUM_ITERATIONS * 10:
+    if _line_count(output_paths["action_frames"]) != FORMAL_NUM_ITERATIONS * 10:
         failures.append("逐state Action证据行数不是50000")
 
     try:
@@ -309,10 +310,11 @@ def evaluate_formal_source_training_bundle(
         if (
             loss_history.shape != (FORMAL_NUM_ITERATIONS,)
             or not np.isfinite(loss_history).all()
-            or not np.array_equal(
-                loss_history,
-                np.asarray(step_losses, dtype=loss_history.dtype),
-            )
+        ):
+            failures.append("loss history必须是5000个有限标量")
+        elif len(step_losses) == FORMAL_NUM_ITERATIONS and not np.array_equal(
+            loss_history,
+            np.asarray(step_losses, dtype=loss_history.dtype),
         ):
             failures.append("loss history未逐值绑定5000轮Action loss")
     except (OSError, RuntimeError, TypeError, ValueError) as error:

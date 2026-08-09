@@ -319,9 +319,27 @@ def test_cpu_evaluator_rejects_no_evidence_and_accepts_complete_sequence(
     assert complete.gate_pass is True
     assert complete.failures == ()
 
+    # 单行真实证据失败不能级联伪装成文件行数或loss history失败。
+    rows = [json.loads(line) for line in result.steps_path.read_text().splitlines()]
+    rows[101]["action_total_cosine"] = 1.01
+    with result.steps_path.open("w", encoding="utf-8") as handle:
+        for row in rows:
+            handle.write(json.dumps(row, sort_keys=True) + "\n")
+    manifest = json.loads(result.manifest_path.read_text(encoding="utf-8"))
+    manifest["steps_sha256"] = file_sha256(result.steps_path)
+    result.manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    invalid_cosine = evaluate_formal_source_training_bundle(
+        result.manifest_path
+    )
+
+    assert invalid_cosine.gate_pass is False
+    assert any("cosine越界" in failure for failure in invalid_cosine.failures)
+    assert not any("行数" in failure for failure in invalid_cosine.failures)
+    assert not any("loss history" in failure for failure in invalid_cosine.failures)
+
     # 真实服务器bundle同时暴露了两个边界：float32 cosine在理论1附近可上溢
     # 约5e-7；rsync后上游artifact位于manifest目录的第三层祖先兄弟目录。
-    rows = [json.loads(line) for line in result.steps_path.read_text().splitlines()]
     rows[101]["action_total_cosine"] = 1.0000004788342158
     with result.steps_path.open("w", encoding="utf-8") as handle:
         for row in rows:
