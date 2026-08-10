@@ -8,8 +8,9 @@
 
 - “任务成功率”越低表示攻击越强；只有 clean control 为100%时，
   `1 - task success` 才能直接解释为本组观测到的攻击成功率。
-- 默认 Spatial Task 0 / `akita_black_bowl` 使用 train states 0–9、held-out
-  states 10–19、5000轮、Surface L∞=`128/255`、每轮最大 Surface Step=`2/255`。
+- 默认 Spatial Task 0 / `akita_black_bowl` 使用 train states 0–9、source
+  development states 10–19、5000轮、Surface L∞=`128/255`、每轮最大 Surface
+  Step=`2/255`。states 10–19 已参与多轮方法决策，不再视为无偏 test。
 - 10-state pilot 只承担 go/no-go，不代表统计显著性。
 - “工程通过”只证明数据流、梯度、预算、产物和资产事务正确，不等价于方法有效。
 - 2026-08-03 之前依赖历史六通道 Action/last-hidden 预处理的训练结果统一标记为
@@ -66,6 +67,7 @@
 | 2026-08-09 | 正式Fixed-Support Action+Spectral paired source Gate | Clean 9/10、Adversarial 8/10；states 10、19为新增失败，共2/10，低于预注册3/10门槛；state 15为Clean原有失败且Adversarial恢复 | 恢复入口明确跳过训练，复用`0aca525` manifest/bake；paired artifact绑定评估commit `88e5162`并由WSL独立重算通过；资产完整恢复 | 队列6e科学Gate未通过，不进入OFT；结果只证明非零source作用，不能据此单独归因Spectral Guard；执行同Support/Action/step/budget/5000轮但关闭Guard的Action-only control | [当前状态](../status/openvla-spectral-current.md) |
 | 2026-08-10 | Gate 6f Fixed-Support Action-only control实现与preflight | 尚未运行GPU；本地定向42 passed、可收集回归261 passed；服务器`6cf8c12`全量328 passed、1 skipped；旧`0aca525` bundle继续通过独立复核 | 显式variant不实例化/计算Spectral Guard；绑定同一上游artifact，复用同一Action provider、Surface step/L∞ projection；独立schema区分calibrated lambda与applied lambda=0 | commit `1a2b8e5`完成训练、恢复与独立evidence contract；服务器preflight无失败/错误，正式5000轮control及paired rollout已放行 | [当前状态](../status/openvla-spectral-current.md) |
 | 2026-08-10 | Gate 6f正式Fixed-Support Action-only control | 5000/5000 update与全部artifact独立复核通过；Clean 9/10、Adversarial 8/10；states 10、13为新增失败，共2/10，未达3/10 | 主候选同为2/10但失败states 10、19；Action-only末轮Action loss `9.2089`高于主候选`8.5554`；事后同频带复算`r_high=0.8064`，主候选为`0.8164` | Guard改变终点，但本轮未观察到总体source count下降或冻结谱指标上的自然性改善；Gate 6f完成但未通过，不进入OFT；先讨论Support/Action proxy与Guard机制，禁止直接网格扫描 | [当前状态](../status/openvla-spectral-current.md) |
+| 2026-08-10 | Gate 6g Terminal Deployment Response Audit设计冻结 | 不重训；对两个既有终态在train states 0–9采集共享Clean、Fixed-Support参数重建路径A与真实MuJoCo bake路径B | OFT/Feature/wrist/rollout均不进入；CPU evaluator按首次因果分歧复算`lost/altered/preserved_strict/preserved_tie_sensitive` | 只设artifact完整性`audit_valid/invalid`，不设攻击性能pass/fail；先完成CPU测试、CUDA re-bake preflight、state0双终态smoke、0–9正式采集和WSL独立审核 | [当前状态](../status/openvla-spectral-current.md) |
 
 ## 当前待执行队列
 
@@ -80,9 +82,9 @@
 | 6b（已通过） | 校准`rho_nat=r_high(1_S)` | Production Support与K_nat=128连续几何频带 | uniform support probe能量可独立复算，artifact/hash/频带字段完整 | 已冻结`rho_nat=0.0992735862`，未自动增大K |
 | 6c（已通过） | 服务器Action-only Spectral Guard Calibration | runner/evaluator已实现；`rho_nat`通过且新trainer不复用legacy Feature objective | states 0–9每轮完整唯一且绑定fingerprint；首个连续5轮稳定激活窗口冻结`lambda_spec`；逐轮SurfaceStepStats；最多64轮；Surface/update/gradient/sampler/RNG完整恢复 | 已冻结`lambda_spec=0.000850536673`，7项恢复检查通过 |
 | 6d（已通过） | 服务器Fixed-Support Action+Spectral trainer两步工程smoke | 两级校准均通过；`4a061a2` runner复用正式Action objective、共享更新核心与冻结权重 | Step 0零点严格退化为Action-only；Step 1谱hinge/梯度激活，逐值复算联合梯度且每步只作一次update；bake/Active Texture/资产恢复通过 | `f73b183`正式bundle及WSL独立复核已通过 |
-| 6e（已完成，未通过） | 正式Fixed-Support Action+Spectral source训练与paired held-out rollout | 5000轮训练artifact和恢复评估完整性均通过 | paired新增失败2/10，未达到至少3/10 | 不进入OFT；转入预注册Action-only control，不改lambda/K_nat/Support |
-| 6f（已完成，未通过） | Fixed-Support Action-only 5000轮control及paired held-out rollout | 与6e仅差关闭Spectral Guard，训练与paired artifact均通过独立复核 | paired新增失败2/10，与主候选count相同，未达到3/10；终态自然性比例也未显示主候选改善 | 不进入OFT；结果更指向Support/Action proxy瓶颈，同时表明固定lambda Guard在本轮未显示自然性收益 |
-| 6g（当前待讨论，不执行） | Source泛化瓶颈与Naturalness Guard机制诊断 | 先区分Fixed Support覆盖、静态teacher-forced Action proxy和Guard尺度效应；不得从10-state结果直接选超参数 | 冻结一个最小、可证伪诊断及其判读后再编码 | 不自动扩大Support、不扫描lambda/K_nat、不引入OFT/Feature/wrist梯度 |
+| 6e（已完成，未通过） | 正式Fixed-Support Action+Spectral source训练与paired source-development rollout | 5000轮训练artifact和恢复评估完整性均通过 | paired新增失败2/10，未达到至少3/10 | 不进入OFT；转入预注册Action-only control，不改lambda/K_nat/Support |
+| 6f（已完成，未通过） | Fixed-Support Action-only 5000轮control及paired source-development rollout | 与6e仅差关闭Spectral Guard，训练与paired artifact均通过独立复核 | paired新增失败2/10，与主候选count相同，未达到3/10；终态自然性比例也未显示主候选改善 | 不进入OFT；结果更指向Support/Action proxy瓶颈，同时表明固定lambda Guard在本轮未显示自然性收益 |
+| 6g（设计已冻结，待实现） | Terminal Deployment Response Audit | 两个正式终态及其parameter/bake/support哈希完整；只使用train states 0–9，共享Clean并采集C/A/B | 工程上要求20个唯一`(variant,state)`及全部processor/scene/visibility/response/asset契约使CPU evaluator返回`audit_valid`；科学结果只报告精确计数 | 任一严格一致性失败即停止并诊断，不加事后容差；不扩大Support、不扫描lambda/K_nat、不引入OFT/Feature/wrist/rollout |
 | 7 | OFT开发期 rollout | 出现满足至少3/10 paired新增失败的冻结谱候选 | 旧0/10迁移基线上至少出现2/10失败信号 | 记录机制失败，不包装为迁移提升 |
 | 8 | 新任务/第三模型无偏验证 | 方法和超参数冻结 | 预注册门槛 | 区分开发期选择偏差与真实迁移 |
 

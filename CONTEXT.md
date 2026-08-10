@@ -174,6 +174,15 @@ Composition** 预测的有效视野 RGB 变化与 bake **Active Texture** 后 Mu
 攻击强弱，也不参与 support 排名。
 _Avoid_: action-success gate, target-model probe, rollout replacement
 
+**Terminal Deployment Response Audit**:
+对同一个训练完成且哈希绑定的 Fixed-Support 终态，以 Clean、训练期
+**Renderer Delta Composition** 和真实 MuJoCo **Active Texture** 构成静态
+`C/A/B` 三元组，并比较 source OpenVLA 实际接收的有效视野、processor tensor、
+teacher-forced clean-token margin、自回归首次分歧和解码动作。它只判断训练路径
+产生的终态离散响应是否穿过部署链路，不重新训练、不评价闭环恢复，也不使用
+source development rollout 选择超参数。
+_Avoid_: terminal attack gate, rollout recovery proof, bake-only replay
+
 **Support Seed Score**:
 由修正后 source OpenVLA 训练 states 的 Action objective 几何顶点梯度生成、
 并在 OBJ mesh 图上平滑的标量场。它只决定 **Connected Support Region** 的
@@ -283,6 +292,9 @@ _Avoid_: smoothed mesh, UV blur, texture regularization
   遮挡，并对所有共享纹理实例聚合；它不能替代 bake PNG 的正式 rollout 语义
 - **Renderer-to-Bake Response** 在使用 **Renderer Delta Composition** 生成
   **Support Seed Score** 前验收其方向可信度；Action margin 变化只作诊断
+- **Terminal Deployment Response Audit** 的训练路径必须从终态紧凑参数重建
+  **Surface Delta**，部署路径必须激活与它逐像素重放校验过的 bake
+  **Attack Artifact**；禁止将 PNG 反推回顶点参数
 - 第一版 wrist coverage 使用与 Primary 相同的 source-side
   center-crop/resize 几何，并在产物中标记为 `wrist_source_crop_proxy`；
   它是保守的 source-only 视野代理，不得声称为 OFT 真实输入预处理

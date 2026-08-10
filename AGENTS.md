@@ -26,13 +26,14 @@
   当前唯一预处理 interface 使用显式 BPDA/STE：forward 为 checkpoint 精确的
   uint8+PIL 路径，backward 为连续 tensor bicubic surrogate。旧候选只作历史
   工程证据，不能代表修正后的科学基线。
-- states 0–9 BPDA forward-only 数值门槛已通过：processor pixel
-  MAE/L∞=`0/0`、10/10序列和70/70 token一致。下一步仍需运行真实单轮
-  backward/update/bake smoke；正式候选改为先讨论“谱自然性约束 + 选定顶点
-  全维优化”的最小设计，不再默认重跑纯 K=256、`rho=1.0`。
-- 新候选在 held-out states 10–19 至少3/10失败才进入 OFT。正式 rollout 前必须
-  明确训练与部署 center-crop 语义；在此之前不做 K、rho 或 Feature weight
-  网格扫描，也不扩展为完整消融框架。
+- Fixed-Support Action+Spectral 与严格匹配的 Action-only 对照均只在 source
+  development states 10–19 造成2/10 paired新增失败。当前唯一下一门槛是
+  Gate 6g Terminal Deployment Response Audit：只读比较两个已有终态在训练
+  Renderer Delta Composition 与真实 MuJoCo Active Texture 中的静态动作响应，
+  不重新训练、不调 Support、K、lambda、Feature、wrist 或 OFT。
+- states 10–19 已反复参与方法决策，必须称为 source development/validation
+  states，不能再作为无偏 held-out test。方法冻结后的正式无偏结论仍需新任务或
+  第三个 VLA 模型；states 20–49 在审计历史使用前也不得自动宣称为 untouched。
 
 ## 谱方法长期不变量
 
@@ -49,8 +50,10 @@
 - 一个纹理资产可能被场景中的多个物体实例共享。直接激活 PNG 会同时改变所有
   实例，因此物理纹理对应的 renderer Jacobian 必须对第一个命中关键词组中的
   全部 body 分别渲染并累加；不能只对语义目标 body 做 VJP。
-- 默认攻击状态划分为 train 0–9、held-out eval 10–49；实验日志必须保留原始
-  state ID。谱基、视频、模型权重和攻击纹理等实验产物不进入 Git。
+- 当前方法开发使用 train states 0–9 与 source development states 10–19；实验
+  日志必须保留原始 state ID。states 20–49 的历史使用情况需要在未来指定
+  source confirmation split 前审计。谱基、视频、模型权重和攻击纹理等实验
+  产物不进入 Git。
 - OpenVLA checkpoint 的视觉分支顺序必须从 `timm_model_ids` 等模型配置读取，
   禁止仅凭 `featurizer` / `fused_featurizer` 属性名猜测 DINOv2 与 SigLIP。
   历史 6 通道顺序只为复现实验保留；新共享特征代码必须走显式模型分支。

@@ -58,7 +58,7 @@ Fixed-Support Action-only正式对照证据基线：
 | 第一阶段谱方法可行性 | 已完成（旧预处理） | K=128 仅384个参数，生成的纹理仍能在真实源 rollout 上造成任务失败；需由 BPDA 新基线复核 |
 | 第一阶段直接迁移 | 未通过 | Geometry、K=128/K=256 谱纹理在 OFT states 10–19 上均为10/10成功 |
 | 共享特征与跨模型梯度诊断 | 已完成 | 共享 Feature 方向存在，Action 方向弱；OFT 腕部 Action 更强且与主视角近似正交 |
-| 双视角与动态范数保护 | 机制已实现，源门槛未通过 | 两者均未把 held-out 源攻击恢复到预设的3/10失败 |
+| 双视角与动态范数保护 | 机制已实现，源门槛未通过 | 两者均未把source development源攻击恢复到预设的3/10失败 |
 | OpenVLA processor 预处理正确性 | Gate 1P 已通过 | states 0–9 pixel MAE/L∞=`0/0`，10/10序列和70/70 token一致 |
 | Deployment Effective View 与训练反传 | Gate 1D、2C、2E已通过 | 完整forward零误差；crop VJP对齐；五级梯度、单轮更新、bake/rollout/资产恢复通过 |
 | Visibility/Coverage/Compositor | Gate 2R与全部前置Gate已通过 | 20/20对齐证据、10/10零delta states与70/70 action token通过；2R正式30/30 valid且全部cosine为正 |
@@ -126,11 +126,13 @@ mesh/mapping/provenance hash加载其3514个紧凑参数坐标。uniform Support
 的`rho_nat`也已通过纯CPU校准与独立复算。新Action-only Spectral Guard runner
 已在真实states 0--9上完成GPU calibration，`lambda_spec`与完整状态恢复证据均已
 通过独立复核。Fixed-Support Action+Spectral正式trainer的两步工程smoke、5000轮
-source training及同一held-out states 10--19成对Clean/Adversarial rollout均已
+source training及同一source development states 10--19成对Clean/Adversarial rollout均已
 完成并通过artifact完整性复核。主候选与严格匹配的Action-only control均只造成
 2/10个paired新增失败，未达到3/10 source门槛；因此没有证据表明Spectral Guard
-是source强度不足的主要原因。当前需要先讨论Fixed Support、Action objective与
-自然性Guard的机制诊断优先级，不自动启动新实验；OFT仍不得提前进入。
+是source强度不足的主要原因。Gate 6g Terminal Deployment Response Audit的
+设计现已冻结；它只读比较两个已有终态在train states 0--9的Renderer Delta
+Composition与真实MuJoCo Active Texture响应，不自动启动训练或调参；OFT仍不得
+提前进入。
 
 真实 Spatial checkpoint 的 CPU 差分记录为 fused pixel values MAE/L∞=`0/0`，
 输入梯度有限且非零；文档记录当时全量 CPU 回归为 `113 passed, 1 skipped`。
@@ -620,7 +622,8 @@ worst/median cosine、relative L2和sign consistency保留为机制表征。
 Gate 1D、Gate 2C、Gate 2E与Gate 2R均已通过，下文也已冻结“谱自然性约束 +
 选定顶点全维优化”的最小参数化、预算与顶点选择规则。当前先实现并测试
 新Texture Parameterization契约，再运行Support Seed Audit与train states 0–9的单一
-候选。held-out states 10–19至少3/10失败才进入OFT开发期rollout。纯K=256、
+候选。当时预注册为held-out、现归类为source development的states 10–19至少
+3/10失败才进入OFT开发期rollout。纯K=256、
 `rho=1.0`不再是自动下一候选。
 
 2026-08-09 已完成 Action Objective Contract 的第一段本地实现：历史
@@ -811,7 +814,7 @@ commit `d646117`的新正式分支替代，旧trainer仍不得进入该进程。
 
 因此后续顺序正式固定为：Production Support冻结与参数化接线（当前阶段）→
 `rho_nat=r_high(1_S)`校准→最多64轮Action-only Spectral Guard Calibration、
-`lambda_spec`冻结及完整状态恢复→正式Action+Spectral训练→held-out source
+`lambda_spec`冻结及完整状态恢复→正式Action+Spectral训练→source development
 states 10--19 rollout。单步backward/update/bake可以提前作为工程smoke，但只有
 走新Action-only+Spectral链路时才允许执行；未校准纹理不得进入rollout或反向
 影响Support与超参数决策。
@@ -944,7 +947,8 @@ provenance，不能静默跳过。修正后原bundle独立复核通过。smoke m
 
 commit `d6461179fbb71405c1c02fcc51f0ce585c03a7fe` 已把正式
 Fixed-Support Action+Spectral source路径接入`attack_openvla.py`。入口在解析配置
-后冻结Spatial task 0、Akita、train states 0--9、held-out states 10--19、5000轮、
+后冻结Spatial task 0、Akita、train states 0--9、source development states
+10--19、5000轮、
 Surface Step=`2/255`、Surface-L∞=`128/255`、center crop与无Feature配置；还要求
 Production Support、`rho_nat`、谱基、lambda calibration及两步smoke五项artifact
 齐全，并显式绑定当前40位Git commit。GPU运行前会核验checkout HEAD和tracked
@@ -963,7 +967,7 @@ Spectral Naturalness梯度，通过同一个`FixedSupportTrainerCore`形成
 独立CPU evaluator会重新复核上游两步smoke与全部SHA-256，要求5000行step、
 50000行逐state证据、每轮states 0--9完整唯一、Surface step/L∞不越界、最终紧凑
 参数有限且符合Production Support规模，以及loss history逐值绑定。训练结束后入口
-先恢复clean asset，在同一held-out states 10--19运行Clean Control，再激活manifest
+先恢复clean asset，在同一source development states 10--19运行Clean Control，再激活manifest
 绑定的最终bake运行Adversarial rollout。Gate只统计
 `clean_success and adversarial_failure`：至少3/10新增失败才通过；clean原有失败
 单独报告，不得计为纹理造成的失败。若Clean=10/10，才可把对抗条件的总失败数
@@ -1080,10 +1084,11 @@ Action-only的Clean仍仅state 15失败，为9/10；Adversarial在states 10、13
 的训练Action目标反而更低，不能把其source失败归因于Guard压制Action优化。
 
 末轮静态Training Frame上，Action-only已有6/10 states、11/70 token margin非正，
-主候选已有8/10 states、12/70 token margin非正，但二者held-out paired失败仍只有
-2/10。这说明当前teacher-forced proxy能够跨过部分训练帧token边界，却没有稳定
-转化为held-out任务失败；单凭现有证据仍不能区分瓶颈主要来自Fixed Support覆盖
-还是静态Action proxy/轨迹泛化，因此下一轮必须先设计可证伪诊断。
+主候选已有8/10 states、12/70 token margin非正，但二者source-development
+paired失败仍只有2/10。这说明当前teacher-forced proxy能够跨过部分训练帧token
+边界，却没有稳定转化为source development任务失败；单凭现有证据仍不能区分
+瓶颈主要来自Fixed Support覆盖还是静态Action proxy/轨迹泛化，因此下一轮必须
+先设计可证伪诊断。
 
 使用已经冻结且hash校验通过的同一Naturalness Band对两个终态作事后只读复算，
 Action-only与主候选的`r_high`分别为`0.806436`与`0.816410`，均远高于
@@ -1102,6 +1107,51 @@ GPU日志、rollout文本、formal manifest与paired artifact的SHA-256依次为
 `f7e05cacf1490846d1272bfaea4d719edbac78b8b463cfed676f423c74255e94`和
 `b3e518e85d7e4ed3d4bb6c7cae24f8fc4c7276c965a32d19219a4107bd2e022d`；其余
 step/action-frame/parameter/bake/loss SHA由该manifest逐项绑定。
+
+### Gate 6g：Terminal Deployment Response Audit（设计已冻结，待实现）
+
+Gate 6g只回答一个问题：两个既有训练终态在Renderer Delta Composition中产生的
+静态离散动作响应，是否仍存在于真实MuJoCo Active Texture部署路径。它不重新
+训练、不运行rollout，也不修改Support、Action objective、Spectral Guard、
+`K_nat`、`lambda_spec`、Feature、wrist或OFT。
+
+正式输入固定为Action+Spectral与Action-only两个formal training bundle及其共同
+Production Support，主审计只使用train states 0--9。每个state共享一次Clean
+基准`C`；每个终态分别从紧凑Fixed-Support参数重建训练路径`A`，并激活与该参数
+逐像素重放校验过的bake PNG构造MuJoCo部署路径`B`。路径A不得读取PNG并反推顶点，
+路径B不得用renderer替代MuJoCo成像。
+
+每个`(variant,state)`保存C/A/B的effective-view RGB、hard visibility alpha、最终
+BF16 fused `pixel_values` bit pattern、teacher action logits、自回归generation
+logits/token及解码7-D action。task instruction、prompt/input IDs、action-token
+slice、generation配置、action codec统计、checkpoint/processor/policy-view身份、
+initial/static-scene fingerprint、全部输入/输出SHA和Runtime Asset Transaction
+恢复证据必须同时绑定。GPU runner只采集事实；独立CPU evaluator从权威NPZ复算
+全部margin、argmax/tie、首次分歧、动作与RGB响应指标。
+
+主分类只比较相对于Clean的首次因果分歧，不要求A/B完整自回归序列逐项相同。
+冻结分类为`no_training_response`、`deployment_lost`、
+`deployment_response_altered`、`deployment_preserved_strict`、
+`deployment_preserved_tie_sensitive`与`invalid_response_alignment`。tie只指保存
+logits中多个类与最大值严格相等，不使用数值容差；完整序列equality、Hamming和
+top1--top2 gap只作二级诊断。汇总只报告明确state计数及条件分母，分母为零时写
+`null/not_applicable`，禁止用“大量”或“普遍”等未冻结阈值给出总体机制标签。
+
+Gate 6g没有攻击性能pass/fail。只有全部20个唯一`(variant,state)`、parameter到
+Surface Delta到重复re-bake再到bound PNG、最终processor tensor、C/B整数
+segmentation与hard alpha、teacher/generation首次分歧、scene fingerprint、文件
+inventory及资产恢复全部通过时，独立evaluator才返回`audit_valid`；任一失败均为
+`audit_invalid`，不得产生科学结论或事后放宽容差。`iteration=4999`训练Action
+证据在第5000次update前采集，而终态parameter/bake在update后保存，因此前者只作
+state/static-scene绑定和描述性参考，不能作为终态margin逐值oracle。
+
+实现与验收顺序冻结为：本地CPU schema/evaluator测试；服务器两个终态CUDA
+重复re-bake preflight；state 0共享Clean的双终态完整C/A/B smoke；states 0--9
+正式20-row采集；rsync回WSL后的独立CPU复算。成功manifest必须最后原子写入，
+smoke与formal目录严格隔离；失败记录只作best-effort审计，缺少成功manifest的
+目录始终无效。若Gate 6g证明训练state上的首次响应穿过部署链路，下一阶段才允许
+单独设计source development states 10--19静态泛化诊断；仍不能据此宣称闭环
+机器人发生了恢复。
 
 已冻结的第一项设计决定：谱方法在新候选中作为作用于最终 Surface Delta 的软
 自然性正则，只惩罚高频谱能量；它不再把扰动硬限制在前 K 个谱基中，也不是与
@@ -1794,12 +1844,13 @@ Gate 判断，但永远不能替代权威 30 行记录、NPZ 或逐 case 图。
 
 ## 当前禁止的捷径
 
-- 不在 Gate 1D、Gate 2C、Gate 2E、Gate 2R 和新参数化契约冻结前启动正式
-  训练或进入 OFT；
+- Gate 6g完成前不启动新训练、不修改Support/Action objective/Spectral Guard，
+  也不进入OFT；
 - 不把 OFT 梯度用于 source-only loss、选基或超参数选择；
 - 不把旧预处理候选的成功率当成 BPDA 修正后的基线；
 - 不因 total/Feature loss 更优就声称任务攻击或迁移更强；
 - 不把单次10-state pilot 描述为统计显著结论；
+- 不再把已参与方法选择的states 10--19称为无偏held-out test；
 - 不在目标模型侧执行 PNG→顶点→PNG；迁移必须直接激活 bake PNG。
 
 ## 按需阅读
