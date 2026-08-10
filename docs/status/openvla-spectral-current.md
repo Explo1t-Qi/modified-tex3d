@@ -1051,6 +1051,12 @@ evaluator同时支持已冻结的旧Action+Spectral v1 bundle和新control bundl
 回归为`261 passed`。下一步只需服务器无GPU回归与正式5000轮control，不新增方法
 变量。
 
+服务器随后在commit `6cf8c12aa1b4f704af50d0ebf1bf97868900a614`完成Gate 6f
+训练前无GPU全量回归：`328 passed, 1 skipped, 6 warnings in 27.03s`，无failure
+或error；warning仍只来自wandb、setuptools与robosuite的既有弃用接口。同步日志
+SHA-256为`02f74e85fc505ef97f2c483d74c3b928b9d0d0b3fc04382e09a319bcfdb44cc8`。
+Action-only正式5000轮control现已放行。
+
 原正式training manifest与GPU日志SHA-256分别为
 `f7e05cacf1490846d1272bfaea4d719edbac78b8b463cfed676f423c74255e94`和
 `b3e518e85d7e4ed3d4bb6c7cae24f8fc4c7276c965a32d19219a4107bd2e022d`；其余
