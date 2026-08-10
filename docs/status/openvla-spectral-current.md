@@ -31,6 +31,8 @@ Fixed-Support Action+Spectral两步smoke正式证据基线：
 `0aca5253caa7525605c3d6ce537468bd917f8d90`
 正式paired source Gate恢复评估基线：
 `88e5162a9d9c1e222c240bd1a0d78fce596e3384`
+Fixed-Support Action-only正式对照实现基线：
+`1a2b8e5afb5500a89bdfb1eb7890b4ab30b41888`
 
 本文是 OpenVLA 谱纹理研究的**当前状态入口**。新一轮开发应先读本文，再按需
 进入专题文档；不要从长篇实验时间线推测当前优先级。历史实验索引见
@@ -1031,6 +1033,23 @@ Clean/Adversarial rollout。若Action-only达到3/10而主候选仅2/10，只能
 state的差距宣称机制已证实；若达到4--5/10或更高，才形成较有说服力的source
 强度差异。若Action-only仍约2/10或更低，则证据更指向Fixed Support或Action
 objective本身。该对照完成前不调整lambda、K_nat或Support，且不进入OFT。
+
+2026-08-10 已在commit `1a2b8e5afb5500a89bdfb1eb7890b4ab30b41888`
+实现Gate 6f的严格Action-only control。CLI用显式字符串字段
+`fixed_support_formal_training_variant=action_only_control`选择该变体；它仍复核
+并绑定主候选相同的Production Support、`rho_nat`、谱基、Spectral Guard
+calibration与两步smoke artifact，但不会实例化或计算Spectral Naturalness
+Regularization。每轮同样消费states 0--9完整Action梯度，并通过同一个
+`FixedSupportTrainerCore`执行一次surface-normalized step和Surface-L∞ projection。
+
+Action-only使用独立schema，manifest同时记录同一smoke冻结的
+`calibrated_lambda_spec`与本轮`applied_lambda_spec=0`；逐轮谱能量字段为JSON null，
+实际谱梯度贡献为零，total gradient必须逐统计等于Action gradient。独立CPU
+evaluator同时支持已冻结的旧Action+Spectral v1 bundle和新control bundle；原
+`0aca525`正式bundle复核仍为`gate_pass=true`。本地定向契约为`42 passed`；排除
+本机缺少nvdiffrast/完整LIBERO的9个既有collection文件后，可收集OpenVLA Attack
+回归为`261 passed`。下一步只需服务器无GPU回归与正式5000轮control，不新增方法
+变量。
 
 原正式training manifest与GPU日志SHA-256分别为
 `f7e05cacf1490846d1272bfaea4d719edbac78b8b463cfed676f423c74255e94`和

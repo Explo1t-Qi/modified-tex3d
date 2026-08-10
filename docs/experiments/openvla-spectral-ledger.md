@@ -64,6 +64,7 @@
 | 2026-08-09 | 正式Fixed-Support source trainer与paired Gate实现 | 尚未运行GPU/rollout；本地可收集CPU回归256 passed；服务器`81f542f`全量323 passed、1 skipped | OFT/Feature/wrist/legacy optimizer不进入正式进程；5000轮evaluator与成对Gate均要求完整state fingerprint及SHA绑定；正式长表补齐`cos(g_A,g_total)` | commit `d646117`接入主入口、增量训练证据、独立CPU evaluator和Clean/Adversarial同state判定；follow-up只补只读风险证据和每10轮心跳，不改变数值方法；队列6e仍待GPU | [当前状态](../status/openvla-spectral-current.md) |
 | 2026-08-09 | 正式5000轮Fixed-Support Action+Spectral source训练 | 5000/5000 update与50000行state证据完整；Action loss `12.2232→8.55536`；末轮Surface L∞=`0.501480`；尚未rollout | 加权谱/Action比首个非零步`0.2829`、中位数`0.0007493`、末轮`0.0002785`；`cos(g_A,g_total)`最低`0.974777`；Feature/wrist/OFT/legacy均未进入 | `0aca525`后置evaluator因float32 cosine最大`1+4.79e-7`和提前break级联误报；全部hash/行数/loss/预算独立复核有效，修正后原bundle `gate_pass=true`，不重跑训练，只恢复paired rollout | [当前状态](../status/openvla-spectral-current.md) |
 | 2026-08-09 | 正式Fixed-Support Action+Spectral paired source Gate | Clean 9/10、Adversarial 8/10；states 10、19为新增失败，共2/10，低于预注册3/10门槛；state 15为Clean原有失败且Adversarial恢复 | 恢复入口明确跳过训练，复用`0aca525` manifest/bake；paired artifact绑定评估commit `88e5162`并由WSL独立重算通过；资产完整恢复 | 队列6e科学Gate未通过，不进入OFT；结果只证明非零source作用，不能据此单独归因Spectral Guard；执行同Support/Action/step/budget/5000轮但关闭Guard的Action-only control | [当前状态](../status/openvla-spectral-current.md) |
+| 2026-08-10 | Gate 6f Fixed-Support Action-only control实现 | 尚未运行GPU；本地定向42 passed、可收集OpenVLA Attack回归261 passed；旧`0aca525` bundle继续通过独立复核 | 显式variant不实例化/计算Spectral Guard；绑定同一上游artifact，复用同一Action provider、Surface step/L∞ projection；独立schema区分calibrated lambda与applied lambda=0 | commit `1a2b8e5`完成训练、恢复与独立evidence contract；先跑服务器无GPU回归，再运行唯一正式5000轮control及paired rollout | [当前状态](../status/openvla-spectral-current.md) |
 
 ## 当前待执行队列
 
@@ -79,7 +80,7 @@
 | 6c（已通过） | 服务器Action-only Spectral Guard Calibration | runner/evaluator已实现；`rho_nat`通过且新trainer不复用legacy Feature objective | states 0–9每轮完整唯一且绑定fingerprint；首个连续5轮稳定激活窗口冻结`lambda_spec`；逐轮SurfaceStepStats；最多64轮；Surface/update/gradient/sampler/RNG完整恢复 | 已冻结`lambda_spec=0.000850536673`，7项恢复检查通过 |
 | 6d（已通过） | 服务器Fixed-Support Action+Spectral trainer两步工程smoke | 两级校准均通过；`4a061a2` runner复用正式Action objective、共享更新核心与冻结权重 | Step 0零点严格退化为Action-only；Step 1谱hinge/梯度激活，逐值复算联合梯度且每步只作一次update；bake/Active Texture/资产恢复通过 | `f73b183`正式bundle及WSL独立复核已通过 |
 | 6e（已完成，未通过） | 正式Fixed-Support Action+Spectral source训练与paired held-out rollout | 5000轮训练artifact和恢复评估完整性均通过 | paired新增失败2/10，未达到至少3/10 | 不进入OFT；转入预注册Action-only control，不改lambda/K_nat/Support |
-| 6f（当前唯一诊断） | Fixed-Support Action-only 5000轮control及paired held-out rollout | 与6e保持Support、Action目标、states、surface step、预算和轮数一致，仅关闭Spectral Guard | 完整训练证据和同states 10–19 paired结果；3/10只算方向性go/no-go信号，4–5/10或更高才较有力地指向Guard；约2/10或更低则更指向Support/Action objective瓶颈 | 10-state pilot不作统计显著性或机制证明；先按冻结判读讨论下一方法动作，不得把诊断对照自动包装为谱方法成功 |
+| 6f（当前唯一诊断） | Fixed-Support Action-only 5000轮control及paired held-out rollout | commit `1a2b8e5`已实现并通过本地CPU契约；与6e保持Support、Action目标、states、surface step、预算和轮数一致，仅关闭Spectral Guard | 完整训练证据和同states 10–19 paired结果；3/10只算方向性go/no-go信号，4–5/10或更高才较有力地指向Guard；约2/10或更低则更指向Support/Action objective瓶颈 | 10-state pilot不作统计显著性或机制证明；先按冻结判读讨论下一方法动作，不得把诊断对照自动包装为谱方法成功 |
 | 7 | OFT开发期 rollout | 出现满足至少3/10 paired新增失败的冻结谱候选 | 旧0/10迁移基线上至少出现2/10失败信号 | 记录机制失败，不包装为迁移提升 |
 | 8 | 新任务/第三模型无偏验证 | 方法和超参数冻结 | 预注册门槛 | 区分开发期选择偏差与真实迁移 |
 
