@@ -79,7 +79,7 @@
 | 6c（已通过） | 服务器Action-only Spectral Guard Calibration | runner/evaluator已实现；`rho_nat`通过且新trainer不复用legacy Feature objective | states 0–9每轮完整唯一且绑定fingerprint；首个连续5轮稳定激活窗口冻结`lambda_spec`；逐轮SurfaceStepStats；最多64轮；Surface/update/gradient/sampler/RNG完整恢复 | 已冻结`lambda_spec=0.000850536673`，7项恢复检查通过 |
 | 6d（已通过） | 服务器Fixed-Support Action+Spectral trainer两步工程smoke | 两级校准均通过；`4a061a2` runner复用正式Action objective、共享更新核心与冻结权重 | Step 0零点严格退化为Action-only；Step 1谱hinge/梯度激活，逐值复算联合梯度且每步只作一次update；bake/Active Texture/资产恢复通过 | `f73b183`正式bundle及WSL独立复核已通过 |
 | 6e（已完成，未通过） | 正式Fixed-Support Action+Spectral source训练与paired held-out rollout | 5000轮训练artifact和恢复评估完整性均通过 | paired新增失败2/10，未达到至少3/10 | 不进入OFT；转入预注册Action-only control，不改lambda/K_nat/Support |
-| 6f（当前唯一诊断） | Fixed-Support Action-only 5000轮control及paired held-out rollout | 与6e保持Support、Action目标、states、surface step、预算和轮数一致，仅关闭Spectral Guard | 完整训练证据和同states 10–19 paired结果；若至少3/10而6e为2/10，支持Guard削弱source强度；若仍不超过2/10，更指向Support/Action objective瓶颈 | 先根据冻结判读讨论下一方法动作；不得把诊断对照自动包装为谱方法成功 |
+| 6f（当前唯一诊断） | Fixed-Support Action-only 5000轮control及paired held-out rollout | 与6e保持Support、Action目标、states、surface step、预算和轮数一致，仅关闭Spectral Guard | 完整训练证据和同states 10–19 paired结果；3/10只算方向性go/no-go信号，4–5/10或更高才较有力地指向Guard；约2/10或更低则更指向Support/Action objective瓶颈 | 10-state pilot不作统计显著性或机制证明；先按冻结判读讨论下一方法动作，不得把诊断对照自动包装为谱方法成功 |
 | 7 | OFT开发期 rollout | 出现满足至少3/10 paired新增失败的冻结谱候选 | 旧0/10迁移基线上至少出现2/10失败信号 | 记录机制失败，不包装为迁移提升 |
 | 8 | 新任务/第三模型无偏验证 | 方法和超参数冻结 | 预注册门槛 | 区分开发期选择偏差与真实迁移 |
 

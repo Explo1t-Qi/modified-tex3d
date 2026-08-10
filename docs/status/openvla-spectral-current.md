@@ -1026,10 +1026,11 @@ failure；这里的完整性通过不得与artifact内部的科学Gate `gate_pas
 2/10结果归因于Spectral Guard。按预注册顺序，当前唯一下一诊断是保持同一Frozen
 Support、Action objective、states、surface step、Surface L∞预算和5000轮训练，
 仅关闭Spectral Guard的Fixed-Support Action-only control，并同样执行paired
-Clean/Adversarial rollout。若Action-only达到至少3/10而主候选仅2/10，才支持
-guard削弱source强度的机制判断；若Action-only仍不超过2/10，则证据更指向Fixed
-Support或Action objective本身。该对照完成前不调整lambda、K_nat或Support，且不
-进入OFT。
+Clean/Adversarial rollout。若Action-only达到3/10而主候选仅2/10，只能作为
+证据开始指向Guard、应优先检查它的go/no-go信号，不能凭10-state pilot和一个
+state的差距宣称机制已证实；若达到4--5/10或更高，才形成较有说服力的source
+强度差异。若Action-only仍约2/10或更低，则证据更指向Fixed Support或Action
+objective本身。该对照完成前不调整lambda、K_nat或Support，且不进入OFT。
 
 原正式training manifest与GPU日志SHA-256分别为
 `f7e05cacf1490846d1272bfaea4d719edbac78b8b463cfed676f423c74255e94`和
