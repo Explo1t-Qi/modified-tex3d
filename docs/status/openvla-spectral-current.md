@@ -1,6 +1,6 @@
 # OpenVLA 谱纹理当前状态
 
-更新时间：2026-08-09
+更新时间：2026-08-10
 当前 Visibility/Coverage/Compositor 功能代码基线：
 `1884eb7500283eea9f3bcf8793a4410cd1396b87`
 服务器 Gate 2E 复核基线：
@@ -33,6 +33,8 @@ Fixed-Support Action+Spectral两步smoke正式证据基线：
 `88e5162a9d9c1e222c240bd1a0d78fce596e3384`
 Fixed-Support Action-only正式对照实现基线：
 `1a2b8e5afb5500a89bdfb1eb7890b4ab30b41888`
+Fixed-Support Action-only正式对照证据基线：
+`3c085e792c077586065f6b692ba8e59af85a2807`
 
 本文是 OpenVLA 谱纹理研究的**当前状态入口**。新一轮开发应先读本文，再按需
 进入专题文档；不要从长篇实验时间线推测当前优先级。历史实验索引见
@@ -64,7 +66,7 @@ Fixed-Support Action-only正式对照实现基线：
 | Seed Score/density/smoothing | 已通过 | corrected canonical/repeat artifacts均从raw `G_s`独立复算；连续场与高分区域repeat稳定 |
 | Support Construction/coverage | 已通过，Production Support已冻结 | canonical/repeat均以`r=1`、seed 829通过；冻结3514个顶点/10542个RGB标量并绑定全部上游hash |
 | 谱自然性uniform Support校准 | 已通过 | 连续K_nat=128+常数频带通过数值审计；`rho_nat=0.0992735862`并由两个输入artifact独立复算 |
-| BPDA 下源攻击基线 | 主候选未过门槛 | Fixed-Support Action+Spectral完成5000轮训练；paired states 10--19为Clean 9/10、Adversarial 8/10，仅2/10新增失败，低于预注册3/10门槛 |
+| BPDA 下源攻击基线 | 主候选与Action-only对照均未过门槛 | 两者paired states 10--19均为Clean 9/10、Adversarial 8/10和2/10新增失败；失败state不同，但都低于预注册3/10门槛 |
 | BPDA 下 OFT 迁移信号 | 未开始 | 新源候选未过门槛前不得进入 OFT |
 | 无偏跨模型迁移与鲁棒性提升 | 未开始 | 需方法冻结后的新任务/第三模型与后续防御实验 |
 
@@ -125,9 +127,10 @@ mesh/mapping/provenance hash加载其3514个紧凑参数坐标。uniform Support
 已在真实states 0--9上完成GPU calibration，`lambda_spec`与完整状态恢复证据均已
 通过独立复核。Fixed-Support Action+Spectral正式trainer的两步工程smoke、5000轮
 source training及同一held-out states 10--19成对Clean/Adversarial rollout均已
-完成并通过artifact完整性复核。主候选只造成2/10个paired新增失败，未达到3/10
-source门槛。当前唯一下一诊断是同一Frozen Support与训练设置的Fixed-Support
-Action-only control；OFT仍不得提前进入。
+完成并通过artifact完整性复核。主候选与严格匹配的Action-only control均只造成
+2/10个paired新增失败，未达到3/10 source门槛；因此没有证据表明Spectral Guard
+是source强度不足的主要原因。当前需要先讨论Fixed Support、Action objective与
+自然性Guard的机制诊断优先级，不自动启动新实验；OFT仍不得提前进入。
 
 真实 Spatial checkpoint 的 CPU 差分记录为 fused pixel values MAE/L∞=`0/0`，
 输入梯度有限且非零；文档记录当时全量 CPU 回归为 `113 passed, 1 skipped`。
@@ -1056,6 +1059,44 @@ evaluator同时支持已冻结的旧Action+Spectral v1 bundle和新control bundl
 或error；warning仍只来自wandb、setuptools与robosuite的既有弃用接口。同步日志
 SHA-256为`02f74e85fc505ef97f2c483d74c3b928b9d0d0b3fc04382e09a319bcfdb44cc8`。
 Action-only正式5000轮control现已放行。
+
+服务器随后在commit `3c085e792c077586065f6b692ba8e59af85a2807`完成正式
+Action-only control，5000/5000轮update、50000行逐state证据、3514×3终态参数、
+loss history、bake与paired artifact均完整。WSL独立训练evaluator及paired
+artifact evaluator均返回完整性`gate_pass=true`且无failure；运行结束后Clean
+Asset的XML与真实MuJoCo纹理均已恢复。训练/paired artifact分别绑定同一执行
+commit、全部上游SHA、states 0--9 fingerprints及eval states 10--19 fingerprints。
+
+Action-only的Clean仍仅state 15失败，为9/10；Adversarial在states 10、13失败，
+为8/10，因此paired新增失败仍为2/10，state 15仍属于Adversarial recovery。主候选
+同样是2/10，但失败states为10、19。两者count相同而具体state不同，说明Guard改变
+了优化终点，却没有改善或损害本轮总体source Gate；Action-only也未达到3/10，
+因此Gate 6f完成但未通过，不进入OFT。
+
+训练机制比较进一步支持这一判读：两者Action loss均从`12.2232`开始；Action-only
+末轮/最小/末100轮均值为`9.2089/8.9938/9.1875`，主候选对应为
+`8.5554/8.3750/8.5314`。二者都在第92次update首次触及Surface预算，Surface step
+中位数均约`2/255`。终态紧凑参数cosine为`0.8613`，说明路径确有差异，但主候选
+的训练Action目标反而更低，不能把其source失败归因于Guard压制Action优化。
+
+末轮静态Training Frame上，Action-only已有6/10 states、11/70 token margin非正，
+主候选已有8/10 states、12/70 token margin非正，但二者held-out paired失败仍只有
+2/10。这说明当前teacher-forced proxy能够跨过部分训练帧token边界，却没有稳定
+转化为held-out任务失败；单凭现有证据仍不能区分瓶颈主要来自Fixed Support覆盖
+还是静态Action proxy/轨迹泛化，因此下一轮必须先设计可证伪诊断。
+
+使用已经冻结且hash校验通过的同一Naturalness Band对两个终态作事后只读复算，
+Action-only与主候选的`r_high`分别为`0.806436`与`0.816410`，均远高于
+`rho_nat=0.099274`；主候选并未比control得到更低的终态高频比例。软hinge允许
+超过rho，所以这不是实现契约违规，但它表明当前固定lambda Guard在本次5000轮中
+没有实现预期的相对自然性改善。该比较是单次10-state开发实验的机制证据，不作
+统计显著性结论，也不据此直接扫描lambda。
+
+GPU日志、rollout文本、formal manifest与paired artifact的SHA-256依次为
+`e5b18f245667c4c33c77a6a64029efb36c71264304bb56447e5bbc7584b1c2ae`、
+`ea77ba71a4138c02cdf5dc9648346a90e7b867db018980101218d855277b41ab`、
+`80b0df7bb9e9340395c0df57c870559eb0517e68c54601cca7ed0a6ad67b0b70`和
+`e35335e36cfc63c6e62d2e11cb8a704c0d47b82413b49ad9548384a70765c1d6`。
 
 原正式training manifest与GPU日志SHA-256分别为
 `f7e05cacf1490846d1272bfaea4d719edbac78b8b463cfed676f423c74255e94`和
