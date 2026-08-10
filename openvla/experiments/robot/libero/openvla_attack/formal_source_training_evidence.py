@@ -1,9 +1,10 @@
-"""正式 Fixed-Support source training bundle 的独立 CPU 验收。
+"""正式 Fixed-Support source training及Action-only control的独立CPU验收。
 
 该 evaluator 不导入模型、LIBERO、renderer 或 CUDA。它重新验证上游两步 smoke、
 全部文件 SHA-256、5000轮/50000行状态覆盖、逐轮 SurfaceStepStats、最终紧凑参数
-预算和 loss history。服务器路径失效时，会在同步目录的有限祖先范围内按文件名
-与 SHA-256 解析同一 artifact，不会因为路径移动跳过 provenance。
+预算和 loss history。Action-only还必须证明谱统计未计算、谱贡献严格为零且
+total gradient等于Action gradient。服务器路径失效时，会在同步目录的有限祖先
+范围内按文件名与SHA-256解析同一artifact，不会因为路径移动跳过provenance。
 """
 
 from __future__ import annotations
@@ -18,6 +19,7 @@ import numpy as np
 import torch
 
 from .fixed_support_source_training import (
+    ACTION_ONLY_CONTROL_SCHEMA_VERSION,
     EXPECTED_TRAIN_STATE_IDS,
     FORMAL_SOURCE_TRAINING_SCHEMA_VERSION,
 )
@@ -146,6 +148,11 @@ def evaluate_formal_source_training_bundle(
         smoke_decision = evaluate_fixed_support_training_smoke_bundle(
             resolved_inputs["fixed_support_training_smoke_manifest"]
         )
+        smoke_manifest = json.loads(
+            resolved_inputs["fixed_support_training_smoke_manifest"].read_text(
+                encoding="utf-8"
+            )
+        )
         if not smoke_decision.gate_pass:
             failures.append("上游两步training smoke未通过独立复核")
         support = load_production_support_artifact(
@@ -164,7 +171,28 @@ def evaluate_formal_source_training_bundle(
         )
 
     if manifest.get("schema_version") != FORMAL_SOURCE_TRAINING_SCHEMA_VERSION:
-        failures.append("正式训练schema不匹配")
+        if manifest.get("schema_version") != ACTION_ONLY_CONTROL_SCHEMA_VERSION:
+            failures.append("正式训练schema不匹配")
+    raw_variant = manifest.get("training_variant")
+    if raw_variant is None and manifest.get("schema_version") == (
+        FORMAL_SOURCE_TRAINING_SCHEMA_VERSION
+    ):
+        # 兼容已经完成并冻结的0aca525主候选bundle。
+        training_variant = "action_spectral"
+    elif raw_variant in ("action_spectral", "action_only_control"):
+        training_variant = str(raw_variant)
+    else:
+        training_variant = "invalid"
+        failures.append("正式训练variant缺失或无效")
+    expected_schema = (
+        FORMAL_SOURCE_TRAINING_SCHEMA_VERSION
+        if training_variant == "action_spectral"
+        else ACTION_ONLY_CONTROL_SCHEMA_VERSION
+    )
+    if training_variant != "invalid" and manifest.get(
+        "schema_version"
+    ) != expected_schema:
+        failures.append("正式训练variant与schema不一致")
     code_commit = manifest.get("code_commit")
     if not isinstance(code_commit, str) or len(code_commit) != 40 or any(
         character not in "0123456789abcdef" for character in code_commit
@@ -211,26 +239,92 @@ def evaluate_formal_source_training_bundle(
             ) != fingerprints:
                 failures.append(f"step {iteration} state fingerprint漂移")
                 break
-            required_finite = (
+            common_required_finite = (
                 "action_loss",
-                "total_energy",
-                "low_energy",
-                "high_energy",
-                "high_ratio",
-                "diagnostic_high_ratio",
-                "hinge",
-                "penalty",
                 "action_gradient_l2",
-                "spectral_gradient_l2",
-                "weighted_spectral_gradient_l2",
                 "total_gradient_l2",
                 "combination_residual_linf",
                 "action_total_cosine",
                 "weighted_spectral_action_ratio",
             )
-            if not all(_finite(row.get(name)) for name in required_finite):
+            if not all(
+                _finite(row.get(name)) for name in common_required_finite
+            ):
                 failures.append(f"step {iteration}包含NaN/Inf或缺失统计")
                 break
+            if training_variant == "action_spectral":
+                spectral_required_finite = (
+                    "total_energy",
+                    "low_energy",
+                    "high_energy",
+                    "high_ratio",
+                    "diagnostic_high_ratio",
+                    "hinge",
+                    "penalty",
+                    "spectral_gradient_l2",
+                    "weighted_spectral_gradient_l2",
+                )
+                if not all(
+                    _finite(row.get(name))
+                    for name in spectral_required_finite
+                ):
+                    failures.append(
+                        f"step {iteration}谱统计包含NaN/Inf或缺失"
+                    )
+                    break
+                if row.get("training_variant") not in (None, "action_spectral"):
+                    failures.append(f"step {iteration}训练variant错误")
+                    break
+                if row.get("spectral_guard_computed") not in (None, True):
+                    failures.append(f"step {iteration}谱Guard计算标记错误")
+                    break
+            elif training_variant == "action_only_control":
+                if row.get("training_variant") != "action_only_control":
+                    failures.append(f"step {iteration}训练variant错误")
+                    break
+                if row.get("spectral_guard_computed") is not False:
+                    failures.append(f"step {iteration}不得计算Spectral Guard")
+                    break
+                absent_spectral_fields = (
+                    "total_energy",
+                    "low_energy",
+                    "high_energy",
+                    "high_ratio",
+                    "diagnostic_high_ratio",
+                    "hinge",
+                    "penalty",
+                    "hinge_active",
+                    "action_spectral_cosine",
+                )
+                if any(
+                    row.get(name) is not None
+                    for name in absent_spectral_fields
+                ):
+                    failures.append(f"step {iteration}伪造了未计算的谱统计")
+                    break
+                if any(
+                    row.get(name) != 0.0
+                    for name in (
+                        "spectral_gradient_l2",
+                        "weighted_spectral_gradient_l2",
+                        "weighted_spectral_action_ratio",
+                    )
+                ):
+                    failures.append(f"step {iteration}Action-only谱贡献不为零")
+                    break
+                if not math.isclose(
+                    float(row["action_gradient_l2"]),
+                    float(row["total_gradient_l2"]),
+                    rel_tol=1e-7,
+                    abs_tol=1e-9,
+                ) or not math.isclose(
+                    float(row["action_total_cosine"]),
+                    1.0,
+                    rel_tol=0.0,
+                    abs_tol=COSINE_TOLERANCE,
+                ):
+                    failures.append(f"step {iteration}Action-only total梯度不等于Action")
+                    break
             if row.get("combination_residual_linf") != 0.0:
                 failures.append(f"step {iteration}联合梯度残差不为零")
                 break
@@ -320,11 +414,50 @@ def evaluate_formal_source_training_bundle(
     except (OSError, RuntimeError, TypeError, ValueError) as error:
         failures.append(f"最终参数/loss history无法复核: {error}")
 
-    if manifest.get("objective_components") != [
-        "untargeted_clean_action_margin_hinge",
-        "spectral_naturalness_hinge_squared",
-    ]:
+    expected_objectives = (
+        [
+            "untargeted_clean_action_margin_hinge",
+            "spectral_naturalness_hinge_squared",
+        ]
+        if training_variant == "action_spectral"
+        else ["untargeted_clean_action_margin_hinge"]
+    )
+    if manifest.get("objective_components") != expected_objectives:
         failures.append("正式训练objective组成错误")
+    if training_variant == "action_spectral":
+        if manifest.get("spectral_guard_computed") not in (None, True):
+            failures.append("主候选必须计算Spectral Guard")
+    elif training_variant == "action_only_control":
+        if manifest.get("spectral_guard_computed") is not False:
+            failures.append("Action-only control不得计算Spectral Guard")
+        if manifest.get("applied_lambda_spec") != 0.0 or manifest.get(
+            "lambda_spec"
+        ) != 0.0:
+            failures.append("Action-only control实际lambda必须为零")
+        calibrated_lambda = manifest.get("calibrated_lambda_spec")
+        if not _finite(calibrated_lambda) or not (
+            0.0 < float(calibrated_lambda) <= 1.0
+        ):
+            failures.append("Action-only control未绑定有效的已校准lambda")
+    if not _finite(manifest.get("rho_nat")) or not math.isclose(
+        float(manifest.get("rho_nat", float("nan"))),
+        float(smoke_manifest.get("rho_nat", float("nan"))),
+        rel_tol=0.0,
+        abs_tol=1e-12,
+    ):
+        failures.append("正式训练rho_nat未绑定同一smoke冻结值")
+    manifest_calibrated_lambda = (
+        manifest.get("lambda_spec")
+        if training_variant == "action_spectral"
+        else manifest.get("calibrated_lambda_spec")
+    )
+    if not _finite(manifest_calibrated_lambda) or not math.isclose(
+        float(manifest_calibrated_lambda),
+        float(smoke_manifest.get("lambda_spec", float("nan"))),
+        rel_tol=0.0,
+        abs_tol=1e-15,
+    ):
+        failures.append("正式训练未绑定同一smoke冻结lambda")
     for name in (
         "feature_loss_computed",
         "wrist_used",

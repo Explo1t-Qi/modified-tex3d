@@ -160,6 +160,30 @@ def test_zero_spectral_gradient_reduces_exactly_to_action_update() -> None:
     assert renderer.step_call_count == 1
 
 
+def test_action_only_control_uses_exact_action_gradient_and_one_shared_step() -> None:
+    renderer = _Renderer()
+    trainer = FixedSupportTrainerCore(renderer, surface_step=0.1)
+    action_gradient = torch.tensor(
+        [[1.0, -2.0, 3.0], [0.5, -0.25, 0.125]],
+        dtype=torch.float32,
+    )
+
+    update = trainer.apply_action_only_gradient(action_gradient)
+
+    torch.testing.assert_close(
+        update.total_gradient,
+        action_gradient,
+        rtol=0.0,
+        atol=0.0,
+    )
+    assert update.action_total_cosine == 1.0
+    assert update.spectral_gradient_l2 == 0.0
+    assert update.weighted_spectral_action_ratio == 0.0
+    assert update.combination_residual_linf == 0.0
+    assert renderer.step_call_count == 1
+    assert trainer.update_count == 1
+
+
 def test_zero_action_gradient_still_allows_spectral_restoration_update() -> None:
     renderer = _Renderer()
     trainer = FixedSupportTrainerCore(renderer, surface_step=0.1)

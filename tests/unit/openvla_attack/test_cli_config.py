@@ -9,6 +9,7 @@ from openvla.experiments.robot.libero.openvla_attack.configuration import (
     GenerateConfig,
     resolve_feature_objective,
     resolve_feature_view_mode,
+    resolve_formal_training_variant,
     resolve_texture_parameterization,
     validate_fixed_support_config,
     validate_formal_fixed_support_experiment,
@@ -56,6 +57,19 @@ def test_draccus_decodes_frozen_support_path_and_runtime_narrows_kind() -> None:
         config,
         texture_parameterization="fixed_support",
     )
+
+
+def test_draccus_decodes_explicit_action_only_control_variant() -> None:
+    config = decoding.decode(
+        GenerateConfig,
+        {"fixed_support_formal_training_variant": "action_only_control"},
+    )
+
+    assert resolve_formal_training_variant(
+        config.fixed_support_formal_training_variant
+    ) == "action_only_control"
+    with pytest.raises(ValueError, match="正式训练变体"):
+        resolve_formal_training_variant("legacy_action_feature")
 
 
 def test_fixed_support_config_requires_exclusive_artifact_path() -> None:
@@ -141,6 +155,13 @@ def test_formal_fixed_support_experiment_freezes_candidate_and_state_split() -> 
                 fixed_support_training_smoke_manifest_path="/tmp/smoke.json",
                 code_commit="not-a-commit",
             ),
+            texture_parameterization="fixed_support",
+        )
+
+    config.fixed_support_formal_training_variant = "legacy_action_feature"
+    with pytest.raises(ValueError, match="正式训练变体"):
+        validate_formal_fixed_support_experiment(
+            config,
             texture_parameterization="fixed_support",
         )
 

@@ -15,6 +15,7 @@ from openvla.experiments.robot.libero.openvla_attack.artifacts import (
     AttackArtifactStore,
 )
 from openvla.experiments.robot.libero.openvla_attack.fixed_support_source_training import (
+    ACTION_ONLY_CONTROL_SCHEMA_VERSION,
     FormalTrainingInputs,
     FormalSourceTrainingError,
     load_completed_formal_source_training,
@@ -130,6 +131,10 @@ def _inputs(tmp_path: Path) -> FormalTrainingInputs:
     paths = [tmp_path / f"input-{index}" for index in range(5)]
     for path in paths:
         path.write_text("fixture", encoding="utf-8")
+    paths[4].write_text(
+        json.dumps({"lambda_spec": 0.1, "rho_nat": 0.1}),
+        encoding="utf-8",
+    )
     return FormalTrainingInputs(
         production_support_path=paths[0],
         rho_nat_calibration_path=paths[1],
@@ -150,6 +155,7 @@ def _inputs(tmp_path: Path) -> FormalTrainingInputs:
             )
         },
         lambda_spec=0.1,
+        rho_nat=0.1,
         smoke_config={},
     )
 
@@ -198,6 +204,57 @@ def test_formal_training_writes_incremental_evidence_and_final_artifacts(
     assert result.baked_texture_path.is_file()
 
 
+def test_action_only_control_never_computes_spectral_guard_and_records_variant(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    module_name = (
+        "openvla.experiments.robot.libero.openvla_attack."
+        "fixed_support_source_training"
+    )
+    monkeypatch.setattr(
+        f"{module_name}.loaded_legacy_optimizer_modules",
+        lambda: (),
+    )
+    renderer = _Renderer()
+    fingerprints = tuple(f"{state_id:064x}" for state_id in range(10))
+    artifact_store = AttackArtifactStore.prepare(
+        local_log_dir=tmp_path,
+        run_id="action-only-control-test",
+        create_attack_directory=True,
+    )
+
+    result = run_formal_source_training(
+        code_commit="d" * 40,
+        task_id=0,
+        num_iterations=2,
+        renderer=renderer,
+        action_provider=_Provider(renderer, fingerprints),
+        regularizer=None,
+        artifact_store=artifact_store,
+        inputs=_inputs(tmp_path),
+        state_fingerprints=fingerprints,
+        surface_step=0.1,
+        training_variant="action_only_control",
+    )
+
+    manifest = json.loads(result.manifest_path.read_text(encoding="utf-8"))
+    rows = [json.loads(line) for line in result.steps_path.read_text().splitlines()]
+    assert result.training_variant == "action_only_control"
+    assert manifest["schema_version"] == ACTION_ONLY_CONTROL_SCHEMA_VERSION
+    assert manifest["training_variant"] == "action_only_control"
+    assert manifest["objective_components"] == [
+        "untargeted_clean_action_margin_hinge"
+    ]
+    assert manifest["spectral_guard_computed"] is False
+    assert manifest["applied_lambda_spec"] == 0.0
+    assert manifest["calibrated_lambda_spec"] == pytest.approx(0.1)
+    assert all(row["spectral_guard_computed"] is False for row in rows)
+    assert all(row["total_energy"] is None for row in rows)
+    assert all(row["spectral_gradient_l2"] == 0.0 for row in rows)
+    assert all(row["weighted_spectral_action_ratio"] == 0.0 for row in rows)
+
+
 def test_completed_training_recovery_only_returns_existing_artifact_paths(
     tmp_path,
     monkeypatch,
@@ -240,9 +297,14 @@ def test_completed_training_recovery_only_returns_existing_artifact_paths(
         load_completed_formal_source_training(manifest_path)
 
 
+@pytest.mark.parametrize(
+    "training_variant",
+    ["action_spectral", "action_only_control"],
+)
 def test_cpu_evaluator_rejects_no_evidence_and_accepts_complete_sequence(
     tmp_path,
     monkeypatch,
+    training_variant,
 ) -> None:
     module_name = (
         "openvla.experiments.robot.libero.openvla_attack."
@@ -265,11 +327,14 @@ def test_cpu_evaluator_rejects_no_evidence_and_accepts_complete_sequence(
         num_iterations=2,
         renderer=renderer,
         action_provider=_Provider(renderer, fingerprints),
-        regularizer=_Regularizer(),
+        regularizer=(
+            _Regularizer() if training_variant == "action_spectral" else None
+        ),
         artifact_store=store,
         inputs=_inputs(tmp_path),
         state_fingerprints=fingerprints,
         surface_step=0.1,
+        training_variant=training_variant,
     )
 
     evidence_module = (
@@ -334,7 +399,15 @@ def test_cpu_evaluator_rejects_no_evidence_and_accepts_complete_sequence(
     )
 
     assert invalid_cosine.gate_pass is False
-    assert any("cosine越界" in failure for failure in invalid_cosine.failures)
+    expected_cosine_failure = (
+        "cosine越界"
+        if training_variant == "action_spectral"
+        else "total梯度不等于Action"
+    )
+    assert any(
+        expected_cosine_failure in failure
+        for failure in invalid_cosine.failures
+    )
     assert not any("行数" in failure for failure in invalid_cosine.failures)
     assert not any("loss history" in failure for failure in invalid_cosine.failures)
 

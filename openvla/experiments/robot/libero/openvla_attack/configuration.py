@@ -24,6 +24,10 @@ FeatureViewModeKind: TypeAlias = Literal[
     "primary",
     "primary_wrist",
 ]
+FormalTrainingVariantKind: TypeAlias = Literal[
+    "action_spectral",
+    "action_only_control",
+]
 SUPPORTED_TEXTURE_PARAMETERIZATIONS: frozenset[str] = frozenset(
     {"legacy_vertex", "geometry_vertex", "fixed_support", "spectral"}
 )
@@ -32,6 +36,9 @@ SUPPORTED_FEATURE_OBJECTIVES: frozenset[str] = frozenset(
 )
 SUPPORTED_FEATURE_VIEW_MODES: frozenset[str] = frozenset(
     {"primary", "primary_wrist"}
+)
+SUPPORTED_FORMAL_TRAINING_VARIANTS: frozenset[str] = frozenset(
+    {"action_spectral", "action_only_control"}
 )
 
 
@@ -70,6 +77,19 @@ def resolve_feature_view_mode(raw_value: str) -> FeatureViewModeKind:
             f"{sorted(SUPPORTED_FEATURE_VIEW_MODES)}"
         )
     return cast(FeatureViewModeKind, raw_value)
+
+
+def resolve_formal_training_variant(
+    raw_value: str,
+) -> FormalTrainingVariantKind:
+    """把CLI字符串收窄为正式Fixed-Support训练变体。"""
+
+    if raw_value not in SUPPORTED_FORMAL_TRAINING_VARIANTS:
+        raise ValueError(
+            f"未知正式训练变体 {raw_value!r}；可选值为 "
+            f"{sorted(SUPPORTED_FORMAL_TRAINING_VARIANTS)}"
+        )
+    return cast(FormalTrainingVariantKind, raw_value)
 
 
 @dataclass
@@ -118,6 +138,10 @@ class GenerateConfig:
     rho_nat_calibration_path: Optional[str] = None
     spectral_guard_manifest_path: Optional[str] = None
     fixed_support_training_smoke_manifest_path: Optional[str] = None
+    # ``action_spectral``是正式主候选；``action_only_control``只用于冻结的
+    # Gate 6f单变量对照。两者共享Fixed Support、Action objective、训练states、
+    # Surface step/L∞预算和轮数，后者明确不计算Spectral Guard。
+    fixed_support_formal_training_variant: str = "action_spectral"
     # 仅用于5000轮训练已完成但后置evaluator/rollout中止的恢复流程。提供后主
     # 入口必须独立复核该正式manifest并直接使用其原bake，禁止再次训练。
     fixed_support_formal_training_manifest_path: Optional[str] = None
@@ -237,6 +261,11 @@ def validate_fixed_support_config(
         "fixed_support_formal_training_manifest_path": (
             cfg.fixed_support_formal_training_manifest_path
         ),
+        "fixed_support_formal_training_variant": (
+            None
+            if cfg.fixed_support_formal_training_variant == "action_spectral"
+            else cfg.fixed_support_formal_training_variant
+        ),
         "code_commit": cfg.code_commit,
     }
     configured = [
@@ -266,6 +295,7 @@ def validate_formal_fixed_support_experiment(
 
     if texture_parameterization != "fixed_support":
         return
+    resolve_formal_training_variant(cfg.fixed_support_formal_training_variant)
     if not cfg.enable_attack:
         raise ValueError("正式Fixed-Support source训练要求enable_attack=True")
     frozen_values = {

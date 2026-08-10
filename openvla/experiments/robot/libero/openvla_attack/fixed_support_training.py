@@ -115,6 +115,38 @@ class FixedSupportTrainerCore:
         self._validate_gradient(gradient, name="Action")
         return self._apply_gradient(gradient)
 
+    def apply_action_only_gradient(
+        self,
+        action_gradient: Tensor,
+    ) -> CombinedGradientUpdate:
+        """不计算谱项地执行Action-only对照，并形成显式零谱证据。
+
+        该路径和联合训练最终共享 :meth:`_apply_gradient`，因此使用同一个
+        surface-normalized step与Surface-L∞ projection。零谱字段只表示正式
+        control没有计算或应用Spectral Guard，不能解释为谱梯度恰好为零。
+        """
+
+        self._validate_gradient(action_gradient, name="Action")
+        action_gradient = action_gradient.detach()
+        action_norm = float(torch.linalg.vector_norm(action_gradient).item())
+        zero_spectral = torch.zeros_like(action_gradient)
+        step_stats = self._apply_gradient(action_gradient)
+        return CombinedGradientUpdate(
+            weighted_spectral_gradient=zero_spectral,
+            total_gradient=action_gradient,
+            action_gradient_l2=action_norm,
+            spectral_gradient_l2=0.0,
+            weighted_spectral_gradient_l2=0.0,
+            total_gradient_l2=action_norm,
+            action_spectral_cosine=None,
+            action_total_cosine=None if action_norm == 0.0 else 1.0,
+            weighted_spectral_action_ratio=(
+                None if action_norm == 0.0 else 0.0
+            ),
+            combination_residual_linf=0.0,
+            surface_step_stats=step_stats,
+        )
+
     def apply_action_spectral_gradients(
         self,
         action_gradient: Tensor,

@@ -1,9 +1,10 @@
-"""正式 Fixed-Support Action+Spectral source trainer 与证据契约。
+"""正式 Fixed-Support source trainer及Action-only对照证据契约。
 
 本模块不采集 Feature/wrist，也不导入 legacy ``training``/``optimization``。
-调用方提供已冻结的 states 0--9 Action 梯度 provider；每轮严格计算十个 state
-的算术平均梯度、Spectral Naturalness 梯度，并通过
-:class:`FixedSupportTrainerCore` 执行唯一一次 surface-normalized update。
+正式主候选每轮形成十个state的平均Action梯度与Spectral Naturalness梯度；
+严格匹配的Action-only control只提交同一Action梯度，不构造或计算谱正则。两条
+路径都通过 :class:`FixedSupportTrainerCore` 执行唯一一次surface-normalized
+update，并共享Surface-L∞ projection。
 
 5000轮证据使用增量 JSONL，避免把逐 state margins 和梯度摘要长期留在内存。
 完整逐轮梯度不重复保存：联合公式、Surface step 和 Support 约束已由两步 smoke
@@ -18,7 +19,7 @@ import subprocess
 import sys
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Final, Mapping, Protocol, Sequence
+from typing import Any, Final, Literal, Mapping, Optional, Protocol, Sequence, cast
 
 import torch
 
@@ -37,6 +38,13 @@ from .spectral_guard import MeanActionGradient, SpectralGuardTerms
 
 FORMAL_SOURCE_TRAINING_SCHEMA_VERSION: Final[str] = (
     "openvla-fixed-support-action-spectral-source-training-v1"
+)
+ACTION_ONLY_CONTROL_SCHEMA_VERSION: Final[str] = (
+    "openvla-fixed-support-action-only-source-control-v1"
+)
+FormalTrainingVariant = Literal["action_spectral", "action_only_control"]
+SUPPORTED_FORMAL_TRAINING_VARIANTS: Final[frozenset[str]] = frozenset(
+    {"action_spectral", "action_only_control"}
 )
 EXPECTED_TRAIN_STATE_IDS: Final[tuple[int, ...]] = tuple(range(10))
 
@@ -72,6 +80,7 @@ class FormalTrainingInputs:
     training_smoke_manifest_path: Path
     input_sha256: Mapping[str, str]
     lambda_spec: float
+    rho_nat: float
     smoke_config: Mapping[str, Any]
 
 
@@ -86,6 +95,16 @@ class FormalSourceTrainingResult:
     steps_path: Path
     action_frames_path: Path
     num_iterations: int
+    training_variant: FormalTrainingVariant
+
+
+def _resolve_training_variant(value: object) -> FormalTrainingVariant:
+    """校验内部正式训练变体；旧v1 manifest缺省解释为主候选。"""
+
+    resolved = "action_spectral" if value is None else str(value)
+    if resolved not in SUPPORTED_FORMAL_TRAINING_VARIANTS:
+        raise FormalSourceTrainingError(f"未知正式训练变体: {resolved!r}")
+    return cast(FormalTrainingVariant, resolved)
 
 
 def load_completed_formal_source_training(
@@ -105,6 +124,9 @@ def load_completed_formal_source_training(
             + "; ".join(decision.failures)
         )
     manifest = json.loads(resolved_manifest.read_text(encoding="utf-8"))
+    training_variant = _resolve_training_variant(
+        manifest.get("training_variant")
+    )
     root = resolved_manifest.parent
     result = FormalSourceTrainingResult(
         manifest_path=resolved_manifest,
@@ -120,6 +142,7 @@ def load_completed_formal_source_training(
             manifest["action_frames_relative_path"]
         ),
         num_iterations=int(manifest["num_iterations"]),
+        training_variant=training_variant,
     )
     if result.num_iterations != 5000:
         raise FormalSourceTrainingError("恢复入口只接受完整5000轮正式训练")
@@ -220,6 +243,9 @@ def load_formal_training_inputs(
     lambda_spec = float(manifest.get("lambda_spec", float("nan")))
     if not math.isfinite(lambda_spec) or not 0.0 < lambda_spec <= 1.0:
         raise FormalSourceTrainingError("smoke中的lambda_spec无效")
+    rho_nat = float(manifest.get("rho_nat", float("nan")))
+    if not math.isfinite(rho_nat) or not 0.0 <= rho_nat <= 1.0:
+        raise FormalSourceTrainingError("smoke中的rho_nat无效")
     return FormalTrainingInputs(
         production_support_path=paths["production_support"],
         rho_nat_calibration_path=paths["rho_nat_calibration"],
@@ -231,6 +257,7 @@ def load_formal_training_inputs(
             "fixed_support_training_smoke_manifest": file_sha256(smoke_path),
         },
         lambda_spec=lambda_spec,
+        rho_nat=rho_nat,
         smoke_config=dict(manifest.get("config", {})),
     )
 
@@ -285,6 +312,8 @@ def _step_row(
 
     return {
         "iteration": iteration,
+        "training_variant": "action_spectral",
+        "spectral_guard_computed": True,
         "action_loss": action_sample.loss,
         "num_action_frames": action_sample.num_frames,
         "action_state_ids": list(action_sample.state_ids),
@@ -316,6 +345,46 @@ def _step_row(
     }
 
 
+def _action_only_step_row(
+    *,
+    iteration: int,
+    action_sample: MeanActionGradient,
+    update: CombinedGradientUpdate,
+    configured_surface_step: float,
+) -> dict[str, Any]:
+    """保存Action-only单变量对照；谱相关量用null/显式零区分未计算。"""
+
+    return {
+        "iteration": iteration,
+        "training_variant": "action_only_control",
+        "spectral_guard_computed": False,
+        "action_loss": action_sample.loss,
+        "num_action_frames": action_sample.num_frames,
+        "action_state_ids": list(action_sample.state_ids),
+        "action_state_fingerprints": list(action_sample.state_fingerprints),
+        "total_energy": None,
+        "low_energy": None,
+        "high_energy": None,
+        "high_ratio": None,
+        "diagnostic_high_ratio": None,
+        "hinge": None,
+        "penalty": None,
+        "hinge_active": None,
+        "action_gradient_l2": update.action_gradient_l2,
+        "spectral_gradient_l2": 0.0,
+        "weighted_spectral_gradient_l2": 0.0,
+        "total_gradient_l2": update.total_gradient_l2,
+        "action_spectral_cosine": None,
+        "action_total_cosine": update.action_total_cosine,
+        "weighted_spectral_action_ratio": (
+            update.weighted_spectral_action_ratio
+        ),
+        "combination_residual_linf": update.combination_residual_linf,
+        "configured_surface_step": configured_surface_step,
+        "surface_step_stats": asdict(update.surface_step_stats),
+    }
+
+
 def _write_json_line(handle: Any, row: Mapping[str, Any]) -> None:
     handle.write(json.dumps(row, sort_keys=True) + "\n")
 
@@ -327,15 +396,30 @@ def run_formal_source_training(
     num_iterations: int,
     renderer: FixedSupportTrainingRenderer,
     action_provider: FormalActionGradientProvider,
-    regularizer: FormalSpectralRegularizer,
+    regularizer: Optional[FormalSpectralRegularizer],
     artifact_store: AttackArtifactStore,
     inputs: FormalTrainingInputs,
     state_fingerprints: Sequence[str],
     surface_step: float,
+    training_variant: FormalTrainingVariant = "action_spectral",
 ) -> FormalSourceTrainingResult:
-    """执行正式联合训练并生成 rollout 前不可变 manifest。"""
+    """执行正式主候选或严格匹配的Action-only control。"""
 
     _validate_commit(code_commit)
+    resolved_variant = _resolve_training_variant(training_variant)
+    if resolved_variant == "action_spectral" and regularizer is None:
+        raise FormalSourceTrainingError("Action+Spectral主候选缺少regularizer")
+    if resolved_variant == "action_only_control" and regularizer is not None:
+        raise FormalSourceTrainingError(
+            "Action-only control禁止构造或计算Spectral Guard"
+        )
+    if regularizer is not None and not math.isclose(
+        float(regularizer.rho_nat),
+        inputs.rho_nat,
+        rel_tol=0.0,
+        abs_tol=1e-12,
+    ):
+        raise FormalSourceTrainingError("regularizer rho_nat与smoke冻结值不一致")
     if num_iterations <= 0:
         raise FormalSourceTrainingError("num_iterations必须为正数")
     if loaded_legacy_optimizer_modules():
@@ -382,35 +466,54 @@ def run_formal_source_training(
                     f"iteration {iteration}逐state证据轮次错误"
                 )
 
-            terms = regularizer(trainer.geometry_delta())
-            spectral_gradient = torch.autograd.grad(
-                terms.penalty,
-                trainer.texture_parameter,
-            )[0]
-            update = trainer.apply_action_spectral_gradients(
-                action_sample.gradient.detach(),
-                spectral_gradient.detach(),
-                lambda_spec=inputs.lambda_spec,
-            )
-            row = _step_row(
-                iteration=iteration,
-                action_sample=action_sample,
-                terms=terms,
-                update=update,
-                configured_surface_step=surface_step,
-            )
-            numeric_values = (
-                row["action_loss"],
-                row["total_energy"],
-                row["low_energy"],
-                row["high_energy"],
-                row["high_ratio"],
-                row["hinge"],
-                row["penalty"],
-                row["action_gradient_l2"],
-                row["spectral_gradient_l2"],
-                row["total_gradient_l2"],
-            )
+            if resolved_variant == "action_spectral":
+                assert regularizer is not None
+                terms = regularizer(trainer.geometry_delta())
+                spectral_gradient = torch.autograd.grad(
+                    terms.penalty,
+                    trainer.texture_parameter,
+                )[0]
+                update = trainer.apply_action_spectral_gradients(
+                    action_sample.gradient.detach(),
+                    spectral_gradient.detach(),
+                    lambda_spec=inputs.lambda_spec,
+                )
+                row = _step_row(
+                    iteration=iteration,
+                    action_sample=action_sample,
+                    terms=terms,
+                    update=update,
+                    configured_surface_step=surface_step,
+                )
+                numeric_values = (
+                    row["action_loss"],
+                    row["total_energy"],
+                    row["low_energy"],
+                    row["high_energy"],
+                    row["high_ratio"],
+                    row["hinge"],
+                    row["penalty"],
+                    row["action_gradient_l2"],
+                    row["spectral_gradient_l2"],
+                    row["total_gradient_l2"],
+                )
+            else:
+                update = trainer.apply_action_only_gradient(
+                    action_sample.gradient.detach()
+                )
+                row = _action_only_step_row(
+                    iteration=iteration,
+                    action_sample=action_sample,
+                    update=update,
+                    configured_surface_step=surface_step,
+                )
+                numeric_values = (
+                    row["action_loss"],
+                    row["action_gradient_l2"],
+                    row["total_gradient_l2"],
+                    row["action_total_cosine"],
+                    row["weighted_spectral_action_ratio"],
+                )
             if not all(math.isfinite(float(value)) for value in numeric_values):
                 raise FormalSourceTrainingError(
                     f"iteration {iteration}联合训练统计包含NaN/Inf"
@@ -430,6 +533,7 @@ def run_formal_source_training(
                 stats = update.surface_step_stats
                 print(
                     "[FORMAL-SOURCE] "
+                    f"variant={resolved_variant} "
                     f"iteration={iteration + 1}/{num_iterations} "
                     f"action_loss={action_sample.loss:.8f} "
                     f"weighted_spec_action_ratio="
@@ -456,7 +560,12 @@ def run_formal_source_training(
     final_geometry_delta = renderer.get_geometry_surface_delta().detach()
 
     manifest = {
-        "schema_version": FORMAL_SOURCE_TRAINING_SCHEMA_VERSION,
+        "schema_version": (
+            FORMAL_SOURCE_TRAINING_SCHEMA_VERSION
+            if resolved_variant == "action_spectral"
+            else ACTION_ONLY_CONTROL_SCHEMA_VERSION
+        ),
+        "training_variant": resolved_variant,
         "code_commit": code_commit,
         "task_id": task_id,
         "train_state_ids": list(EXPECTED_TRAIN_STATE_IDS),
@@ -465,8 +574,17 @@ def run_formal_source_training(
         "trainer_update_count": trainer.update_count,
         "surface_step": surface_step,
         "surface_epsilon": float(renderer.epsilon),
-        "lambda_spec": inputs.lambda_spec,
-        "rho_nat": regularizer.rho_nat,
+        # ``lambda_spec``保留旧主候选schema的兼容字段；新字段明确区分已校准
+        # 权重和本次实际应用权重，防止把control误读为lambda校准失败。
+        "lambda_spec": (
+            inputs.lambda_spec if resolved_variant == "action_spectral" else 0.0
+        ),
+        "calibrated_lambda_spec": inputs.lambda_spec,
+        "applied_lambda_spec": (
+            inputs.lambda_spec if resolved_variant == "action_spectral" else 0.0
+        ),
+        # 即使control不计算Guard，也记录同一smoke冻结的rho作为对照provenance。
+        "rho_nat": inputs.rho_nat,
         "parameter_shape": list(parameter.shape),
         "final_parameter_linf": float(parameter.abs().amax().item()),
         "final_geometry_delta_linf": float(
@@ -492,10 +610,15 @@ def run_formal_source_training(
         "baked_texture_sha256": file_sha256(artifacts.texture_path),
         "loss_history_relative_path": artifacts.loss_history_path.name,
         "loss_history_sha256": file_sha256(artifacts.loss_history_path),
-        "objective_components": [
-            "untargeted_clean_action_margin_hinge",
-            "spectral_naturalness_hinge_squared",
-        ],
+        "objective_components": (
+            [
+                "untargeted_clean_action_margin_hinge",
+                "spectral_naturalness_hinge_squared",
+            ]
+            if resolved_variant == "action_spectral"
+            else ["untargeted_clean_action_margin_hinge"]
+        ),
+        "spectral_guard_computed": resolved_variant == "action_spectral",
         "feature_loss_computed": False,
         "wrist_used": False,
         "oft_loaded": False,
@@ -525,6 +648,7 @@ def run_formal_source_training(
         steps_path=steps_path,
         action_frames_path=frames_path,
         num_iterations=num_iterations,
+        training_variant=resolved_variant,
     )
 
 
@@ -548,6 +672,9 @@ def run_formal_source_training_for_task(
     """
 
     verify_executing_commit(str(cfg.code_commit))
+    training_variant = _resolve_training_variant(
+        cfg.fixed_support_formal_training_variant
+    )
     if loaded_legacy_optimizer_modules():
         raise FormalSourceTrainingError("正式采帧前已加载legacy optimizer")
     if tuple(initial_state_ids) != EXPECTED_TRAIN_STATE_IDS:
@@ -621,12 +748,18 @@ def run_formal_source_training_for_task(
         image_preprocessor=image_preprocessor,
         policy_view_transform=policy_view_transform,
     )
-    regularizer = SpectralNaturalnessRegularizer.from_artifacts(
-        inputs.rho_nat_calibration_path,
-        inputs.spectral_basis_path,
-        device=model.device,
-        dtype=torch.float32,
-    )
+    regularizer: Optional[FormalSpectralRegularizer]
+    if training_variant == "action_spectral":
+        regularizer = SpectralNaturalnessRegularizer.from_artifacts(
+            inputs.rho_nat_calibration_path,
+            inputs.spectral_basis_path,
+            device=model.device,
+            dtype=torch.float32,
+        )
+    else:
+        # Control仍绑定相同自然性artifact与两步smoke，但不把basis/regularizer
+        # 搬到GPU，也不计算任何谱能量或谱梯度。
+        regularizer = None
     result = run_formal_source_training(
         code_commit=cfg.code_commit,
         task_id=int(cfg.task_id),
@@ -638,6 +771,7 @@ def run_formal_source_training_for_task(
         inputs=inputs,
         state_fingerprints=fingerprints,
         surface_step=float(cfg.attack_surface_step),
+        training_variant=training_variant,
     )
     if loaded_legacy_optimizer_modules():
         raise FormalSourceTrainingError("正式训练期间加载了legacy optimizer")
@@ -665,6 +799,14 @@ def prepare_completed_formal_training_for_evaluation(
     )
     validate_formal_config_against_smoke(cfg, inputs)
     result = load_completed_formal_source_training(manifest_path)
+    requested_variant = _resolve_training_variant(
+        cfg.fixed_support_formal_training_variant
+    )
+    if result.training_variant != requested_variant:
+        raise FormalSourceTrainingError(
+            "恢复manifest训练变体与当前命令不一致: "
+            f"manifest={result.training_variant}, requested={requested_variant}"
+        )
     manifest = json.loads(result.manifest_path.read_text(encoding="utf-8"))
     if manifest.get("input_sha256") != dict(inputs.input_sha256):
         raise FormalSourceTrainingError(
