@@ -1,6 +1,6 @@
 # OpenVLA 谱纹理当前状态
 
-更新时间：2026-08-10
+更新时间：2026-08-11
 当前 Visibility/Coverage/Compositor 功能代码基线：
 `1884eb7500283eea9f3bcf8793a4410cd1396b87`
 服务器 Gate 2E 复核基线：
@@ -35,6 +35,12 @@ Fixed-Support Action-only正式对照实现基线：
 `1a2b8e5afb5500a89bdfb1eb7890b4ab30b41888`
 Fixed-Support Action-only正式对照证据基线：
 `3c085e792c077586065f6b692ba8e59af85a2807`
+Gate 6g CPU审计核心实现基线：
+`9baeadd75f67a0418828608f0684453106b0936d`
+Gate 6g双终态re-bake正式证据基线：
+`cfb9f77c16875a826ea4da05b435c8840833ec58`
+Gate 6g state 0 C/A/B smoke实现基线：
+`efc45fc963da88545bbb76683e10d7a5c69e82dd`
 
 本文是 OpenVLA 谱纹理研究的**当前状态入口**。新一轮开发应先读本文，再按需
 进入专题文档；不要从长篇实验时间线推测当前优先级。历史实验索引见
@@ -1164,6 +1170,17 @@ manifest SHA为
 服务器原子发布与rsync后的WSL按SHA有限重定位、NPZ独立复算均已通过。因此
 parameter/bake配对前置条件已关闭，下一步只允许实现state 0 C/A/B smoke；该
 结果尚未加载OpenVLA或MuJoCo state，不包含任何动作响应结论。
+
+同日，commit `efc45fc`完成state 0双终态C/A/B smoke runner及其模型边界。
+runner对两个variant只采集一次共享Clean，在同一Clean静止场景中从各自紧凑
+parameter重建终态Surface Delta并获得Renderer Delta Composition路径A，再逐一
+激活hash-bound bake获得真实MuJoCo路径B；不执行训练、backward、rollout，
+也不加载Feature、wrist、OFT或legacy optimizer。成功manifest会绑定解析后的
+processor/policy-view
+specification、最终BF16 bit pattern、完整动作响应数组、静态场景与资产事务证据，
+并在原子发布前由纯CPU evaluator复算恰好两个case及跨variant共享Clean。相关定向
+无GPU回归为`70 passed`；完整本地收集仅受缺失`nvdiffrast`与LIBERO阻断。当前唯一
+下一步是服务器state 0 smoke，尚无C/A/B动作响应结果。
 
 已冻结的第一项设计决定：谱方法在新候选中作为作用于最终 Surface Delta 的软
 自然性正则，只惩罚高频谱能量；它不再把扰动硬限制在前 K 个谱基中，也不是与
