@@ -68,6 +68,7 @@
 | 2026-08-10 | Gate 6f Fixed-Support Action-only control实现与preflight | 尚未运行GPU；本地定向42 passed、可收集回归261 passed；服务器`6cf8c12`全量328 passed、1 skipped；旧`0aca525` bundle继续通过独立复核 | 显式variant不实例化/计算Spectral Guard；绑定同一上游artifact，复用同一Action provider、Surface step/L∞ projection；独立schema区分calibrated lambda与applied lambda=0 | commit `1a2b8e5`完成训练、恢复与独立evidence contract；服务器preflight无失败/错误，正式5000轮control及paired rollout已放行 | [当前状态](../status/openvla-spectral-current.md) |
 | 2026-08-10 | Gate 6f正式Fixed-Support Action-only control | 5000/5000 update与全部artifact独立复核通过；Clean 9/10、Adversarial 8/10；states 10、13为新增失败，共2/10，未达3/10 | 主候选同为2/10但失败states 10、19；Action-only末轮Action loss `9.2089`高于主候选`8.5554`；事后同频带复算`r_high=0.8064`，主候选为`0.8164` | Guard改变终点，但本轮未观察到总体source count下降或冻结谱指标上的自然性改善；Gate 6f完成但未通过，不进入OFT；先讨论Support/Action proxy与Guard机制，禁止直接网格扫描 | [当前状态](../status/openvla-spectral-current.md) |
 | 2026-08-10 | Gate 6g Terminal Deployment Response Audit设计冻结 | 不重训；对两个既有终态在train states 0–9采集共享Clean、Fixed-Support参数重建路径A与真实MuJoCo bake路径B | OFT/Feature/wrist/rollout均不进入；CPU evaluator按首次因果分歧复算`lost/altered/preserved_strict/preserved_tie_sensitive` | 只设artifact完整性`audit_valid/invalid`，不设攻击性能pass/fail；先完成CPU测试、CUDA re-bake preflight、state0双终态smoke、0–9正式采集和WSL独立审核 | [当前状态](../status/openvla-spectral-current.md) |
+| 2026-08-11 | Gate 6g双终态CUDA canonical re-bake preflight | 两个终态均从formal `.pt`重建Geometry Surface Delta `[21263,3]`；连续两次bake及bound PNG decoded RGB完全相同，repeat/bound mismatch均为0 | Support SHA=`686a2bec…2fb6d`；成功manifest SHA=`872ab089…5301e`；服务器原子发布和rsync后WSL按SHA重定位、NPZ独立复算均通过 | parameter→Surface Delta→bake配对前置条件通过；尚无OpenVLA/MuJoCo state响应结论，下一门槛为state 0双终态完整C/A/B smoke | [当前状态](../status/openvla-spectral-current.md) |
 
 ## 当前待执行队列
 
@@ -84,7 +85,7 @@
 | 6d（已通过） | 服务器Fixed-Support Action+Spectral trainer两步工程smoke | 两级校准均通过；`4a061a2` runner复用正式Action objective、共享更新核心与冻结权重 | Step 0零点严格退化为Action-only；Step 1谱hinge/梯度激活，逐值复算联合梯度且每步只作一次update；bake/Active Texture/资产恢复通过 | `f73b183`正式bundle及WSL独立复核已通过 |
 | 6e（已完成，未通过） | 正式Fixed-Support Action+Spectral source训练与paired source-development rollout | 5000轮训练artifact和恢复评估完整性均通过 | paired新增失败2/10，未达到至少3/10 | 不进入OFT；转入预注册Action-only control，不改lambda/K_nat/Support |
 | 6f（已完成，未通过） | Fixed-Support Action-only 5000轮control及paired source-development rollout | 与6e仅差关闭Spectral Guard，训练与paired artifact均通过独立复核 | paired新增失败2/10，与主候选count相同，未达到3/10；终态自然性比例也未显示主候选改善 | 不进入OFT；结果更指向Support/Action proxy瓶颈，同时表明固定lambda Guard在本轮未显示自然性收益 |
-| 6g（设计已冻结，待实现） | Terminal Deployment Response Audit | 两个正式终态及其parameter/bake/support哈希完整；只使用train states 0–9，共享Clean并采集C/A/B | 工程上要求20个唯一`(variant,state)`及全部processor/scene/visibility/response/asset契约使CPU evaluator返回`audit_valid`；科学结果只报告精确计数 | 任一严格一致性失败即停止并诊断，不加事后容差；不扩大Support、不扫描lambda/K_nat、不引入OFT/Feature/wrist/rollout |
+| 6g（re-bake已通过，当前state 0 smoke） | Terminal Deployment Response Audit | 双终态parameter/bake preflight已通过；只使用train states 0–9，共享Clean并采集C/A/B | 工程上要求20个唯一`(variant,state)`及全部processor/scene/visibility/response/asset契约使CPU evaluator返回`audit_valid`；科学结果只报告精确计数 | 任一严格一致性失败即停止并诊断，不加事后容差；不扩大Support、不扫描lambda/K_nat、不引入OFT/Feature/wrist/rollout |
 | 7 | OFT开发期 rollout | 出现满足至少3/10 paired新增失败的冻结谱候选 | 旧0/10迁移基线上至少出现2/10失败信号 | 记录机制失败，不包装为迁移提升 |
 | 8 | 新任务/第三模型无偏验证 | 方法和超参数冻结 | 预注册门槛 | 区分开发期选择偏差与真实迁移 |
 

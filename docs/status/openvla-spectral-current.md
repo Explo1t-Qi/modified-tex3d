@@ -130,9 +130,10 @@ source training及同一source development states 10--19成对Clean/Adversarial 
 完成并通过artifact完整性复核。主候选与严格匹配的Action-only control均只造成
 2/10个paired新增失败，未达到3/10 source门槛；因此没有证据表明Spectral Guard
 是source强度不足的主要原因。Gate 6g Terminal Deployment Response Audit的
-设计现已冻结；它只读比较两个已有终态在train states 0--9的Renderer Delta
-Composition与真实MuJoCo Active Texture响应，不自动启动训练或调参；OFT仍不得
-提前进入。
+设计现已冻结，双终态CUDA canonical re-bake preflight也已通过；当前唯一下一
+门槛是state 0共享Clean的双终态完整C/A/B smoke。Gate 6g只读比较两个已有终态
+在train states 0--9的Renderer Delta Composition与真实MuJoCo Active Texture
+响应，不自动启动训练或调参；OFT仍不得提前进入。
 
 真实 Spatial checkpoint 的 CPU 差分记录为 fused pixel values MAE/L∞=`0/0`，
 输入梯度有限且非零；文档记录当时全量 CPU 回归为 `113 passed, 1 skipped`。
@@ -1108,7 +1109,7 @@ GPU日志、rollout文本、formal manifest与paired artifact的SHA-256依次为
 `b3e518e85d7e4ed3d4bb6c7cae24f8fc4c7276c965a32d19219a4107bd2e022d`；其余
 step/action-frame/parameter/bake/loss SHA由该manifest逐项绑定。
 
-### Gate 6g：Terminal Deployment Response Audit（设计已冻结，待实现）
+### Gate 6g：Terminal Deployment Response Audit（re-bake已通过）
 
 Gate 6g只回答一个问题：两个既有训练终态在Renderer Delta Composition中产生的
 静态离散动作响应，是否仍存在于真实MuJoCo Active Texture部署路径。它不重新
@@ -1152,6 +1153,17 @@ smoke与formal目录严格隔离；失败记录只作best-effort审计，缺少�
 目录始终无效。若Gate 6g证明训练state上的首次响应穿过部署链路，下一阶段才允许
 单独设计source development states 10--19静态泛化诊断；仍不能据此宣称闭环
 机器人发生了恢复。
+
+2026-08-11，commit `cfb9f77`完成双终态CUDA re-bake preflight。Action+Spectral
+和Action-only均从formal `.pt`重建完整Geometry Surface Delta `[21263,3]`；各自
+连续两次canonical bake与bound PNG的decoded uint8 RGB逐像素相同，repeat/bound
+mismatch均为`0`。Production Support SHA为
+`686a2becc3688b0cb6bdafef840d0920fb51e584dc860a0c95733b935d22fb6d`，成功
+manifest SHA为
+`872ab089e96cfccb3b40b023a5d03c5c92eb1cf7d80b3cd6747d0e9469f5301e`。
+服务器原子发布与rsync后的WSL按SHA有限重定位、NPZ独立复算均已通过。因此
+parameter/bake配对前置条件已关闭，下一步只允许实现state 0 C/A/B smoke；该
+结果尚未加载OpenVLA或MuJoCo state，不包含任何动作响应结论。
 
 已冻结的第一项设计决定：谱方法在新候选中作为作用于最终 Surface Delta 的软
 自然性正则，只惩罚高频谱能量；它不再把扰动硬限制在前 K 个谱基中，也不是与

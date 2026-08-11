@@ -86,7 +86,7 @@ def test_preflight_success_manifest_is_complete_and_hash_bound(
     tmp_path: Path,
 ) -> None:
     baked_rgb = np.zeros((2, 2, 3), dtype=np.uint8)
-    support_path = tmp_path / "support.npz"
+    support_path = tmp_path / "production_support.npz"
     support_path.write_bytes(b"support")
     variants: dict[str, TerminalVariantInput] = {}
     evidence = {}
@@ -147,9 +147,20 @@ def test_preflight_success_manifest_is_complete_and_hash_bound(
     assert not manifest_path.with_name(manifest_path.name + ".tmp").exists()
     assert evaluate_terminal_rebake_preflight_bundle(manifest_path).gate_pass
 
+    moved_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    moved_manifest["production_support_path"] = (
+        "/server/experiments/production_support.npz"
+    )
+    for variant, entry in moved_manifest["terminal_pairing"].items():
+        entry["formal_manifest_path"] = f"/server/{variant}/formal.json"
+        entry["parameter_path"] = f"/server/{variant}/terminal.pt"
+        entry["bound_png_path"] = f"/server/{variant}/terminal.png"
+    manifest_path.write_text(json.dumps(moved_manifest), encoding="utf-8")
+    assert evaluate_terminal_rebake_preflight_bundle(manifest_path).gate_pass
+
     arrays_path = (
         manifest_path.parent
-        / manifest["terminal_pairing"]["action_spectral"][
+        / moved_manifest["terminal_pairing"]["action_spectral"][
             "arrays_relative_path"
         ]
     )
@@ -165,7 +176,7 @@ def test_failed_pairing_keeps_arrays_but_never_writes_success_manifest(
     clean = np.zeros((2, 2, 3), dtype=np.uint8)
     changed = clean.copy()
     changed[0, 0, 0] = 1
-    support_path = tmp_path / "support.npz"
+    support_path = tmp_path / "production_support.npz"
     support_path.write_bytes(b"support")
     variants: dict[str, TerminalVariantInput] = {}
     evidence = {}

@@ -110,6 +110,43 @@ def _resolve_relative(root: Path, value: object) -> Path:
     return resolved
 
 
+def _resolve_external_artifact_by_hash(
+    root: Path,
+    raw_path: object,
+    expected_sha256: object,
+) -> Path:
+    """在服务器绝对路径失效后，于同步目录的有限祖先中按hash重定位。"""
+
+    if (
+        not isinstance(raw_path, str)
+        or not raw_path
+        or not _is_lower_hex(expected_sha256, 64)
+    ):
+        raise ValueError("外部artifact path/SHA-256无效")
+    original = Path(raw_path)
+    artifact_name = original.name
+    candidates: list[Path] = [original, root / artifact_name]
+    search_roots = (root, *tuple(root.parents)[:2])
+    for search_root in search_roots:
+        if not search_root.is_dir():
+            continue
+        candidates.append(search_root / artifact_name)
+        candidates.extend(search_root.glob(f"*/{artifact_name}"))
+        candidates.extend(search_root.glob(f"*/*/{artifact_name}"))
+        candidates.extend(search_root.glob(f"*/*/*/{artifact_name}"))
+    checked: set[Path] = set()
+    for candidate in candidates:
+        resolved = candidate.resolve()
+        if resolved in checked:
+            continue
+        checked.add(resolved)
+        if resolved.is_file() and _file_sha256(resolved) == expected_sha256:
+            return resolved
+    raise FileNotFoundError(
+        f"找不到SHA-256匹配的同步artifact: {raw_path}"
+    )
+
+
 def _canonical_baked_rgb(renderer: TerminalRebakeRenderer) -> NDArray[np.uint8]:
     """复用正式 artifact store 的 nearest-uint8 canonical bake 语义。"""
 
@@ -337,13 +374,14 @@ def evaluate_terminal_rebake_preflight_bundle(
         or not all(_is_lower_hex(value, 64) for value in fingerprints)
     ):
         failures.append("preflight state fingerprints无效或不唯一")
-    support_path = Path(str(manifest.get("production_support_path", "")))
     support_sha256 = manifest.get("production_support_sha256")
-    if (
-        not _is_lower_hex(support_sha256, 64)
-        or not support_path.is_file()
-        or _file_sha256(support_path) != support_sha256
-    ):
+    try:
+        _resolve_external_artifact_by_hash(
+            root,
+            manifest.get("production_support_path"),
+            support_sha256,
+        )
+    except (OSError, ValueError):
         failures.append("preflight Production Support路径或SHA-256无效")
     provenance = manifest.get("provenance")
     if not isinstance(provenance, dict):
@@ -371,13 +409,14 @@ def evaluate_terminal_rebake_preflight_bundle(
             ("terminal parameter", "parameter_path", "parameter_sha256"),
             ("bound PNG", "bound_png_path", "bound_png_sha256"),
         ):
-            artifact_path = Path(str(raw_entry.get(path_name, "")))
             expected_hash = raw_entry.get(hash_name)
-            if (
-                not _is_lower_hex(expected_hash, 64)
-                or not artifact_path.is_file()
-                or _file_sha256(artifact_path) != expected_hash
-            ):
+            try:
+                _resolve_external_artifact_by_hash(
+                    root,
+                    raw_entry.get(path_name),
+                    expected_hash,
+                )
+            except (OSError, ValueError):
                 failures.append(f"{variant} {role}路径或SHA-256无效")
         try:
             arrays_path = _resolve_relative(
