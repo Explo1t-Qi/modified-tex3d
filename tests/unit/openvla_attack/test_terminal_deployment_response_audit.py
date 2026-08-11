@@ -23,9 +23,11 @@ from openvla_attack.terminal_deployment_response_audit import (  # noqa: E402
     evaluate_terminal_response_bundle,
     evaluate_terminal_response_evidence,
     evaluate_terminal_response_npz,
+    evaluate_terminal_response_smoke_bundle,
     evaluate_final_processor_equivalence,
     evaluate_terminal_bake_pairing,
     evaluate_visibility_equivalence,
+    publish_terminal_response_smoke_manifest,
     summarize_terminal_action_responses,
     write_audit_failure_record,
     write_json_atomically,
@@ -98,6 +100,43 @@ def _terminal_evidence(
         action_high=np.ones(3, dtype=np.float64),
         action_unnormalize_mask=np.zeros(3, dtype=np.bool_),
     )
+
+
+def _bundle_input_sha256() -> dict[str, str]:
+    return {
+        "production_support": "a" * 64,
+        "rebake_preflight_manifest": "b" * 64,
+        "action_spectral_formal_manifest": "c" * 64,
+        "action_spectral_parameter": "d" * 64,
+        "action_spectral_bake": "e" * 64,
+        "action_only_control_formal_manifest": "f" * 64,
+        "action_only_control_parameter": "1" * 64,
+        "action_only_control_bake": "2" * 64,
+    }
+
+
+def _terminal_pairing() -> dict[str, dict[str, object]]:
+    inputs = _bundle_input_sha256()
+    return {
+        variant: {
+            "gate_pass": True,
+            "formal_manifest_sha256": inputs[f"{variant}_formal_manifest"],
+            "parameter_sha256": inputs[f"{variant}_parameter"],
+            "bound_png_sha256": inputs[f"{variant}_bake"],
+        }
+        for variant in ("action_spectral", "action_only_control")
+    }
+
+
+def _bundle_provenance() -> dict[str, object]:
+    return {
+        "input_sha256": _bundle_input_sha256(),
+        "checkpoint_fingerprints": {"config.json": "3" * 64},
+        "processor_specification": {"output_size": [2, 2]},
+        "policy_view_specification": {"source_resolution": 2},
+        "asset_restore_status": {"xml": True, "texture": True},
+        "runtime_asset_backup_paths_removed": True,
+    }
 
 
 def test_same_unique_first_divergence_is_strictly_preserved() -> None:
@@ -361,11 +400,9 @@ def test_bundle_rejects_missing_variant_state_case(tmp_path: Path) -> None:
         "expected_variants": ["action_spectral", "action_only_control"],
         "expected_state_ids": list(range(10)),
         "state_fingerprints": [f"{state_id + 1:064x}" for state_id in range(10)],
-        "terminal_pairing": {
-            "action_spectral": {"gate_pass": True},
-            "action_only_control": {"gate_pass": True},
-        },
+        "terminal_pairing": _terminal_pairing(),
         "cases": cases,
+        "provenance": _bundle_provenance(),
     }
     manifest_path = tmp_path / "manifest.json"
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
@@ -375,6 +412,118 @@ def test_bundle_rejects_missing_variant_state_case(tmp_path: Path) -> None:
     assert decision.audit_valid is False
     assert decision.case_count == 19
     assert any("缺失" in failure for failure in decision.failures)
+
+
+def test_smoke_bundle_requires_exactly_two_state_zero_cases(
+    tmp_path: Path,
+) -> None:
+    cases: list[dict[str, object]] = []
+    for variant in ("action_spectral", "action_only_control"):
+        relative_path = Path("arrays") / variant / "state_00.npz"
+        artifact_sha256 = write_terminal_response_npz(
+            _terminal_evidence(variant=variant, state_id=0),
+            output_path=tmp_path / relative_path,
+        )
+        cases.append(
+            {
+                "variant": variant,
+                "state_id": 0,
+                "npz_relative_path": str(relative_path),
+                "npz_sha256": artifact_sha256,
+                "initial_state_sha256": "1" * 64,
+                "clean_static_scene_sha256": "2" * 64,
+                "deployment_static_scene_sha256": "2" * 64,
+                "transaction_verified": True,
+                "asset_restore_verified": True,
+            }
+        )
+    manifest = {
+        "schema_version": (
+            "openvla-terminal-deployment-response-smoke-bundle-v1"
+        ),
+        "status": "complete",
+        "code_commit": "a" * 40,
+        "config_sha256": "b" * 64,
+        "expected_variants": ["action_spectral", "action_only_control"],
+        "expected_state_ids": [0],
+        "state_fingerprints": ["1" * 64],
+        "terminal_pairing": _terminal_pairing(),
+        "cases": cases,
+        "provenance": _bundle_provenance(),
+    }
+    manifest_path = tmp_path / "smoke_manifest.json"
+    published_sha256 = publish_terminal_response_smoke_manifest(
+        manifest,
+        output_path=manifest_path,
+    )
+
+    decision = evaluate_terminal_response_smoke_bundle(manifest_path)
+
+    assert len(published_sha256) == 64
+    assert decision.audit_valid is True
+    assert decision.case_count == 2
+    assert decision.per_variant_summary["action_spectral"]["row_count"] == 1
+
+
+def test_smoke_bundle_rejects_variant_specific_clean_evidence(
+    tmp_path: Path,
+) -> None:
+    cases: list[dict[str, object]] = []
+    for index, variant in enumerate(
+        ("action_spectral", "action_only_control")
+    ):
+        evidence = _terminal_evidence(variant=variant, state_id=0)
+        if index:
+            altered_rgb = evidence.effective_rgb.copy()
+            altered_rgb[0, 1, 1, 1] = 1
+            altered_delta = (
+                altered_rgb[1:].astype(np.float32)
+                - altered_rgb[0:1].astype(np.float32)
+            ) / np.float32(255.0)
+            evidence = replace(
+                evidence,
+                effective_rgb=altered_rgb,
+                rgb_delta=altered_delta,
+            )
+        relative_path = Path("arrays") / variant / "state_00.npz"
+        artifact_sha256 = write_terminal_response_npz(
+            evidence,
+            output_path=tmp_path / relative_path,
+        )
+        cases.append(
+            {
+                "variant": variant,
+                "state_id": 0,
+                "npz_relative_path": str(relative_path),
+                "npz_sha256": artifact_sha256,
+                "initial_state_sha256": "1" * 64,
+                "clean_static_scene_sha256": "2" * 64,
+                "deployment_static_scene_sha256": "2" * 64,
+                "transaction_verified": True,
+                "asset_restore_verified": True,
+            }
+        )
+    manifest = {
+        "schema_version": (
+            "openvla-terminal-deployment-response-smoke-bundle-v1"
+        ),
+        "status": "complete",
+        "code_commit": "a" * 40,
+        "config_sha256": "b" * 64,
+        "expected_variants": ["action_spectral", "action_only_control"],
+        "expected_state_ids": [0],
+        "state_fingerprints": ["1" * 64],
+        "terminal_pairing": _terminal_pairing(),
+        "cases": cases,
+        "provenance": _bundle_provenance(),
+    }
+    manifest_path = tmp_path / "tampered_clean_manifest.json"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    decision = evaluate_terminal_response_smoke_bundle(manifest_path)
+
+    assert decision.audit_valid is False
+    assert any("Clean证据不一致" in failure for failure in decision.failures)
 
 
 def test_success_manifest_is_published_atomically(tmp_path: Path) -> None:

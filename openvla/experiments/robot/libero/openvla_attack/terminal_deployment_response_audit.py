@@ -59,6 +59,9 @@ TERMINAL_DEPLOYMENT_RESPONSE_SCHEMA_VERSION: Final[str] = (
 TERMINAL_DEPLOYMENT_RESPONSE_BUNDLE_SCHEMA_VERSION: Final[str] = (
     "openvla-terminal-deployment-response-bundle-v1"
 )
+TERMINAL_DEPLOYMENT_RESPONSE_SMOKE_BUNDLE_SCHEMA_VERSION: Final[str] = (
+    "openvla-terminal-deployment-response-smoke-bundle-v1"
+)
 TERMINAL_RESPONSE_VARIANTS: Final[tuple[str, ...]] = (
     "action_spectral",
     "action_only_control",
@@ -137,7 +140,7 @@ class TerminalDeploymentResponseEvidence:
     路径轴固定为 ``[C,A,B]``。RGB为uint8 ``[3,H,W,3]``；processor数组为
     ``[3,1,num_vision_channels,Hm,Wm]``；模型响应为
     ``[3,action_dim,num_action_classes]``。segmentation保留source-view整数ID图，
-    alpha保留与effective view对齐的逐实例0/1 hard mask。
+    alpha保留source view中与整数segmentation同坐标系的逐实例0/1 hard mask。
     """
 
     variant: str
@@ -1023,11 +1026,129 @@ def _resolve_bundle_artifact(root: Path, relative_path: object) -> Path:
     return resolved
 
 
-def evaluate_terminal_response_bundle(
-    manifest_path: str | Path,
-) -> TerminalDeploymentResponseBundleDecision:
-    """验证正式双终态×states 0--9 inventory并独立复算全部NPZ。"""
+def _shared_clean_arrays(
+    evidence: TerminalDeploymentResponseEvidence,
+) -> tuple[NDArray[Any], ...]:
+    """返回同一state跨variant必须逐值共享的Clean与模型身份数组。"""
 
+    return (
+        np.asarray(evidence.effective_rgb)[0],
+        np.asarray(evidence.clean_oriented_segmentation),
+        np.asarray(evidence.clean_instance_alpha),
+        np.asarray(evidence.training_exact_processor_bf16_bits)[0],
+        np.asarray(evidence.official_processor_bf16_bits)[0],
+        np.asarray(evidence.training_exact_processor_float32)[0],
+        np.asarray(evidence.official_processor_float32)[0],
+        np.asarray(evidence.teacher_logits)[0],
+        np.asarray(evidence.generation_logits)[0],
+        np.asarray(evidence.generated_classes)[0],
+        np.asarray(evidence.generated_token_ids)[0],
+        np.asarray(evidence.decoded_actions)[0],
+        np.asarray(evidence.prompt_input_ids),
+        np.asarray(evidence.teacher_input_ids),
+        np.asarray(evidence.bin_centers),
+        np.asarray(evidence.action_low),
+        np.asarray(evidence.action_high),
+        np.asarray(evidence.action_unnormalize_mask),
+        np.asarray(
+            (
+                evidence.action_token_start,
+                evidence.action_token_end,
+                evidence.vocab_size,
+            ),
+            dtype=np.int64,
+        ),
+    )
+
+
+def _shared_clean_is_exact(
+    reference: TerminalDeploymentResponseEvidence,
+    candidate: TerminalDeploymentResponseEvidence,
+) -> bool:
+    """检查两个终态case是否复用了同一份Clean事实与action codec。"""
+
+    return all(
+        np.array_equal(reference_array, candidate_array)
+        for reference_array, candidate_array in zip(
+            _shared_clean_arrays(reference),
+            _shared_clean_arrays(candidate),
+        )
+    )
+
+
+def _validate_bundle_provenance(
+    manifest: Mapping[str, Any],
+    failures: list[str],
+) -> Mapping[str, Any]:
+    """验证成功manifest中已冻结的输入、processor/view及恢复身份。"""
+
+    raw_provenance = manifest.get("provenance")
+    if not isinstance(raw_provenance, dict):
+        failures.append("provenance缺失")
+        return {}
+    raw_inputs = raw_provenance.get("input_sha256")
+    required_input_names = {
+        "production_support",
+        "rebake_preflight_manifest",
+        *(
+            f"{variant}_{suffix}"
+            for variant in TERMINAL_RESPONSE_VARIANTS
+            for suffix in ("formal_manifest", "parameter", "bake")
+        ),
+    }
+    if (
+        not isinstance(raw_inputs, dict)
+        or set(raw_inputs) != required_input_names
+        or not all(_is_lower_hex(value, 64) for value in raw_inputs.values())
+    ):
+        failures.append("provenance input_sha256 inventory缺失或无效")
+    checkpoint_fingerprints = raw_provenance.get("checkpoint_fingerprints")
+    if (
+        not isinstance(checkpoint_fingerprints, dict)
+        or not checkpoint_fingerprints
+        or not all(
+            isinstance(name, str)
+            and bool(name)
+            and _is_lower_hex(value, 64)
+            for name, value in checkpoint_fingerprints.items()
+        )
+    ):
+        failures.append("checkpoint_fingerprints缺失")
+    processor_specification = raw_provenance.get("processor_specification")
+    if not isinstance(processor_specification, dict) or not (
+        processor_specification
+    ):
+        failures.append("processor_specification缺失")
+    policy_view_specification = raw_provenance.get(
+        "policy_view_specification"
+    )
+    if not isinstance(policy_view_specification, dict) or not (
+        policy_view_specification
+    ):
+        failures.append("policy_view_specification缺失")
+    if raw_provenance.get("asset_restore_status") != {
+        "xml": True,
+        "texture": True,
+    }:
+        failures.append("最终Runtime Asset恢复状态无效")
+    if raw_provenance.get("runtime_asset_backup_paths_removed") is not True:
+        failures.append("Runtime Asset backup未验证删除")
+    return raw_provenance
+
+
+def _evaluate_terminal_response_bundle(
+    manifest_path: str | Path,
+    *,
+    expected_schema_version: str,
+    expected_state_ids: Sequence[int],
+) -> TerminalDeploymentResponseBundleDecision:
+    """按调用方冻结的state inventory独立复算双终态全部NPZ。"""
+
+    frozen_state_ids = tuple(expected_state_ids)
+    if not frozen_state_ids or len(set(frozen_state_ids)) != len(
+        frozen_state_ids
+    ):
+        raise ValueError("expected_state_ids必须为非空唯一序列")
     failures: list[str] = []
     per_variant_decisions: dict[str, list[TerminalActionResponseDecision]] = {
         variant: [] for variant in TERMINAL_RESPONSE_VARIANTS
@@ -1051,9 +1172,7 @@ def evaluate_terminal_response_bundle(
             per_variant_summary={},
         )
 
-    if manifest.get("schema_version") != (
-        TERMINAL_DEPLOYMENT_RESPONSE_BUNDLE_SCHEMA_VERSION
-    ):
+    if manifest.get("schema_version") != expected_schema_version:
         failures.append("bundle schema_version不匹配")
     if manifest.get("status") != "complete":
         failures.append("成功manifest status必须为complete")
@@ -1063,20 +1182,24 @@ def evaluate_terminal_response_bundle(
         failures.append("config_sha256无效")
     if manifest.get("expected_variants") != list(TERMINAL_RESPONSE_VARIANTS):
         failures.append("expected_variants未冻结为两个正式终态")
-    expected_state_ids = list(range(10))
-    if manifest.get("expected_state_ids") != expected_state_ids:
-        failures.append("expected_state_ids未冻结为0--9")
+    if manifest.get("expected_state_ids") != list(frozen_state_ids):
+        failures.append(
+            f"expected_state_ids未冻结为{list(frozen_state_ids)}"
+        )
     raw_fingerprints = manifest.get("state_fingerprints")
     if (
         not isinstance(raw_fingerprints, list)
-        or len(raw_fingerprints) != 10
-        or len(set(raw_fingerprints)) != 10
+        or len(raw_fingerprints) != len(frozen_state_ids)
+        or len(set(raw_fingerprints)) != len(frozen_state_ids)
         or not all(_is_lower_hex(value, 64) for value in raw_fingerprints)
     ):
         failures.append("state_fingerprints缺失、无效或不唯一")
         state_fingerprints: list[str] = []
     else:
         state_fingerprints = [str(value) for value in raw_fingerprints]
+    fingerprint_by_state = dict(zip(frozen_state_ids, state_fingerprints))
+    provenance = _validate_bundle_provenance(manifest, failures)
+    input_sha256 = provenance.get("input_sha256", {})
 
     terminal_pairing = manifest.get("terminal_pairing")
     if not isinstance(terminal_pairing, dict):
@@ -1086,6 +1209,16 @@ def evaluate_terminal_response_bundle(
             pairing = terminal_pairing.get(variant)
             if not isinstance(pairing, dict) or pairing.get("gate_pass") is not True:
                 failures.append(f"{variant} terminal parameter/bake配对未通过")
+                continue
+            if isinstance(input_sha256, dict) and (
+                pairing.get("formal_manifest_sha256")
+                != input_sha256.get(f"{variant}_formal_manifest")
+                or pairing.get("parameter_sha256")
+                != input_sha256.get(f"{variant}_parameter")
+                or pairing.get("bound_png_sha256")
+                != input_sha256.get(f"{variant}_bake")
+            ):
+                failures.append(f"{variant} terminal pairing与输入SHA不一致")
 
     raw_cases = manifest.get("cases")
     if not isinstance(raw_cases, list):
@@ -1096,16 +1229,22 @@ def evaluate_terminal_response_bundle(
     expected_keys = {
         (variant, state_id)
         for variant in TERMINAL_RESPONSE_VARIANTS
-        for state_id in expected_state_ids
+        for state_id in frozen_state_ids
     }
     observed_keys: list[tuple[str, int]] = []
+    clean_evidence_by_state: dict[int, TerminalDeploymentResponseEvidence] = {}
+    clean_static_sha256_by_state: dict[int, object] = {}
     for raw_case in cases:
         if not isinstance(raw_case, dict):
             failures.append("case必须为JSON object")
             continue
         variant = raw_case.get("variant")
         state_id = raw_case.get("state_id")
-        if not isinstance(variant, str) or not isinstance(state_id, int):
+        if (
+            not isinstance(variant, str)
+            or not isinstance(state_id, int)
+            or isinstance(state_id, bool)
+        ):
             failures.append("case variant/state_id无效")
             continue
         observed_keys.append((variant, state_id))
@@ -1121,8 +1260,13 @@ def evaluate_terminal_response_bundle(
         failures.append(f"case inventory缺失key: {missing_keys}")
     if unexpected_keys:
         failures.append(f"case inventory包含额外key: {unexpected_keys}")
-    if len(cases) != 20:
-        failures.append(f"case inventory必须恰有20行，实际{len(cases)}")
+    expected_case_count = len(TERMINAL_RESPONSE_VARIANTS) * len(
+        frozen_state_ids
+    )
+    if len(cases) != expected_case_count:
+        failures.append(
+            f"case inventory必须恰有{expected_case_count}行，实际{len(cases)}"
+        )
 
     for raw_case in cases:
         if not isinstance(raw_case, dict):
@@ -1134,12 +1278,20 @@ def evaluate_terminal_response_bundle(
         assert isinstance(variant, str) and isinstance(state_id, int)
         if state_fingerprints and raw_case.get(
             "initial_state_sha256"
-        ) != state_fingerprints[state_id]:
+        ) != fingerprint_by_state[state_id]:
             failures.append(f"{variant}/state{state_id} initial fingerprint漂移")
         if raw_case.get("clean_static_scene_sha256") != raw_case.get(
             "deployment_static_scene_sha256"
         ):
             failures.append(f"{variant}/state{state_id} static scene不一致")
+        clean_static_sha256 = raw_case.get("clean_static_scene_sha256")
+        if not _is_lower_hex(clean_static_sha256, 64):
+            failures.append(f"{variant}/state{state_id} static scene SHA无效")
+        if state_id in clean_static_sha256_by_state:
+            if clean_static_sha256_by_state[state_id] != clean_static_sha256:
+                failures.append(f"state{state_id}跨variant Clean static scene不一致")
+        else:
+            clean_static_sha256_by_state[state_id] = clean_static_sha256
         if raw_case.get("transaction_verified") is not True:
             failures.append(f"{variant}/state{state_id}静态事务未验证")
         if raw_case.get("asset_restore_verified") is not True:
@@ -1156,13 +1308,22 @@ def evaluate_terminal_response_bundle(
             if _file_sha256(npz_path) != expected_sha256:
                 failures.append(f"{variant}/state{state_id} NPZ SHA不匹配")
                 continue
-            evaluation = evaluate_terminal_response_npz(npz_path)
+            evidence = load_terminal_response_npz(npz_path)
+            evaluation = evaluate_terminal_response_evidence(evidence)
         except (OSError, ValueError, KeyError) as error:
             failures.append(f"{variant}/state{state_id} NPZ无法复算: {error}")
             continue
         if evaluation.variant != variant or evaluation.state_id != state_id:
             failures.append(f"{variant}/state{state_id} NPZ身份不匹配")
             continue
+        if state_id in clean_evidence_by_state:
+            if not _shared_clean_is_exact(
+                clean_evidence_by_state[state_id],
+                evidence,
+            ):
+                failures.append(f"state{state_id}跨variant Clean证据不一致")
+        else:
+            clean_evidence_by_state[state_id] = evidence
         if not evaluation.evidence_valid:
             failures.extend(
                 f"{variant}/state{state_id}: {failure}"
@@ -1179,6 +1340,34 @@ def evaluate_terminal_response_bundle(
         failures=tuple(failures),
         case_count=len(cases),
         per_variant_summary=summaries,
+    )
+
+
+def evaluate_terminal_response_bundle(
+    manifest_path: str | Path,
+) -> TerminalDeploymentResponseBundleDecision:
+    """验证正式双终态×states 0--9 inventory并独立复算全部NPZ。"""
+
+    return _evaluate_terminal_response_bundle(
+        manifest_path,
+        expected_schema_version=(
+            TERMINAL_DEPLOYMENT_RESPONSE_BUNDLE_SCHEMA_VERSION
+        ),
+        expected_state_ids=tuple(range(10)),
+    )
+
+
+def evaluate_terminal_response_smoke_bundle(
+    manifest_path: str | Path,
+) -> TerminalDeploymentResponseBundleDecision:
+    """验证state 0双终态smoke的严格2-case inventory与全部NPZ。"""
+
+    return _evaluate_terminal_response_bundle(
+        manifest_path,
+        expected_schema_version=(
+            TERMINAL_DEPLOYMENT_RESPONSE_SMOKE_BUNDLE_SCHEMA_VERSION
+        ),
+        expected_state_ids=(0,),
     )
 
 
@@ -1212,6 +1401,34 @@ def write_json_atomically(
         if temporary_path.exists():
             temporary_path.unlink()
         raise
+    return _file_sha256(path)
+
+
+def publish_terminal_response_smoke_manifest(
+    payload: Mapping[str, Any],
+    *,
+    output_path: str | Path,
+) -> str:
+    """先独立复算候选2-case bundle，再原子发布正式smoke manifest。"""
+
+    path = Path(output_path)
+    candidate_path = path.with_name(path.stem + "_candidate.json")
+    if path.exists() or candidate_path.exists():
+        raise FileExistsError(path if path.exists() else candidate_path)
+    write_json_atomically(payload, output_path=candidate_path)
+    decision = evaluate_terminal_response_smoke_bundle(candidate_path)
+    if not decision.audit_valid:
+        candidate_path.unlink()
+        raise TerminalDeploymentResponseAuditError(
+            "state 0 smoke候选manifest独立复核失败: "
+            + "; ".join(decision.failures)
+        )
+    os.replace(candidate_path, path)
+    directory_descriptor = os.open(path.parent, os.O_RDONLY)
+    try:
+        os.fsync(directory_descriptor)
+    finally:
+        os.close(directory_descriptor)
     return _file_sha256(path)
 
 
