@@ -41,6 +41,8 @@ Gate 6g双终态re-bake正式证据基线：
 `cfb9f77c16875a826ea4da05b435c8840833ec58`
 Gate 6g state 0 C/A/B smoke实现基线：
 `efc45fc963da88545bbb76683e10d7a5c69e82dd`
+Gate 6g OpenVLA action codec schema修复基线：
+`f8943edf9034869e41ef13bd0713c22859ee566f`
 
 本文是 OpenVLA 谱纹理研究的**当前状态入口**。新一轮开发应先读本文，再按需
 进入专题文档；不要从长篇实验时间线推测当前优先级。历史实验索引见
@@ -1181,6 +1183,15 @@ specification、最终BF16 bit pattern、完整动作响应数组、静态场景
 并在原子发布前由纯CPU evaluator复算恰好两个case及跨variant共享Clean。相关定向
 无GPU回归为`70 passed`；完整本地收集仅受缺失`nvdiffrast`与LIBERO阻断。当前唯一
 下一步是服务器state 0 smoke，尚无C/A/B动作响应结果。
+
+首次服务器运行使用commit `5ae675a`，在写入Action+Spectral state 0 NPZ前由
+CPU schema拒绝：实现错误地要求256个action token class与`bin_centers`等长，
+而OpenVLA以256个等距边界形成255个连续action bin center，端点token按正式
+codec执行clip。该目录只有`audit_failed.json`，没有成功manifest或权威NPZ，
+不得用于动作响应结论；失败路径验证XML与真实纹理均已恢复。commit `f8943ed`
+将schema严格修正为`num_centers = num_action_classes - 1`，同时保留token映射和
+decoded action逐值复算，最小复现及相关回归为`70 passed`。下一步是在新目录中
+重新执行state 0 smoke。
 
 已冻结的第一项设计决定：谱方法在新候选中作为作用于最终 Surface Delta 的软
 自然性正则，只惩罚高频谱能量；它不再把扰动硬限制在前 K 个谱基中，也不是与
