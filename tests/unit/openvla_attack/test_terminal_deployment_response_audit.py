@@ -72,6 +72,15 @@ def _terminal_evidence(
     processor_bits = np.zeros((3, 1, 6, 2, 2), dtype=np.uint16)
     processor_float32 = np.zeros((3, 1, 6, 2, 2), dtype=np.float32)
     generated_token_ids = generated_classes + 100
+    # 真实OpenVLA有256个action token、255个连续action bin center；最远端
+    # token按正式codec语义裁剪到最后一个center。
+    bin_centers = np.asarray([4, 3, 2, 1, 0], dtype=np.float64)
+    bin_indices = np.clip(
+        106 - generated_token_ids - 1,
+        a_min=0,
+        a_max=bin_centers.size - 1,
+    )
+    decoded_actions = bin_centers[bin_indices]
     return TerminalDeploymentResponseEvidence(
         variant=variant,
         state_id=state_id,
@@ -89,13 +98,13 @@ def _terminal_evidence(
         generation_logits=teacher_logits.copy(),
         generated_classes=generated_classes,
         generated_token_ids=generated_token_ids,
-        decoded_actions=generated_classes.astype(np.float64),
+        decoded_actions=decoded_actions,
         prompt_input_ids=np.asarray([7, 8], dtype=np.int64),
         teacher_input_ids=np.asarray([7, 8, 0, 1, 2], dtype=np.int64),
         action_token_start=100,
         action_token_end=106,
         vocab_size=106,
-        bin_centers=np.asarray([5, 4, 3, 2, 1, 0], dtype=np.float64),
+        bin_centers=bin_centers,
         action_low=np.zeros(3, dtype=np.float64),
         action_high=np.ones(3, dtype=np.float64),
         action_unnormalize_mask=np.zeros(3, dtype=np.bool_),

@@ -23,7 +23,7 @@ from openvla_attack.terminal_openvla_response import (  # noqa: E402
 
 class _FakeOpenVLA:
     vocab_size = 32_000
-    bin_centers = np.linspace(-1.0, 1.0, 256, dtype=np.float64)
+    bin_centers = np.linspace(-1.0, 1.0, 255, dtype=np.float64)
 
     def __init__(self) -> None:
         self.teacher_input_ids: torch.Tensor | None = None

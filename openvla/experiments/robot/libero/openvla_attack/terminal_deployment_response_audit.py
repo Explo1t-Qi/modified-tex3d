@@ -695,12 +695,16 @@ def _validate_terminal_evidence_schema(
     bin_centers = np.asarray(evidence.bin_centers)
     if (
         bin_centers.ndim != 1
-        or bin_centers.size != action_class_count
+        # OpenVLA以256个等距边界定义255个连续动作bin center。action
+        # token子词表仍有256类；两个端点token经正式codec clip后共享最外侧
+        # center，不能把token类别数误当成连续bin中心数。
+        or bin_centers.size != action_class_count - 1
         or not np.issubdtype(bin_centers.dtype, np.floating)
         or not bool(np.isfinite(bin_centers).all())
     ):
         raise TerminalDeploymentResponseAuditError(
-            "bin_centers必须为与action class数相同的有限浮点一维数组"
+            "bin_centers必须为有限浮点一维数组，且数量等于"
+            "action class数减一"
         )
     for name, value in (
         ("action_low", evidence.action_low),
