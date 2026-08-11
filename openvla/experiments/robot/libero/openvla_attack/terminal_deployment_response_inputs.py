@@ -18,6 +18,10 @@ from typing import Any, Final, Mapping
 from .formal_source_training_evidence import (
     evaluate_formal_source_training_bundle,
 )
+from .fixed_support_source_training import (
+    ACTION_ONLY_CONTROL_SCHEMA_VERSION,
+    FORMAL_SOURCE_TRAINING_SCHEMA_VERSION,
+)
 
 
 EXPECTED_STATE_IDS: Final[tuple[int, ...]] = tuple(range(10))
@@ -108,9 +112,29 @@ def _validate_common_manifest(
     expected_variant: str,
     expected_support_sha256: str,
 ) -> tuple[str, ...]:
-    if manifest.get("training_variant") != expected_variant:
+    raw_variant = manifest.get("training_variant")
+    # 最早完成并冻结的0aca525主候选在training_variant字段加入前生成。
+    # 既有formal evaluator已将该唯一旧schema缺省解释为action_spectral；
+    # Gate 6g必须复用相同兼容语义，不能把已通过的旧bundle二次拒绝。
+    resolved_variant = (
+        "action_spectral"
+        if raw_variant is None
+        and manifest.get("schema_version")
+        == FORMAL_SOURCE_TRAINING_SCHEMA_VERSION
+        else raw_variant
+    )
+    if resolved_variant != expected_variant:
         raise TerminalDeploymentInputError(
             f"正式终态variant错误: 期望{expected_variant}"
+        )
+    expected_schema = (
+        FORMAL_SOURCE_TRAINING_SCHEMA_VERSION
+        if expected_variant == "action_spectral"
+        else ACTION_ONLY_CONTROL_SCHEMA_VERSION
+    )
+    if manifest.get("schema_version") != expected_schema:
+        raise TerminalDeploymentInputError(
+            f"正式终态schema与variant不一致: 期望{expected_schema}"
         )
     if manifest.get("task_id") != 0:
         raise TerminalDeploymentInputError("Gate 6g只接受Spatial task 0终态")

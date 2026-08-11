@@ -28,6 +28,7 @@ def _write_formal_bundle(
     *,
     variant: str,
     support_sha256: str,
+    include_training_variant: bool = True,
 ) -> Path:
     root.mkdir(parents=True)
     parameter_path = root / "terminal_parameter.pt"
@@ -35,7 +36,11 @@ def _write_formal_bundle(
     parameter_path.write_bytes(f"parameter:{variant}".encode())
     bake_path.write_bytes(f"bake:{variant}".encode())
     manifest = {
-        "training_variant": variant,
+        "schema_version": (
+            "openvla-fixed-support-action-spectral-source-training-v1"
+            if variant == "action_spectral"
+            else "openvla-fixed-support-action-only-source-control-v1"
+        ),
         "task_id": 0,
         "train_state_ids": list(range(10)),
         "train_state_fingerprints": [
@@ -48,6 +53,8 @@ def _write_formal_bundle(
         "baked_texture_relative_path": bake_path.name,
         "baked_texture_sha256": _sha256(bake_path),
     }
+    if include_training_variant:
+        manifest["training_variant"] = variant
     manifest_path = root / "formal_manifest.json"
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
     return manifest_path
@@ -64,6 +71,7 @@ def test_resolve_terminal_inputs_binds_two_variants_to_one_support(
         tmp_path / "spectral",
         variant="action_spectral",
         support_sha256=support_sha256,
+        include_training_variant=False,
     )
     control_manifest = _write_formal_bundle(
         tmp_path / "control",
