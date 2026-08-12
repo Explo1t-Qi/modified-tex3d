@@ -184,6 +184,16 @@ clean-prefix teacher训练代理、默认cached自回归generation的首次分�
 不评价闭环恢复，也不使用source development rollout选择超参数。
 _Avoid_: terminal attack gate, rollout recovery proof, bake-only replay
 
+**Scalar-Gain Counterfactual Audit**:
+在已通过的 **Terminal Deployment Response Audit** `C/A/B`有效视野中，按完整
+224×224 RGB最小二乘拟合单个无约束标量`alpha_star`，构造诊断性反事实
+`I_gain=Q(C+alpha_star(A-C))`并只读重放source OpenVLA。主机制分母固定为
+Gate 6g的`deployment_lost/deployment_response_altered` cases；它只判断全局
+标量gain能否复现B的首次cached-generation响应，或非标量residual是否是复现该
+具体响应的必要成分。该反事实不要求物理可渲染，不评价闭环攻击效果，也不能
+排除gamma、逐通道或局部光度模型。
+_Avoid_: renderer causality proof, physical calibrated renderer, rollout explanation
+
 **Support Seed Score**:
 由修正后 source OpenVLA 训练 states 的 Action objective 几何顶点梯度生成、
 并在 OBJ mesh 图上平滑的标量场。它只决定 **Connected Support Region** 的
@@ -296,6 +306,9 @@ _Avoid_: smoothed mesh, UV blur, texture regularization
 - **Terminal Deployment Response Audit** 的训练路径必须从终态紧凑参数重建
   **Surface Delta**，部署路径必须激活与它逐像素重放校验过的 bake
   **Attack Artifact**；禁止将 PNG 反推回顶点参数
+- **Scalar-Gain Counterfactual Audit** 必须逐值重放原Gate 6g的C/A/B token与
+  完整logits后才解释新增gain路径；20个case全部采集，但只有冻结的6个
+  lost/altered case进入主机制计数，其他case只作内部对照
 - 第一版 wrist coverage 使用与 Primary 相同的 source-side
   center-crop/resize 几何，并在产物中标记为 `wrist_source_crop_proxy`；
   它是保守的 source-only 视野代理，不得声称为 OFT 真实输入预处理
