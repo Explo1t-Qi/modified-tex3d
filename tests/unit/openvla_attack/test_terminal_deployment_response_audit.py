@@ -32,6 +32,8 @@ from openvla_attack.terminal_deployment_response_audit import (  # noqa: E402
     evaluate_terminal_bake_pairing,
     evaluate_visibility_equivalence,
     publish_terminal_response_smoke_manifest,
+    publish_terminal_response_manifest,
+    resolve_terminal_response_run_protocol,
     summarize_terminal_action_responses,
     terminal_response_evaluation_record,
     write_audit_failure_record,
@@ -477,6 +479,121 @@ def test_bundle_rejects_missing_variant_state_case(tmp_path: Path) -> None:
     assert decision.audit_valid is False
     assert decision.case_count == 19
     assert any("缺失" in failure for failure in decision.failures)
+
+
+def test_formal_bundle_publishes_only_after_all_twenty_cases_pass(
+    tmp_path: Path,
+) -> None:
+    cases: list[dict[str, object]] = []
+    for variant in ("action_spectral", "action_only_control"):
+        for state_id in range(10):
+            evidence = _terminal_evidence(
+                variant=variant,
+                state_id=state_id,
+            )
+            relative_path = (
+                Path("arrays") / variant / f"state_{state_id:02d}.npz"
+            )
+            artifact_sha256 = write_terminal_response_npz(
+                evidence,
+                output_path=tmp_path / relative_path,
+            )
+            cases.append(
+                {
+                    "variant": variant,
+                    "state_id": state_id,
+                    "npz_relative_path": str(relative_path),
+                    "npz_sha256": artifact_sha256,
+                    "initial_state_sha256": f"{state_id + 1:064x}",
+                    "clean_static_scene_sha256": f"{state_id + 11:064x}",
+                    "deployment_static_scene_sha256": f"{state_id + 11:064x}",
+                    "transaction_verified": True,
+                    "asset_restore_verified": True,
+                    "response_evaluation": terminal_response_evaluation_record(
+                        evaluate_terminal_response_evidence(evidence)
+                    ),
+                }
+            )
+    manifest = {
+        "schema_version": TERMINAL_DEPLOYMENT_RESPONSE_BUNDLE_SCHEMA_VERSION,
+        "status": "complete",
+        "code_commit": "a" * 40,
+        "config_sha256": "b" * 64,
+        "expected_variants": ["action_spectral", "action_only_control"],
+        "expected_state_ids": list(range(10)),
+        "state_fingerprints": [f"{state_id + 1:064x}" for state_id in range(10)],
+        "response_authority": dict(TERMINAL_RESPONSE_AUTHORITY_CONTRACT),
+        "terminal_pairing": _terminal_pairing(),
+        "cases": cases,
+        "provenance": _bundle_provenance(),
+    }
+    manifest_path = tmp_path / "terminal_response_manifest.json"
+
+    artifact_sha256 = publish_terminal_response_manifest(
+        manifest,
+        output_path=manifest_path,
+    )
+
+    assert len(artifact_sha256) == 64
+    assert manifest_path.is_file()
+    assert not (tmp_path / "terminal_response_manifest_candidate.json").exists()
+    assert evaluate_terminal_response_bundle(manifest_path).audit_valid is True
+
+
+def test_formal_run_protocol_freezes_states_zero_through_nine() -> None:
+    protocol = resolve_terminal_response_run_protocol("formal")
+
+    assert protocol.state_ids == tuple(range(10))
+    assert protocol.bundle_schema_version == (
+        TERMINAL_DEPLOYMENT_RESPONSE_BUNDLE_SCHEMA_VERSION
+    )
+    assert protocol.manifest_filename == "terminal_response_manifest.json"
+    assert protocol.failure_schema_version == (
+        TERMINAL_DEPLOYMENT_RESPONSE_BUNDLE_SCHEMA_VERSION
+    )
+
+
+def test_formal_publication_rejects_incomplete_candidate_atomically(
+    tmp_path: Path,
+) -> None:
+    manifest_path = tmp_path / "terminal_response_manifest.json"
+    incomplete = {
+        "schema_version": TERMINAL_DEPLOYMENT_RESPONSE_BUNDLE_SCHEMA_VERSION,
+        "status": "complete",
+        "code_commit": "a" * 40,
+        "config_sha256": "b" * 64,
+        "expected_variants": ["action_spectral", "action_only_control"],
+        "expected_state_ids": list(range(10)),
+        "state_fingerprints": [f"{state_id + 1:064x}" for state_id in range(10)],
+        "response_authority": dict(TERMINAL_RESPONSE_AUTHORITY_CONTRACT),
+        "terminal_pairing": _terminal_pairing(),
+        "cases": [],
+        "provenance": _bundle_provenance(),
+    }
+
+    with pytest.raises(ValueError, match="正式候选manifest独立复核失败"):
+        publish_terminal_response_manifest(
+            incomplete,
+            output_path=manifest_path,
+        )
+
+    assert not manifest_path.exists()
+    assert not (tmp_path / "terminal_response_manifest_candidate.json").exists()
+
+
+def test_smoke_run_protocol_remains_a_single_state_zero_case() -> None:
+    protocol = resolve_terminal_response_run_protocol("smoke")
+
+    assert protocol.state_ids == (0,)
+    assert protocol.bundle_schema_version == (
+        TERMINAL_DEPLOYMENT_RESPONSE_SMOKE_BUNDLE_SCHEMA_VERSION
+    )
+    assert protocol.manifest_filename == "terminal_response_smoke_manifest.json"
+
+
+def test_run_protocol_rejects_arbitrary_state_scope() -> None:
+    with pytest.raises(ValueError, match="smoke或formal"):
+        resolve_terminal_response_run_protocol("states_2_4")
 
 
 def test_smoke_bundle_requires_exactly_two_state_zero_cases(

@@ -45,6 +45,7 @@ TerminalResponseClassification: TypeAlias = Literal[
     "deployment_preserved_tie_sensitive",
     "invalid_response_alignment",
 ]
+TerminalResponseRunScope: TypeAlias = Literal["smoke", "formal"]
 TERMINAL_RESPONSE_CLASSIFICATIONS: Final[
     tuple[TerminalResponseClassification, ...]
 ] = (
@@ -85,6 +86,52 @@ TERMINAL_RESPONSE_VARIANTS: Final[tuple[str, ...]] = (
 
 class TerminalDeploymentResponseAuditError(ValueError):
     """Gate 6g 输入数组无法被可靠解释。"""
+
+
+@dataclass(frozen=True)
+class TerminalResponseRunProtocol:
+    """GPU采集入口不可由CLI改写的state inventory与发布契约。"""
+
+    scope: TerminalResponseRunScope
+    state_ids: tuple[int, ...]
+    bundle_schema_version: str
+    failure_schema_version: str
+    manifest_filename: str
+    log_label: str
+
+
+def resolve_terminal_response_run_protocol(
+    scope: str,
+) -> TerminalResponseRunProtocol:
+    """把Draccus/argparse可解码字符串立即收窄为冻结协议。"""
+
+    if scope == "smoke":
+        return TerminalResponseRunProtocol(
+            scope="smoke",
+            state_ids=(0,),
+            bundle_schema_version=(
+                TERMINAL_DEPLOYMENT_RESPONSE_SMOKE_BUNDLE_SCHEMA_VERSION
+            ),
+            failure_schema_version=(
+                TERMINAL_DEPLOYMENT_RESPONSE_SMOKE_BUNDLE_SCHEMA_VERSION
+            ),
+            manifest_filename="terminal_response_smoke_manifest.json",
+            log_label="Gate 6g smoke",
+        )
+    if scope == "formal":
+        return TerminalResponseRunProtocol(
+            scope="formal",
+            state_ids=tuple(range(10)),
+            bundle_schema_version=(
+                TERMINAL_DEPLOYMENT_RESPONSE_BUNDLE_SCHEMA_VERSION
+            ),
+            failure_schema_version=(
+                TERMINAL_DEPLOYMENT_RESPONSE_BUNDLE_SCHEMA_VERSION
+            ),
+            manifest_filename="terminal_response_manifest.json",
+            log_label="Gate 6g formal",
+        )
+    raise ValueError("audit_scope必须为smoke或formal")
 
 
 @dataclass(frozen=True)
@@ -1535,6 +1582,34 @@ def publish_terminal_response_smoke_manifest(
         candidate_path.unlink()
         raise TerminalDeploymentResponseAuditError(
             "state 0 smoke候选manifest独立复核失败: "
+            + "; ".join(decision.failures)
+        )
+    os.replace(candidate_path, path)
+    directory_descriptor = os.open(path.parent, os.O_RDONLY)
+    try:
+        os.fsync(directory_descriptor)
+    finally:
+        os.close(directory_descriptor)
+    return _file_sha256(path)
+
+
+def publish_terminal_response_manifest(
+    payload: Mapping[str, Any],
+    *,
+    output_path: str | Path,
+) -> str:
+    """先独立复算正式20-case bundle，再原子发布成功manifest。"""
+
+    path = Path(output_path)
+    candidate_path = path.with_name(path.stem + "_candidate.json")
+    if path.exists() or candidate_path.exists():
+        raise FileExistsError(path if path.exists() else candidate_path)
+    write_json_atomically(payload, output_path=candidate_path)
+    decision = evaluate_terminal_response_bundle(candidate_path)
+    if not decision.audit_valid:
+        candidate_path.unlink()
+        raise TerminalDeploymentResponseAuditError(
+            "states 0--9正式候选manifest独立复核失败: "
             + "; ".join(decision.failures)
         )
     os.replace(candidate_path, path)

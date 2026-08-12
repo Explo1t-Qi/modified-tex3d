@@ -1,4 +1,4 @@
-"""运行 Gate 6g state 0 双终态完整 C/A/B GPU smoke。
+"""运行 Gate 6g 双终态完整 C/A/B GPU smoke或states 0--9 formal audit。
 
 本命令只读使用已经完成的 Action+Spectral 与 Action-only formal bundle：
 
@@ -9,9 +9,10 @@
   processor 与 source OpenVLA。
 
 GPU runner只保存原始RGB、segmentation/alpha、BF16 bits、logits、token与codec
-数组。成功manifest只有在纯CPU smoke evaluator重新加载两个NPZ并返回
-``audit_valid`` 后才原子发布。命令不训练、不反向传播、不运行rollout，也不加载
-Feature、wrist或OFT。
+数组。``audit_scope=smoke``固定state 0两个case；``audit_scope=formal``固定
+states 0--9二十个case。成功manifest只有在纯CPU evaluator重新加载完整inventory
+并返回``audit_valid``后才原子发布。命令不训练、不反向传播、不运行rollout，
+也不加载Feature、wrist或OFT。
 """
 
 from __future__ import annotations
@@ -92,12 +93,14 @@ from openvla_attack.scene import (  # noqa: E402
     find_target_body_poses,
 )
 from openvla_attack.terminal_deployment_response_audit import (  # noqa: E402
-    TERMINAL_DEPLOYMENT_RESPONSE_SMOKE_BUNDLE_SCHEMA_VERSION,
     TERMINAL_RESPONSE_AUTHORITY_CONTRACT,
     TERMINAL_RESPONSE_VARIANTS,
     TerminalDeploymentResponseEvidence,
+    TerminalResponseRunProtocol,
     evaluate_terminal_response_evidence,
+    publish_terminal_response_manifest,
     publish_terminal_response_smoke_manifest,
+    resolve_terminal_response_run_protocol,
     terminal_response_evaluation_record,
     write_json_atomically,
     write_terminal_response_npz,
@@ -134,7 +137,7 @@ from robot_utils import get_model, set_seed_everywhere  # noqa: E402
 
 @dataclass(frozen=True)
 class TerminalDeploymentResponseConfig:
-    """Gate 6g state 0 smoke CLI配置；方法与state inventory不可改写。"""
+    """Gate 6g GPU采集CLI配置；state inventory由audit_scope固定。"""
 
     pretrained_checkpoint: str
     action_spectral_manifest_path: str
@@ -143,10 +146,10 @@ class TerminalDeploymentResponseConfig:
     rebake_preflight_manifest_path: str
     output_dir: str
     code_commit: str
+    audit_scope: str = "smoke"
     task_suite_name: str = "libero_spatial"
     task_id: int = 0
     object_name: str = "akita_black_bowl"
-    state_id: int = 0
     num_steps_wait: int = 10
     seed: int = 7
     unnorm_key: Optional[str] = "libero_spatial_no_noops"
@@ -199,10 +202,10 @@ def _parse_args(
     parser.add_argument("--rebake_preflight_manifest_path", required=True)
     parser.add_argument("--output_dir", required=True)
     parser.add_argument("--code_commit", required=True)
+    parser.add_argument("--audit_scope", default="smoke")
     parser.add_argument("--task_suite_name", default="libero_spatial")
     parser.add_argument("--task_id", type=int, default=0)
     parser.add_argument("--object_name", default="akita_black_bowl")
-    parser.add_argument("--state_id", type=int, default=0)
     parser.add_argument("--num_steps_wait", type=int, default=10)
     parser.add_argument("--seed", type=int, default=7)
     parser.add_argument("--unnorm_key", default="libero_spatial_no_noops")
@@ -371,15 +374,19 @@ def _settle_environment(
     return observation
 
 
-def _validate_config(cfg: TerminalDeploymentResponseConfig) -> None:
+def _validate_config(
+    cfg: TerminalDeploymentResponseConfig,
+) -> TerminalResponseRunProtocol:
+    protocol = resolve_terminal_response_run_protocol(cfg.audit_scope)
     if cfg.task_suite_name != "libero_spatial" or cfg.task_id != 0:
-        raise ValueError("Gate 6g smoke只接受LIBERO Spatial task 0")
-    if cfg.object_name != "akita_black_bowl" or cfg.state_id != 0:
-        raise ValueError("Gate 6g smoke只接受Akita state 0")
+        raise ValueError("Gate 6g只接受LIBERO Spatial task 0")
+    if cfg.object_name != "akita_black_bowl":
+        raise ValueError("Gate 6g只接受Akita")
     if cfg.num_steps_wait < 0 or not cfg.center_crop:
-        raise ValueError("Gate 6g smoke要求非负wait和center_crop=True")
+        raise ValueError("Gate 6g要求非负wait和center_crop=True")
     if cfg.load_in_8bit or cfg.load_in_4bit:
-        raise ValueError("Gate 6g smoke固定使用正式BF16 checkpoint，不允许量化加载")
+        raise ValueError("Gate 6g固定使用正式BF16 checkpoint，不允许量化加载")
+    return protocol
 
 
 def _validate_preflight_binding(
@@ -557,6 +564,448 @@ def _build_case_evidence(
     )
 
 
+@dataclass(frozen=True)
+class _CollectedState:
+    """一个state共享Clean并完成双终态C/A/B后的manifest事实。"""
+
+    initial_state_sha256: str
+    cases: tuple[dict[str, Any], ...]
+    diagnostics: dict[str, Any]
+
+
+def _collect_state(
+    *,
+    cfg: TerminalDeploymentResponseConfig,
+    protocol: TerminalResponseRunProtocol,
+    state_id: int,
+    initial_state: Any,
+    expected_initial_sha256: str,
+    task: Any,
+    inputs: TerminalDeploymentInputs,
+    asset: ObjectAssetSpec,
+    transaction: RuntimeAssetTransaction,
+    xml_path: Path,
+    texture_path: Path,
+    clean_xml_sha256: str,
+    clean_texture_sha256: str,
+    model: Any,
+    processor: Any,
+    image_preprocessor: DifferentiableOpenVLAImageProcessor,
+    policy_view_transform: DifferentiablePolicyViewTransform,
+    renderer: DifferentiableRenderer,
+    output_dir: Path,
+    get_libero_env: Any,
+    get_libero_dummy_action: Any,
+    get_libero_image: Any,
+    completed_keys: list[tuple[str, int]],
+) -> _CollectedState:
+    """采集一个state；模型、renderer和Runtime Asset Transaction由run共享。"""
+
+    initial_sha256 = state_fingerprint(initial_state)
+    if initial_sha256 != expected_initial_sha256:
+        raise RuntimeError(
+            f"state {state_id} initial fingerprint与formal训练不一致"
+        )
+    clean_env: Any = None
+    deployment_env: Any = None
+    try:
+        transaction.restore(
+            context=f"{protocol.log_label} state {state_id} clean",
+            remove_backups=False,
+        )
+        clean_env, task_description = get_libero_env(
+            task,
+            cfg.model_family,
+            resolution=POLICY_SOURCE_RESOLUTION,
+        )
+        prompt = _prompt(task_description)
+        clean_observation = _settle_environment(
+            clean_env,
+            initial_state,
+            num_steps_wait=cfg.num_steps_wait,
+            model_family=cfg.model_family,
+            get_dummy_action=get_libero_dummy_action,
+        )
+        clean_source_rgb = get_libero_image(
+            clean_observation,
+            POLICY_SOURCE_RESOLUTION,
+        )
+        clean_source_tensor = _rgb_tensor(clean_source_rgb, device=model.device)
+        clean_exact = build_exact_deployment_view_stages(
+            clean_source_rgb,
+            specification=policy_view_transform.specification,
+        )
+        clean_effective = policy_view_transform.build_effective_view(
+            clean_source_tensor
+        )
+        clean_processor = _processor_pair(
+            processor=processor,
+            image_preprocessor=image_preprocessor,
+            prompt=prompt,
+            effective_view=clean_effective,
+            device=model.device,
+        )
+        if not np.array_equal(
+            clean_processor.effective_rgb,
+            clean_exact.effective_view_rgb,
+        ):
+            raise RuntimeError(
+                f"state {state_id} Clean BPDA Effective View与exact deployment不一致"
+            )
+        clean_response = capture_openvla_action_response(
+            model,
+            prompt_inputs=clean_processor.prompt_inputs,
+            pixel_values=clean_processor.official_pixels,
+            clean_teacher_input_ids=None,
+            pad_token_id=int(processor.tokenizer.pad_token_id),
+            unnorm_key=cfg.unnorm_key,
+        )
+        clean_teacher_ids = torch.from_numpy(
+            clean_response.teacher_input_ids
+        ).unsqueeze(0).to(model.device)
+
+        clean_poses = find_target_body_poses(
+            clean_env,
+            asset["search"],
+            model.device,
+        )
+        if not clean_poses or any(pose.body_name is None for pose in clean_poses):
+            raise RuntimeError(
+                f"state {state_id} Clean共享纹理实例不完整"
+            )
+        clean_body_ids = tuple(pose.body_id for pose in clean_poses)
+        clean_body_names = tuple(str(pose.body_name) for pose in clean_poses)
+        clean_roots = tuple(
+            TargetInstanceRoot(
+                body_id=pose.body_id,
+                body_name=str(pose.body_name),
+            )
+            for pose in clean_poses
+        )
+        training_paths: dict[str, _AdversarialTrainingPath] = {}
+        with static_scene_evidence_transaction(
+            clean_env,
+            clean_body_ids,
+        ) as clean_static_transaction:
+            transaction_poses = find_target_body_poses(
+                clean_env,
+                asset["search"],
+                model.device,
+            )
+            if tuple(pose.body_id for pose in transaction_poses) != clean_body_ids:
+                raise RuntimeError(
+                    f"state {state_id} Clean static transaction实例集合改变"
+                )
+            clean_segmentation = capture_instance_segmentation(
+                clean_env,
+                clean_roots,
+                camera_name="agentview",
+                resolution=POLICY_SOURCE_RESOLUTION,
+            )
+            mujoco_alpha = clean_segmentation.parsed.instance_alpha.to(
+                device=model.device,
+                dtype=torch.float32,
+            )
+            instances = _build_instances(
+                clean_env,
+                transaction_poses,
+                device=model.device,
+            )
+            for variant in TERMINAL_RESPONSE_VARIANTS:
+                terminal_input = inputs.variants[variant]
+                renderer.load_adversarial_texture(terminal_input.parameter_path)
+                with torch.no_grad():
+                    rendered = render_shared_texture_instances(
+                        renderer,
+                        instances,
+                        resolution=(
+                            POLICY_SOURCE_RESOLUTION,
+                            POLICY_SOURCE_RESOLUTION,
+                        ),
+                    )
+                    composition = compose_visibility_masked_renderer_delta(
+                        clean_source_tensor,
+                        mujoco_alpha,
+                        rendered.adversarial_rgb,
+                        rendered.clean_rgb,
+                        rendered.visibility_mask,
+                    )
+                    training_effective = (
+                        policy_view_transform.build_effective_view(
+                            composition.composited_rgb
+                        )
+                    )
+                training_processor = _processor_pair(
+                    processor=processor,
+                    image_preprocessor=image_preprocessor,
+                    prompt=prompt,
+                    effective_view=training_effective,
+                    device=model.device,
+                )
+                training_response = capture_openvla_action_response(
+                    model,
+                    prompt_inputs=training_processor.prompt_inputs,
+                    pixel_values=training_processor.training_exact_pixels,
+                    clean_teacher_input_ids=clean_teacher_ids,
+                    pad_token_id=int(processor.tokenizer.pad_token_id),
+                    unnorm_key=cfg.unnorm_key,
+                )
+                training_paths[variant] = _AdversarialTrainingPath(
+                    processor=training_processor,
+                    response=training_response,
+                    saturated_pixel_fraction=(
+                        composition.saturated_pixel_fraction
+                    ),
+                    saturated_channel_fraction=(
+                        composition.saturated_channel_fraction
+                    ),
+                )
+        if not clean_static_transaction.verified:
+            raise RuntimeError(
+                f"state {state_id} Clean static scene transaction未通过"
+            )
+        clean_static_sha256 = (
+            clean_static_transaction.before.fingerprint_sha256
+        )
+        clean_env.close()
+        clean_env = None
+
+        cases: list[dict[str, Any]] = []
+        deployment_diagnostics: dict[str, Any] = {}
+        for variant in TERMINAL_RESPONSE_VARIANTS:
+            terminal_input = inputs.variants[variant]
+            transaction.restore(
+                context=(
+                    f"{protocol.log_label} state {state_id} "
+                    f"{variant} pre-activate"
+                ),
+                remove_backups=False,
+            )
+            mirrored = transaction.activate_texture(
+                terminal_input.baked_texture_path,
+                mirror_real_texture=True,
+            )
+            active_texture_sha256 = _file_sha256(texture_path)
+            if not mirrored or active_texture_sha256 != (
+                terminal_input.baked_texture_sha256
+            ):
+                raise RuntimeError(
+                    f"state {state_id}/{variant} Active Texture未绑定formal bake"
+                )
+            deployment_env, deployment_description = get_libero_env(
+                task,
+                cfg.model_family,
+                resolution=POLICY_SOURCE_RESOLUTION,
+            )
+            if deployment_description != task_description:
+                raise RuntimeError(
+                    f"state {state_id}/{variant} C/B task description不一致"
+                )
+            deployment_observation = _settle_environment(
+                deployment_env,
+                initial_state,
+                num_steps_wait=cfg.num_steps_wait,
+                model_family=cfg.model_family,
+                get_dummy_action=get_libero_dummy_action,
+            )
+            deployment_source_rgb = get_libero_image(
+                deployment_observation,
+                POLICY_SOURCE_RESOLUTION,
+            )
+            deployment_source_tensor = _rgb_tensor(
+                deployment_source_rgb,
+                device=model.device,
+            )
+            deployment_exact = build_exact_deployment_view_stages(
+                deployment_source_rgb,
+                specification=policy_view_transform.specification,
+            )
+            deployment_effective = policy_view_transform.build_effective_view(
+                deployment_source_tensor
+            )
+            deployment_processor = _processor_pair(
+                processor=processor,
+                image_preprocessor=image_preprocessor,
+                prompt=prompt,
+                effective_view=deployment_effective,
+                device=model.device,
+            )
+            if not np.array_equal(
+                deployment_processor.effective_rgb,
+                deployment_exact.effective_view_rgb,
+            ):
+                raise RuntimeError(
+                    f"state {state_id}/{variant} B路径BPDA Effective View"
+                    "与exact deployment不一致"
+                )
+            deployment_response = capture_openvla_action_response(
+                model,
+                prompt_inputs=deployment_processor.prompt_inputs,
+                pixel_values=deployment_processor.official_pixels,
+                clean_teacher_input_ids=clean_teacher_ids,
+                pad_token_id=int(processor.tokenizer.pad_token_id),
+                unnorm_key=cfg.unnorm_key,
+            )
+            deployment_poses = find_target_body_poses(
+                deployment_env,
+                asset["search"],
+                model.device,
+            )
+            deployment_body_ids = tuple(
+                pose.body_id for pose in deployment_poses
+            )
+            deployment_body_names = tuple(
+                str(pose.body_name) for pose in deployment_poses
+            )
+            if (
+                deployment_body_ids != clean_body_ids
+                or deployment_body_names != clean_body_names
+            ):
+                raise RuntimeError(
+                    f"state {state_id}/{variant} C/B共享实例身份不一致"
+                )
+            deployment_roots = tuple(
+                TargetInstanceRoot(
+                    body_id=pose.body_id,
+                    body_name=str(pose.body_name),
+                )
+                for pose in deployment_poses
+            )
+            with static_scene_evidence_transaction(
+                deployment_env,
+                deployment_body_ids,
+            ) as deployment_static_transaction:
+                deployment_segmentation = capture_instance_segmentation(
+                    deployment_env,
+                    deployment_roots,
+                    camera_name="agentview",
+                    resolution=POLICY_SOURCE_RESOLUTION,
+                )
+            if not deployment_static_transaction.verified:
+                raise RuntimeError(
+                    f"state {state_id}/{variant} B路径static transaction未通过"
+                )
+            deployment_path = _DeploymentPath(
+                processor=deployment_processor,
+                response=deployment_response,
+                segmentation=deployment_segmentation,
+                static_transaction=deployment_static_transaction,
+                body_ids=deployment_body_ids,
+                body_names=deployment_body_names,
+            )
+            deployment_env.close()
+            deployment_env = None
+            transaction.restore(
+                context=(
+                    f"{protocol.log_label} state {state_id} "
+                    f"{variant} post-deployment"
+                ),
+                remove_backups=False,
+            )
+            xml_restored = _file_sha256(xml_path) == clean_xml_sha256
+            texture_restored = (
+                _file_sha256(texture_path) == clean_texture_sha256
+            )
+            if not xml_restored or not texture_restored:
+                raise RuntimeError(
+                    f"state {state_id}/{variant} Runtime Asset恢复失败"
+                )
+
+            evidence = _build_case_evidence(
+                variant=variant,
+                state_id=state_id,
+                clean_processor=clean_processor,
+                training_path=training_paths[variant],
+                deployment_path=deployment_path,
+                clean_response=clean_response,
+                clean_segmentation=clean_segmentation,
+                model=model,
+                unnorm_key=cfg.unnorm_key,
+            )
+            npz_path = (
+                output_dir
+                / "arrays"
+                / variant
+                / f"state_{state_id:02d}.npz"
+            )
+            npz_sha256 = write_terminal_response_npz(
+                evidence,
+                output_path=npz_path,
+            )
+            response_evaluation = evaluate_terminal_response_evidence(evidence)
+            cases.append(
+                {
+                    "variant": variant,
+                    "state_id": state_id,
+                    "npz_relative_path": str(npz_path.relative_to(output_dir)),
+                    "npz_sha256": npz_sha256,
+                    "initial_state_sha256": initial_sha256,
+                    "clean_static_scene_sha256": clean_static_sha256,
+                    "deployment_static_scene_sha256": (
+                        deployment_static_transaction.before.fingerprint_sha256
+                    ),
+                    "transaction_verified": bool(
+                        clean_static_transaction.verified
+                        and deployment_static_transaction.verified
+                    ),
+                    "asset_restore_verified": bool(
+                        xml_restored and texture_restored
+                    ),
+                    "response_evaluation": (
+                        terminal_response_evaluation_record(
+                            response_evaluation
+                        )
+                    ),
+                }
+            )
+            deployment_diagnostics[variant] = {
+                "body_ids": list(deployment_body_ids),
+                "body_names": list(deployment_body_names),
+                "active_texture_sha256": active_texture_sha256,
+                "saturated_pixel_fraction": (
+                    training_paths[variant].saturated_pixel_fraction
+                ),
+                "saturated_channel_fraction": (
+                    training_paths[variant].saturated_channel_fraction
+                ),
+                "segmentation_backend": asdict(
+                    deployment_segmentation.backend
+                ),
+            }
+            completed_keys.append((variant, state_id))
+
+        return _CollectedState(
+            initial_state_sha256=initial_sha256,
+            cases=tuple(cases),
+            diagnostics={
+                "state_id": state_id,
+                "task_description": task_description,
+                "prompt": prompt,
+                "clean_body_ids": list(clean_body_ids),
+                "clean_body_names": list(clean_body_names),
+                "clean_segmentation_backend": asdict(
+                    clean_segmentation.backend
+                ),
+                "deployment_diagnostics": deployment_diagnostics,
+            },
+        )
+    finally:
+        for environment_name, environment in (
+            ("clean", clean_env),
+            ("deployment", deployment_env),
+        ):
+            if environment is None:
+                continue
+            try:
+                environment.close()
+            except BaseException as close_error:
+                print(
+                    f"[{protocol.log_label}] state {state_id} "
+                    f"{environment_name} env关闭失败: {close_error}",
+                    file=sys.stderr,
+                )
+
+
 def _failure_record(
     *,
     output_dir: Path,
@@ -565,14 +1014,21 @@ def _failure_record(
     completed_keys: Sequence[tuple[str, int]],
     input_sha256: Mapping[str, str],
     asset_restore_status: Mapping[str, bool],
+    protocol: Optional[TerminalResponseRunProtocol] = None,
 ) -> None:
+    resolved_protocol = (
+        resolve_terminal_response_run_protocol("smoke")
+        if protocol is None
+        else protocol
+    )
     try:
         write_json_atomically(
             {
-                "schema_version": (
-                    TERMINAL_DEPLOYMENT_RESPONSE_SMOKE_BUNDLE_SCHEMA_VERSION
-                ),
+                "schema_version": resolved_protocol.failure_schema_version,
                 "status": "audit_invalid",
+                "audit_scope": resolved_protocol.scope,
+                "expected_state_ids": list(resolved_protocol.state_ids),
+                "expected_variants": list(TERMINAL_RESPONSE_VARIANTS),
                 "failed_stage": stage,
                 "exception_type": type(error).__name__,
                 "exception_message": str(error),
@@ -587,7 +1043,8 @@ def _failure_record(
         )
     except BaseException as record_error:
         print(
-            f"[GATE-6G-SMOKE] 无法保存best-effort失败记录: {record_error}",
+            f"[{resolved_protocol.log_label}] "
+            f"无法保存best-effort失败记录: {record_error}",
             file=sys.stderr,
         )
 
@@ -595,14 +1052,34 @@ def _failure_record(
 def run_terminal_deployment_response_smoke(
     cfg: TerminalDeploymentResponseConfig,
 ) -> Path:
-    """采集state 0双终态C/A/B事实并返回独立复核后的成功manifest。"""
+    """兼容入口：用共享采集引擎执行固定state 0 smoke。"""
 
-    _validate_config(cfg)
+    if cfg.audit_scope != "smoke":
+        raise ValueError("smoke入口要求audit_scope=smoke")
+    return _run_terminal_deployment_response(cfg)
+
+
+def run_terminal_deployment_response_formal(
+    cfg: TerminalDeploymentResponseConfig,
+) -> Path:
+    """正式入口：用共享采集引擎执行states 0--9完整审计。"""
+
+    if cfg.audit_scope != "formal":
+        raise ValueError("formal入口要求audit_scope=formal")
+    return _run_terminal_deployment_response(cfg)
+
+
+def _run_terminal_deployment_response(
+    cfg: TerminalDeploymentResponseConfig,
+) -> Path:
+    """按冻结scope采集双终态C/A/B case并原子发布对应bundle。"""
+
+    protocol = _validate_config(cfg)
     verify_executing_commit(cfg.code_commit)
     if loaded_legacy_optimizer_modules():
-        raise RuntimeError("Gate 6g smoke进程加载了legacy optimizer")
+        raise RuntimeError(f"{protocol.log_label}进程加载了legacy optimizer")
     if not torch.cuda.is_available():
-        raise RuntimeError("Gate 6g state 0 smoke需要真实CUDA device")
+        raise RuntimeError(f"{protocol.log_label}需要真实CUDA device")
     if LIBERO_ROOT not in sys.path:
         sys.path.insert(0, LIBERO_ROOT)
     from libero.libero import benchmark
@@ -614,7 +1091,9 @@ def run_terminal_deployment_response_smoke(
 
     output_dir = Path(cfg.output_dir)
     if output_dir.exists() and any(output_dir.iterdir()):
-        raise FileExistsError(f"Gate 6g smoke输出目录必须为空: {output_dir}")
+        raise FileExistsError(
+            f"{protocol.log_label}输出目录必须为空: {output_dir}"
+        )
     output_dir.mkdir(parents=True, exist_ok=True)
     stage = "input_resolution"
     completed_keys: list[tuple[str, int]] = []
@@ -622,8 +1101,10 @@ def run_terminal_deployment_response_smoke(
     transaction: Optional[RuntimeAssetTransaction] = None
     backup_paths: tuple[Path, ...] = ()
     input_sha256: dict[str, str] = {}
-    clean_env: Any = None
-    deployment_env: Any = None
+    xml_path: Optional[Path] = None
+    texture_path: Optional[Path] = None
+    clean_xml_sha256: Optional[str] = None
+    clean_texture_sha256: Optional[str] = None
     try:
         inputs = resolve_terminal_deployment_inputs(
             action_spectral_manifest_path=cfg.action_spectral_manifest_path,
@@ -694,11 +1175,9 @@ def run_terminal_deployment_response_smoke(
         model_height, model_width = image_preprocessor.output_size
         if model_height != model_width:
             raise RuntimeError("Gate 6g只支持正方形checkpoint输入")
-        policy_view_transform: DifferentiablePolicyViewTransform = (
-            build_policy_view_transform(
-                source_resolution=POLICY_SOURCE_RESOLUTION,
-                model_input_resolution=model_height,
-            )
+        policy_view_transform = build_policy_view_transform(
+            source_resolution=POLICY_SOURCE_RESOLUTION,
+            model_input_resolution=model_height,
         )
         renderer = DifferentiableRenderer(
             mesh_path=mesh_path,
@@ -714,22 +1193,20 @@ def run_terminal_deployment_response_smoke(
         task_suite = benchmark_class()
         task = task_suite.get_task(cfg.task_id)
         initial_states = task_suite.get_task_init_states(cfg.task_id)
-        initial_state = initial_states[cfg.state_id]
-        initial_sha256 = state_fingerprint(initial_state)
-        if initial_sha256 != inputs.state_fingerprints[cfg.state_id]:
-            raise RuntimeError("state 0 initial fingerprint与formal训练不一致")
-        prompt: str
-        task_description: str
+        if len(initial_states) <= protocol.state_ids[-1]:
+            raise RuntimeError("LIBERO initial state inventory不足10个")
+        observed_state_fingerprints = tuple(
+            state_fingerprint(initial_states[state_id])
+            for state_id in protocol.state_ids
+        )
+        if observed_state_fingerprints != inputs.state_fingerprints:
+            raise RuntimeError("states 0--9 initial fingerprints与formal训练不一致")
 
-        set_seed_everywhere(cfg.seed)
-        random.seed(cfg.seed)
-        np.random.seed(cfg.seed)
-        torch.manual_seed(cfg.seed)
         transaction = RuntimeAssetTransaction.begin(
             xml_path=xml_path,
             real_texture_path=texture_path,
             object_name=cfg.object_name,
-            backup_tag=f"gate6g_smoke_{cfg.code_commit[:12]}",
+            backup_tag=f"gate6g_{protocol.scope}_{cfg.code_commit[:12]}",
             install_process_handlers=True,
         )
         backup_paths = tuple(
@@ -741,346 +1218,53 @@ def run_terminal_deployment_response_smoke(
             if path is not None
         )
 
-        stage = "clean_and_training_paths"
-        transaction.restore(context="Gate 6g smoke clean", remove_backups=False)
-        clean_env, task_description = get_libero_env(
-            task,
-            cfg.model_family,
-            resolution=POLICY_SOURCE_RESOLUTION,
-        )
-        prompt = _prompt(task_description)
-        clean_observation = _settle_environment(
-            clean_env,
-            initial_state,
-            num_steps_wait=cfg.num_steps_wait,
-            model_family=cfg.model_family,
-            get_dummy_action=get_libero_dummy_action,
-        )
-        clean_source_rgb = get_libero_image(
-            clean_observation,
-            POLICY_SOURCE_RESOLUTION,
-        )
-        clean_source_tensor = _rgb_tensor(clean_source_rgb, device=model.device)
-        clean_exact = build_exact_deployment_view_stages(
-            clean_source_rgb,
-            specification=policy_view_transform.specification,
-        )
-        clean_effective = policy_view_transform.build_effective_view(
-            clean_source_tensor
-        )
-        clean_processor = _processor_pair(
-            processor=processor,
-            image_preprocessor=image_preprocessor,
-            prompt=prompt,
-            effective_view=clean_effective,
-            device=model.device,
-        )
-        if not np.array_equal(
-            clean_processor.effective_rgb,
-            clean_exact.effective_view_rgb,
-        ):
-            raise RuntimeError("Clean BPDA Effective View与exact deployment不一致")
-        clean_response = capture_openvla_action_response(
-            model,
-            prompt_inputs=clean_processor.prompt_inputs,
-            pixel_values=clean_processor.official_pixels,
-            clean_teacher_input_ids=None,
-            pad_token_id=int(processor.tokenizer.pad_token_id),
-            unnorm_key=cfg.unnorm_key,
-        )
-        clean_teacher_ids = torch.from_numpy(
-            clean_response.teacher_input_ids
-        ).unsqueeze(0).to(model.device)
-
-        clean_poses = find_target_body_poses(
-            clean_env,
-            asset["search"],
-            model.device,
-        )
-        if not clean_poses or any(pose.body_name is None for pose in clean_poses):
-            raise RuntimeError("Clean state共享纹理实例不完整")
-        clean_body_ids = tuple(pose.body_id for pose in clean_poses)
-        clean_body_names = tuple(str(pose.body_name) for pose in clean_poses)
-        clean_roots = tuple(
-            TargetInstanceRoot(body_id=pose.body_id, body_name=str(pose.body_name))
-            for pose in clean_poses
-        )
-        training_paths: dict[str, _AdversarialTrainingPath] = {}
-        with static_scene_evidence_transaction(
-            clean_env,
-            clean_body_ids,
-        ) as clean_static_transaction:
-            transaction_poses = find_target_body_poses(
-                clean_env,
-                asset["search"],
-                model.device,
-            )
-            if tuple(pose.body_id for pose in transaction_poses) != clean_body_ids:
-                raise RuntimeError("Clean static transaction实例集合改变")
-            clean_segmentation = capture_instance_segmentation(
-                clean_env,
-                clean_roots,
-                camera_name="agentview",
-                resolution=POLICY_SOURCE_RESOLUTION,
-            )
-            mujoco_alpha = clean_segmentation.parsed.instance_alpha.to(
-                device=model.device,
-                dtype=torch.float32,
-            )
-            instances = _build_instances(
-                clean_env,
-                transaction_poses,
-                device=model.device,
-            )
-            for variant in TERMINAL_RESPONSE_VARIANTS:
-                terminal_input = inputs.variants[variant]
-                renderer.load_adversarial_texture(terminal_input.parameter_path)
-                with torch.no_grad():
-                    rendered = render_shared_texture_instances(
-                        renderer,
-                        instances,
-                        resolution=(
-                            POLICY_SOURCE_RESOLUTION,
-                            POLICY_SOURCE_RESOLUTION,
-                        ),
-                    )
-                    composition = compose_visibility_masked_renderer_delta(
-                        clean_source_tensor,
-                        mujoco_alpha,
-                        rendered.adversarial_rgb,
-                        rendered.clean_rgb,
-                        rendered.visibility_mask,
-                    )
-                    training_effective = (
-                        policy_view_transform.build_effective_view(
-                            composition.composited_rgb
-                        )
-                    )
-                training_processor = _processor_pair(
-                    processor=processor,
-                    image_preprocessor=image_preprocessor,
-                    prompt=prompt,
-                    effective_view=training_effective,
-                    device=model.device,
-                )
-                training_response = capture_openvla_action_response(
-                    model,
-                    prompt_inputs=training_processor.prompt_inputs,
-                    pixel_values=training_processor.training_exact_pixels,
-                    clean_teacher_input_ids=clean_teacher_ids,
-                    pad_token_id=int(processor.tokenizer.pad_token_id),
-                    unnorm_key=cfg.unnorm_key,
-                )
-                training_paths[variant] = _AdversarialTrainingPath(
-                    processor=training_processor,
-                    response=training_response,
-                    saturated_pixel_fraction=(
-                        composition.saturated_pixel_fraction
-                    ),
-                    saturated_channel_fraction=(
-                        composition.saturated_channel_fraction
-                    ),
-                )
-        if not clean_static_transaction.verified:
-            raise RuntimeError("Clean static scene transaction未通过")
-        clean_static_sha256 = (
-            clean_static_transaction.before.fingerprint_sha256
-        )
-        clean_env.close()
-        clean_env = None
-
-        stage = "deployment_paths"
         cases: list[dict[str, Any]] = []
-        deployment_diagnostics: dict[str, Any] = {}
-        for variant in TERMINAL_RESPONSE_VARIANTS:
-            terminal_input = inputs.variants[variant]
-            transaction.restore(
-                context=f"Gate 6g smoke {variant} pre-activate",
-                remove_backups=False,
-            )
-            mirrored = transaction.activate_texture(
-                terminal_input.baked_texture_path,
-                mirror_real_texture=True,
-            )
-            active_texture_sha256 = _file_sha256(texture_path)
-            if not mirrored or active_texture_sha256 != (
-                terminal_input.baked_texture_sha256
-            ):
-                raise RuntimeError(f"{variant} Active Texture未绑定formal bake")
-            deployment_env, deployment_description = get_libero_env(
-                task,
-                cfg.model_family,
-                resolution=POLICY_SOURCE_RESOLUTION,
-            )
-            if deployment_description != task_description:
-                raise RuntimeError("C/B task description不一致")
-            deployment_observation = _settle_environment(
-                deployment_env,
-                initial_state,
-                num_steps_wait=cfg.num_steps_wait,
-                model_family=cfg.model_family,
-                get_dummy_action=get_libero_dummy_action,
-            )
-            deployment_source_rgb = get_libero_image(
-                deployment_observation,
-                POLICY_SOURCE_RESOLUTION,
-            )
-            deployment_source_tensor = _rgb_tensor(
-                deployment_source_rgb,
-                device=model.device,
-            )
-            deployment_exact = build_exact_deployment_view_stages(
-                deployment_source_rgb,
-                specification=policy_view_transform.specification,
-            )
-            deployment_effective = policy_view_transform.build_effective_view(
-                deployment_source_tensor
-            )
-            deployment_processor = _processor_pair(
+        state_diagnostics: list[dict[str, Any]] = []
+        for state_id in protocol.state_ids:
+            stage = f"state_{state_id}_collection"
+            state_seed = cfg.seed + state_id
+            set_seed_everywhere(state_seed)
+            random.seed(state_seed)
+            np.random.seed(state_seed)
+            torch.manual_seed(state_seed)
+            collected = _collect_state(
+                cfg=cfg,
+                protocol=protocol,
+                state_id=state_id,
+                initial_state=initial_states[state_id],
+                expected_initial_sha256=inputs.state_fingerprints[state_id],
+                task=task,
+                inputs=inputs,
+                asset=asset,
+                transaction=transaction,
+                xml_path=xml_path,
+                texture_path=texture_path,
+                clean_xml_sha256=clean_xml_sha256,
+                clean_texture_sha256=clean_texture_sha256,
+                model=model,
                 processor=processor,
                 image_preprocessor=image_preprocessor,
-                prompt=prompt,
-                effective_view=deployment_effective,
-                device=model.device,
+                policy_view_transform=policy_view_transform,
+                renderer=renderer,
+                output_dir=output_dir,
+                get_libero_env=get_libero_env,
+                get_libero_dummy_action=get_libero_dummy_action,
+                get_libero_image=get_libero_image,
+                completed_keys=completed_keys,
             )
-            if not np.array_equal(
-                deployment_processor.effective_rgb,
-                deployment_exact.effective_view_rgb,
-            ):
-                raise RuntimeError(
-                    f"{variant} B路径BPDA Effective View与exact deployment不一致"
-                )
-            deployment_response = capture_openvla_action_response(
-                model,
-                prompt_inputs=deployment_processor.prompt_inputs,
-                pixel_values=deployment_processor.official_pixels,
-                clean_teacher_input_ids=clean_teacher_ids,
-                pad_token_id=int(processor.tokenizer.pad_token_id),
-                unnorm_key=cfg.unnorm_key,
+            cases.extend(collected.cases)
+            state_diagnostics.append(
+                {**collected.diagnostics, "state_seed": state_seed}
             )
-            deployment_poses = find_target_body_poses(
-                deployment_env,
-                asset["search"],
-                model.device,
+            print(
+                f"[{protocol.log_label}] state {state_id}完成，"
+                f"累计case={len(cases)}/"
+                f"{len(protocol.state_ids) * len(TERMINAL_RESPONSE_VARIANTS)}",
+                flush=True,
             )
-            deployment_body_ids = tuple(pose.body_id for pose in deployment_poses)
-            deployment_body_names = tuple(
-                str(pose.body_name) for pose in deployment_poses
-            )
-            if (
-                deployment_body_ids != clean_body_ids
-                or deployment_body_names != clean_body_names
-            ):
-                raise RuntimeError(f"{variant} C/B共享实例身份不一致")
-            deployment_roots = tuple(
-                TargetInstanceRoot(
-                    body_id=pose.body_id,
-                    body_name=str(pose.body_name),
-                )
-                for pose in deployment_poses
-            )
-            with static_scene_evidence_transaction(
-                deployment_env,
-                deployment_body_ids,
-            ) as deployment_static_transaction:
-                deployment_segmentation = capture_instance_segmentation(
-                    deployment_env,
-                    deployment_roots,
-                    camera_name="agentview",
-                    resolution=POLICY_SOURCE_RESOLUTION,
-                )
-            if not deployment_static_transaction.verified:
-                raise RuntimeError(f"{variant} B路径static transaction未通过")
-            deployment_path = _DeploymentPath(
-                processor=deployment_processor,
-                response=deployment_response,
-                segmentation=deployment_segmentation,
-                static_transaction=deployment_static_transaction,
-                body_ids=deployment_body_ids,
-                body_names=deployment_body_names,
-            )
-            deployment_env.close()
-            deployment_env = None
-            transaction.restore(
-                context=f"Gate 6g smoke {variant} post-deployment",
-                remove_backups=False,
-            )
-            xml_restored = _file_sha256(xml_path) == clean_xml_sha256
-            texture_restored = (
-                _file_sha256(texture_path) == clean_texture_sha256
-            )
-            asset_restore_status = {
-                "xml": xml_restored,
-                "texture": texture_restored,
-            }
-            if not xml_restored or not texture_restored:
-                raise RuntimeError(f"{variant} Runtime Asset恢复失败")
-
-            evidence = _build_case_evidence(
-                variant=variant,
-                state_id=cfg.state_id,
-                clean_processor=clean_processor,
-                training_path=training_paths[variant],
-                deployment_path=deployment_path,
-                clean_response=clean_response,
-                clean_segmentation=clean_segmentation,
-                model=model,
-                unnorm_key=cfg.unnorm_key,
-            )
-            npz_path = (
-                output_dir
-                / "arrays"
-                / variant
-                / f"state_{cfg.state_id:02d}.npz"
-            )
-            npz_sha256 = write_terminal_response_npz(
-                evidence,
-                output_path=npz_path,
-            )
-            response_evaluation = evaluate_terminal_response_evidence(evidence)
-            cases.append(
-                {
-                    "variant": variant,
-                    "state_id": cfg.state_id,
-                    "npz_relative_path": str(npz_path.relative_to(output_dir)),
-                    "npz_sha256": npz_sha256,
-                    "initial_state_sha256": initial_sha256,
-                    "clean_static_scene_sha256": clean_static_sha256,
-                    "deployment_static_scene_sha256": (
-                        deployment_static_transaction.before.fingerprint_sha256
-                    ),
-                    "transaction_verified": bool(
-                        clean_static_transaction.verified
-                        and deployment_static_transaction.verified
-                    ),
-                    "asset_restore_verified": bool(
-                        xml_restored and texture_restored
-                    ),
-                    "response_evaluation": (
-                        terminal_response_evaluation_record(
-                            response_evaluation
-                        )
-                    ),
-                }
-            )
-            deployment_diagnostics[variant] = {
-                "body_ids": list(deployment_body_ids),
-                "body_names": list(deployment_body_names),
-                "active_texture_sha256": active_texture_sha256,
-                "saturated_pixel_fraction": (
-                    training_paths[variant].saturated_pixel_fraction
-                ),
-                "saturated_channel_fraction": (
-                    training_paths[variant].saturated_channel_fraction
-                ),
-                "segmentation_backend": asdict(
-                    deployment_segmentation.backend
-                ),
-            }
-            completed_keys.append((variant, cfg.state_id))
 
         stage = "asset_transaction_close"
-        transaction.close(context="Gate 6g smoke final")
+        transaction.close(context=f"{protocol.log_label} final")
         transaction = None
         backup_paths_removed = bool(backup_paths) and not any(
             path.exists() for path in backup_paths
@@ -1090,25 +1274,27 @@ def run_terminal_deployment_response_smoke(
             "texture": _file_sha256(texture_path) == clean_texture_sha256,
         }
         if not all(asset_restore_status.values()):
-            raise RuntimeError("Gate 6g smoke最终资产恢复失败")
+            raise RuntimeError(f"{protocol.log_label}最终资产恢复失败")
         if not backup_paths_removed:
-            raise RuntimeError("Gate 6g smoke未验证Runtime Asset backup删除")
+            raise RuntimeError(
+                f"{protocol.log_label}未验证Runtime Asset backup删除"
+            )
         if loaded_legacy_optimizer_modules():
-            raise RuntimeError("Gate 6g smoke运行期间加载了legacy optimizer")
+            raise RuntimeError(
+                f"{protocol.log_label}运行期间加载了legacy optimizer"
+            )
 
         stage = "manifest_publication"
         config_payload = asdict(cfg)
         action_stats = model.get_action_stats(cfg.unnorm_key)
         manifest = {
-            "schema_version": (
-                TERMINAL_DEPLOYMENT_RESPONSE_SMOKE_BUNDLE_SCHEMA_VERSION
-            ),
+            "schema_version": protocol.bundle_schema_version,
             "status": "complete",
             "code_commit": cfg.code_commit,
             "config_sha256": canonical_json_sha256(config_payload),
             "expected_variants": list(TERMINAL_RESPONSE_VARIANTS),
-            "expected_state_ids": [cfg.state_id],
-            "state_fingerprints": [initial_sha256],
+            "expected_state_ids": list(protocol.state_ids),
+            "state_fingerprints": list(observed_state_fingerprints),
             "response_authority": dict(
                 TERMINAL_RESPONSE_AUTHORITY_CONTRACT
             ),
@@ -1142,8 +1328,7 @@ def run_terminal_deployment_response_smoke(
                 "policy_view_specification": asdict(
                     policy_view_transform.specification
                 ),
-                "task_description": task_description,
-                "prompt": prompt,
+                "state_diagnostics": state_diagnostics,
                 "generation": {
                     "max_new_tokens": int(
                         model.get_action_dim(cfg.unnorm_key)
@@ -1159,7 +1344,10 @@ def run_terminal_deployment_response_smoke(
                     "mask": np.asarray(
                         action_stats.get(
                             "mask",
-                            np.ones_like(action_stats["q01"], dtype=np.bool_),
+                            np.ones_like(
+                                action_stats["q01"],
+                                dtype=np.bool_,
+                            ),
                         ),
                         dtype=np.bool_,
                     ).tolist(),
@@ -1174,12 +1362,6 @@ def run_terminal_deployment_response_smoke(
                     "texture": clean_texture_sha256,
                     "mesh": _file_sha256(mesh_path),
                 },
-                "clean_body_ids": list(clean_body_ids),
-                "clean_body_names": list(clean_body_names),
-                "clean_segmentation_backend": asdict(
-                    clean_segmentation.backend
-                ),
-                "deployment_diagnostics": deployment_diagnostics,
                 "asset_restore_status": asset_restore_status,
                 "runtime_asset_backup_paths": [
                     str(path) for path in backup_paths
@@ -1192,34 +1374,35 @@ def run_terminal_deployment_response_smoke(
                 },
             },
         }
-        manifest_path = output_dir / "terminal_response_smoke_manifest.json"
-        manifest_sha256 = publish_terminal_response_smoke_manifest(
-            manifest,
-            output_path=manifest_path,
+        manifest_path = output_dir / protocol.manifest_filename
+        publisher = (
+            publish_terminal_response_manifest
+            if protocol.scope == "formal"
+            else publish_terminal_response_smoke_manifest
         )
+        manifest_sha256 = publisher(manifest, output_path=manifest_path)
     except BaseException as error:
-        for environment_name, environment in (
-            ("clean", clean_env),
-            ("deployment", deployment_env),
-        ):
-            if environment is None:
-                continue
-            try:
-                environment.close()
-            except BaseException as close_error:
-                print(
-                    f"[GATE-6G-SMOKE] {environment_name} env关闭失败: "
-                    f"{close_error}",
-                    file=sys.stderr,
-                )
         if transaction is not None:
             try:
-                transaction.close(context="Gate 6g smoke exception")
+                transaction.close(context=f"{protocol.log_label} exception")
             except BaseException as restore_error:
                 print(
-                    f"[GATE-6G-SMOKE] 异常恢复资产失败: {restore_error}",
+                    f"[{protocol.log_label}] 异常恢复资产失败: {restore_error}",
                     file=sys.stderr,
                 )
+        if xml_path is not None and texture_path is not None:
+            asset_restore_status = {
+                "xml": (
+                    xml_path.is_file()
+                    and clean_xml_sha256 is not None
+                    and _file_sha256(xml_path) == clean_xml_sha256
+                ),
+                "texture": (
+                    texture_path.is_file()
+                    and clean_texture_sha256 is not None
+                    and _file_sha256(texture_path) == clean_texture_sha256
+                ),
+            }
         _failure_record(
             output_dir=output_dir,
             stage=stage,
@@ -1227,6 +1410,7 @@ def run_terminal_deployment_response_smoke(
             completed_keys=completed_keys,
             input_sha256=input_sha256,
             asset_restore_status=asset_restore_status,
+            protocol=protocol,
         )
         raise
 
@@ -1245,7 +1429,12 @@ def run_terminal_deployment_response_smoke(
 
 
 def main(argv: Optional[Sequence[str]] = None) -> None:
-    run_terminal_deployment_response_smoke(_parse_args(argv))
+    cfg = _parse_args(argv)
+    protocol = _validate_config(cfg)
+    if protocol.scope == "formal":
+        run_terminal_deployment_response_formal(cfg)
+    else:
+        run_terminal_deployment_response_smoke(cfg)
 
 
 if __name__ == "__main__":
