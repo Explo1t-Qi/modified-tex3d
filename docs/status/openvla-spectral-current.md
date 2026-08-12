@@ -1,6 +1,6 @@
 # OpenVLA 谱纹理当前状态
 
-更新时间：2026-08-11
+更新时间：2026-08-12
 当前 Visibility/Coverage/Compositor 功能代码基线：
 `1884eb7500283eea9f3bcf8793a4410cd1396b87`
 服务器 Gate 2E 复核基线：
@@ -43,6 +43,8 @@ Gate 6g state 0 C/A/B smoke实现基线：
 `efc45fc963da88545bbb76683e10d7a5c69e82dd`
 Gate 6g OpenVLA action codec schema修复基线：
 `f8943edf9034869e41ef13bd0713c22859ee566f`
+Gate 6g numerical inference replay实现基线：
+`02f298a71e66ab475a14b55d9f604b5d43b5d937`
 
 本文是 OpenVLA 谱纹理研究的**当前状态入口**。新一轮开发应先读本文，再按需
 进入专题文档；不要从长篇实验时间线推测当前优先级。历史实验索引见
@@ -138,10 +140,13 @@ source training及同一source development states 10--19成对Clean/Adversarial 
 完成并通过artifact完整性复核。主候选与严格匹配的Action-only control均只造成
 2/10个paired新增失败，未达到3/10 source门槛；因此没有证据表明Spectral Guard
 是source强度不足的主要原因。Gate 6g Terminal Deployment Response Audit的
-设计现已冻结，双终态CUDA canonical re-bake preflight也已通过；当前唯一下一
-门槛是state 0共享Clean的双终态完整C/A/B smoke。Gate 6g只读比较两个已有终态
-在train states 0--9的Renderer Delta Composition与真实MuJoCo Active Texture
-响应，不自动启动训练或调参；OFT仍不得提前进入。
+设计现已冻结，双终态CUDA canonical re-bake preflight也已通过；state 0第二次
+C/A/B smoke完成全部采集，但因Action-only训练路径一个近边界token的
+generation/teacher严格对齐失败而保持`audit_invalid`。当前唯一下一门槛是只用
+失败NPZ进行numerical inference replay，先确认原结果能否逐位重现，再区分
+cache/incremental与full-sequence执行路径；不重新进入LIBERO。Gate 6g只读比较
+两个已有终态在train states 0--9的Renderer Delta Composition与真实MuJoCo
+Active Texture响应，不自动启动训练或调参；OFT仍不得提前进入。
 
 真实 Spatial checkpoint 的 CPU 差分记录为 fused pixel values MAE/L∞=`0/0`，
 输入梯度有限且非零；文档记录当时全量 CPU 回归为 `113 passed, 1 skipped`。
@@ -1181,7 +1186,7 @@ parameter重建终态Surface Delta并获得Renderer Delta Composition路径A，�
 processor/policy-view
 specification、最终BF16 bit pattern、完整动作响应数组、静态场景与资产事务证据，
 并在原子发布前由纯CPU evaluator复算恰好两个case及跨variant共享Clean。相关定向
-无GPU回归为`70 passed`；完整本地收集仅受缺失`nvdiffrast`与LIBERO阻断。当前唯一
+无GPU回归为`70 passed`；完整本地收集仅受缺失`nvdiffrast`与LIBERO阻断。当时的
 下一步是服务器state 0 smoke，尚无C/A/B动作响应结果。
 
 首次服务器运行使用commit `5ae675a`，在写入Action+Spectral state 0 NPZ前由
@@ -1191,7 +1196,79 @@ codec执行clip。该目录只有`audit_failed.json`，没有成功manifest或�
 不得用于动作响应结论；失败路径验证XML与真实纹理均已恢复。commit `f8943ed`
 将schema严格修正为`num_centers = num_action_classes - 1`，同时保留token映射和
 decoded action逐值复算，最小复现及相关回归为`70 passed`。下一步是在新目录中
-重新执行state 0 smoke。
+重新执行state 0 smoke；这是当时的行动项，后述第二次运行已完成该行动。
+
+第二次服务器运行使用commit `0642188`，两个variant的C/A/B均完成，XML与真实
+纹理均恢复；但候选manifest在独立复核时拒绝Action-only训练路径token index 1：
+generation唯一argmax为class 128，而固定clean-prefix teacher唯一argmax为
+class 138。两者对应logit gap分别为`+0.375`与`-0.125`，只有class 128相差
+`0.5`并跨过决策边界。目录没有成功manifest，因此整个Gate 6g smoke仍为
+`audit_invalid`；Action+Spectral单NPZ的`deployment_lost`只能作为失败bundle中
+的候选诊断观察，不能登记为正式Gate结论。两个原始NPZ均通过schema、processor、
+visibility、RGB delta、token mapping与codec独立复算；原始诊断事实精确定位为
+`action_only_control/training/token_index=1/generation=128/teacher={138}`。
+KV-cache、BF16与FlashAttention只是待验证假设，尚未形成因果解释。
+
+commit `02f298a`实现只读取上述失败NPZ与source OpenVLA checkpoint的numerical
+inference replay。Fidelity按原smoke模型调用顺序对共享Clean、两个训练路径A和
+两个部署路径B重复三轮；逐输入保存BF16 bit round-trip、默认generation、默认
+full-teacher的token及完整`[7,256]` logits。只有全部输入同时满足输入重建、三次
+repeat和原NPZ逐位一致，runner才生成attribution artifact；否则保留结构化原始
+mismatch与per-input失败分类，run-level `causal_attribution_allowed=false`。
+Attribution明确区分generation-prefix no-cache、clean-prefix no-cache、显式
+full-teacher no-cache及完整no-cache generation，并为完整generation首次分歧后的
+logits标记causal prefix不可比。默认teacher与显式full-teacher no-cache另设对照，
+避免把默认`use_cache`配置与sequence-shape差异混在一起。整个命令不导入LIBERO、
+renderer，不训练、不反传、不运行rollout，也不修改Gate 6g合同。新增及相邻定向
+CPU回归为`30 passed`；WSL全量收集仍被本机缺失`nvdiffrast`和完整LIBERO依赖
+阻断，服务器正式执行前仍需运行完整无GPU pytest。
+
+服务器同步到目标commit后，先运行新模块定向回归和完整无GPU回归：
+
+```bash
+CUDA_VISIBLE_DEVICES='' PYTHONDONTWRITEBYTECODE=1 TF_CPP_MIN_LOG_LEVEL=3 \
+  NUMBA_CACHE_DIR=/tmp/tex3d-numba-cache \
+  /home/xiaomengqi/miniconda3/envs/tex3d-openvla/bin/python -m pytest -q \
+  tests/unit/openvla_attack/test_terminal_numerical_inference.py \
+  tests/unit/openvla_attack/test_terminal_numerical_inference_audit.py \
+  tests/unit/openvla_attack/test_terminal_openvla_response.py \
+  tests/unit/openvla_attack/test_terminal_deployment_response_audit.py
+
+CUDA_VISIBLE_DEVICES='' PYTHONDONTWRITEBYTECODE=1 TF_CPP_MIN_LOG_LEVEL=3 \
+  NUMBA_CACHE_DIR=/tmp/tex3d-numba-cache \
+  /home/xiaomengqi/miniconda3/envs/tex3d-openvla/bin/python -m pytest -q tests
+```
+
+两项均通过后再运行GPU replay；源目录必须保持原失败bundle原样，输出目录必须
+全新且为空：
+
+```bash
+set -o pipefail
+CODE_COMMIT="$(git rev-parse HEAD)"
+RUN_ID="gate6g-numerical-${CODE_COMMIT:0:7}-20260812"
+CUDA_VISIBLE_DEVICES=0 PYTHONDONTWRITEBYTECODE=1 TF_CPP_MIN_LOG_LEVEL=3 \
+  /home/xiaomengqi/miniconda3/envs/tex3d-openvla/bin/python \
+  openvla/experiments/robot/libero/openvla_attack/diagnose_terminal_numerical_inference.py \
+  --pretrained_checkpoint \
+  /data/huangsimin/openvla-7b-finetuned-libero-spatial \
+  --source_bundle_dir \
+  experiments_inbox/gate6g_state0_response_0642188_20260811 \
+  --output_dir "experiments_inbox/${RUN_ID}" \
+  --code_commit "${CODE_COMMIT}" \
+  --seed 7 \
+  --unnorm_key libero_spatial_no_noops \
+  2>&1 | tee "experiments_inbox/${RUN_ID}.log"
+
+CUDA_VISIBLE_DEVICES='' PYTHONDONTWRITEBYTECODE=1 \
+  /home/xiaomengqi/miniconda3/envs/tex3d-openvla/bin/python -m \
+  openvla.experiments.robot.libero.openvla_attack.evaluate_terminal_numerical_inference \
+  --manifest_path \
+  "experiments_inbox/${RUN_ID}/terminal_numerical_inference_manifest.json"
+```
+
+CPU evaluator的`bundle_valid=true`只表示诊断产物完整。若`fidelity_pass=false`，
+本轮仍是有效的“无法忠实重放”诊断，应直接同步bundle并停止，不得重跑LIBERO或
+增加容差；只有`causal_attribution_allowed=true`才允许解释双prefix数值差异。
 
 已冻结的第一项设计决定：谱方法在新候选中作为作用于最终 Surface Delta 的软
 自然性正则，只惩罚高频谱能量；它不再把扰动硬限制在前 K 个谱基中，也不是与
