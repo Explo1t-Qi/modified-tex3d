@@ -49,6 +49,8 @@ Gate 6g deployment-authority v2契约实现基线：
 `3e19a7a07fd5f292a75e4f1a23e250cca337640c`
 Gate 6g v2结构化响应证据绑定基线：
 `575f1ccedc5a1b0a95832ddfba4a1e524ea12fbf`
+Gate 6g v2 state 0正式smoke证据基线：
+`9abee27ee5876d1bbaac229a2e4801e287bd3762`
 
 本文是 OpenVLA 谱纹理研究的**当前状态入口**。新一轮开发应先读本文，再按需
 进入专题文档；不要从长篇实验时间线推测当前优先级。历史实验索引见
@@ -82,7 +84,7 @@ Gate 6g v2结构化响应证据绑定基线：
 | 谱自然性uniform Support校准 | 已通过 | 连续K_nat=128+常数频带通过数值审计；`rho_nat=0.0992735862`并由两个输入artifact独立复算 |
 | BPDA 下源攻击基线 | 主候选与Action-only对照均未过门槛 | 两者paired states 10--19均为Clean 9/10、Adversarial 8/10和2/10新增失败；失败state不同，但都低于预注册3/10门槛 |
 | BPDA 下 OFT 迁移信号 | 未开始 | 新源候选未过门槛前不得进入 OFT |
-| Gate 6g Terminal Deployment Response | numerical诊断已完成，v2 state 0待重跑 | 默认cached generation已冻结为部署行为权威；旧失败bundle不升级，必须由新commit/新目录产生v2证据 |
+| Gate 6g Terminal Deployment Response | v2 state 0已通过，states 0--9 formal待实现 | state 0双终态2/2 case及全部工程硬条件通过；单点只观察到Action+Spectral `deployment_lost`与Action-only `no_training_response`，不能代替总体结论 |
 | 无偏跨模型迁移与鲁棒性提升 | 未开始 | 需方法冻结后的新任务/第三模型与后续防御实验 |
 
 ## 当前已确认的科学结论
@@ -152,7 +154,8 @@ generation/teacher严格对齐失败而保持`audit_invalid`。numerical replay�
 执行shape敏感的测量问题，不能归因于FlashAttention或源攻击瓶颈。commit
 `3e19a7a`已将默认cached generation冻结为部署行为权威，把clean-prefix teacher
 forward降为训练代理诊断，并把NPZ/smoke/formal bundle升级为v2。当前唯一下一
-门槛是在全新目录重跑v2 state 0 smoke；旧失败bundle不得追认。Gate 6g只读比较
+门槛已由后述全新目录v2 state 0 smoke通过，现推进为实现并运行states 0--9
+formal audit；旧失败bundle仍不得追认。Gate 6g只读比较
 两个已有终态在train states 0--9的Renderer Delta Composition与真实MuJoCo
 Active Texture响应，不自动启动训练或调参；OFT仍不得提前进入。
 
@@ -1362,6 +1365,40 @@ CUDA_VISIBLE_DEVICES=0 PYTHONDONTWRITEBYTECODE=1 TF_CPP_MIN_LOG_LEVEL=3 \
 case；两个NPZ必须为`openvla-terminal-deployment-response-v2`并由runner发布前
 独立复核。任一异常只同步新目录、日志和`audit_failed.json`，不要覆盖或复用旧
 目录，也不要提前运行states 0--9。
+
+2026-08-12，服务器在commit `9abee27`和全新目录
+`gate6g-state0-v2-9abee27-20260812`完成上述v2 smoke。成功manifest为
+`openvla-terminal-deployment-response-smoke-bundle-v2`、`status=complete`，
+恰有两个state 0 case；WSL当前代码独立复算返回`audit_valid=true`且无failure。
+manifest SHA-256为
+`264344905aadcd44f1e5b3b23e30e559805dce53cf5faf01573d31383387759d`；
+Action+Spectral与Action-only NPZ SHA-256分别为
+`f9ad864f469c2637368b08a0e432a7c42e307549dfdc39dbf52e786ac7a61123`和
+`c237d1ca98d3bc21372188262b20d907f1495d1f2e692d3ce6c09b0883cbfd7d`。
+同步GPU运行日志SHA-256为
+`c76d7fdeeae784430d49568f943662819284a6a1cb76ebef500ff5c716972642`。
+
+两个case的NPZ schema、state fingerprint、共享Clean/static scene、processor
+BF16 bits、C/B segmentation与hard alpha、RGB delta、token/codec映射、解码动作、
+generation token/score自对齐、结构化response evaluation和资产事务全部通过；
+八个上游Support/preflight/formal manifest/parameter/bake SHA也在WSL逐文件重算
+匹配。XML与纹理最终恢复，临时backup已删除，两个共享纹理body均进入B路径，
+训练合成没有像素或通道饱和。
+
+本state的描述性响应为：Action+Spectral的C/A/B generation class序列分别是
+`[143,128,128,127,118,113,0]`、
+`[143,145,128,126,118,113,0]`和
+`[143,128,128,127,118,113,0]`，因此首次训练响应位于index 1/class 145，部署
+路径回到Clean，分类为`deployment_lost`。Action-only的C/A/B generation完全相同，
+分类为`no_training_response`；其A路径index 1仍保留teacher class 138与generation
+class 128的结构化诊断，但不影响case有效性。该单点没有“保留”响应，不能外推
+两个方法的总体部署保留率或攻击效果。同步内容没有单独的pytest输出日志，因此
+服务器定向/全量回归只能登记为用户运行完成，不能登记为WSL独立复核。
+
+Gate 6g唯一下一门槛现为实现states 0--9 formal采集runner及成功发布流程。它必须
+复用已通过的v2单case采集、authority contract和CPU evaluator，产生恰好20个唯一
+`(variant,state)`并绑定10个既有state fingerprint；不得重训、调方法或提前进入
+OFT。state 0结果将在formal同一commit bundle中重新采集，不能与smoke目录拼接。
 
 已冻结的第一项设计决定：谱方法在新候选中作为作用于最终 Surface Delta 的软
 自然性正则，只惩罚高频谱能量；它不再把扰动硬限制在前 K 个谱基中，也不是与
