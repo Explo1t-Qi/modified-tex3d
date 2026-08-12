@@ -1574,8 +1574,9 @@ CPU preflight中`alpha_star`范围为`[0.881867,1.016489]`且裁剪值总数为0
 缺少`nvdiffrast`与LIBERO在10个既有文件收集失败；显式排除这些环境阻断文件后
 其余全仓无GPU回归为`334 passed`。
 
-服务器应同步到包含`468ea76`的目标commit，在全新空目录运行。先执行不依赖
-LIBERO/nvdiffrast的定向无GPU回归，再运行唯一正式GPU audit：
+服务器应同步到同时包含`468ea76`、`88bb2d6`及本节文档提交的最新HEAD，不得停在
+中间实现commit；正式运行SHA由下面的`git rev-parse HEAD`动态绑定。在全新空目录
+先执行不依赖LIBERO/nvdiffrast的定向无GPU回归，再运行唯一正式GPU audit：
 
 ```bash
 set -o pipefail
