@@ -5,10 +5,12 @@
 MuJoCo Active Texture ``B``。分类只依据相对于 Clean 的首次自回归因果分歧；
 首次分歧以后的 token 已使用不同前缀，因此完整序列相等性不作为主判据。
 
-``teacher_logits`` 是固定 clean prefix 下的 action-vocabulary logits，浮点
+``generation_logits`` 是默认 cached generation 在每个真实自回归前缀下保存的
+action-vocabulary logits，负责部署行为分类与 tie 判定；``teacher_logits`` 是固定
+clean prefix 下的训练代理，只保留为跨路径诊断。两者均为浮点
 ``[action_dim, num_action_classes]``；``generated_classes`` 是同一 action 子词表内
-的整数 class，shape ``[action_dim]``。tie 严格按保存 logits 与逐行最大值逐值
-相等判定，不使用数值容差。
+的整数 class，shape ``[action_dim]``。argmax/tie 严格按保存 logits 与逐行最大值
+逐值相等判定，不使用数值容差。
 """
 
 from __future__ import annotations
@@ -53,15 +55,28 @@ TERMINAL_RESPONSE_CLASSIFICATIONS: Final[
     "deployment_preserved_tie_sensitive",
     "invalid_response_alignment",
 )
-TERMINAL_DEPLOYMENT_RESPONSE_SCHEMA_VERSION: Final[str] = (
+LEGACY_TERMINAL_DEPLOYMENT_RESPONSE_SCHEMA_VERSION: Final[str] = (
     "openvla-terminal-deployment-response-v1"
 )
-TERMINAL_DEPLOYMENT_RESPONSE_BUNDLE_SCHEMA_VERSION: Final[str] = (
-    "openvla-terminal-deployment-response-bundle-v1"
+TERMINAL_DEPLOYMENT_RESPONSE_SCHEMA_VERSION: Final[str] = (
+    "openvla-terminal-deployment-response-v2"
 )
-TERMINAL_DEPLOYMENT_RESPONSE_SMOKE_BUNDLE_SCHEMA_VERSION: Final[str] = (
+TERMINAL_DEPLOYMENT_RESPONSE_BUNDLE_SCHEMA_VERSION: Final[str] = (
+    "openvla-terminal-deployment-response-bundle-v2"
+)
+LEGACY_TERMINAL_DEPLOYMENT_RESPONSE_SMOKE_BUNDLE_SCHEMA_VERSION: Final[str] = (
     "openvla-terminal-deployment-response-smoke-bundle-v1"
 )
+TERMINAL_DEPLOYMENT_RESPONSE_SMOKE_BUNDLE_SCHEMA_VERSION: Final[str] = (
+    "openvla-terminal-deployment-response-smoke-bundle-v2"
+)
+TERMINAL_RESPONSE_AUTHORITY_CONTRACT: Final[dict[str, str]] = {
+    "deployment_behavior": "default_cached_generation",
+    "training_proxy": "clean_prefix_teacher_forward",
+    "classification_logits": "generation_logits",
+    "teacher_generation_relation": "diagnostic_only",
+    "generation_self_alignment": "exact_argmax_membership",
+}
 TERMINAL_RESPONSE_VARIANTS: Final[tuple[str, ...]] = (
     "action_spectral",
     "action_only_control",
@@ -74,10 +89,22 @@ class TerminalDeploymentResponseAuditError(ValueError):
 
 @dataclass(frozen=True)
 class ActionPathEvidence:
-    """一条静态模型路径的生成 token 与 clean-prefix teacher logits。"""
+    """一条路径的生成token、生成score与clean-prefix训练代理logits。"""
 
     generated_classes: IntArray
+    generation_logits: FloatArray
     teacher_logits: FloatArray
+
+
+@dataclass(frozen=True)
+class TeacherGenerationAlignmentDiagnostic:
+    """一条路径在共享clean-prefix区间内的训练代理差异。"""
+
+    path_name: str
+    comparable_token_count: int
+    matching_token_count: int
+    mismatch_token_indices: tuple[int, ...]
+    all_comparable_match: bool
 
 
 @dataclass(frozen=True)
@@ -90,6 +117,9 @@ class TerminalActionResponseDecision:
     training_first_divergence_class: Optional[int]
     deployment_first_divergence_class: Optional[int]
     failures: tuple[str, ...] = ()
+    teacher_generation_alignment: tuple[
+        TeacherGenerationAlignmentDiagnostic, ...
+    ] = ()
 
 
 class TerminalActionResponseSummary(TypedDict):
@@ -182,7 +212,7 @@ class TerminalDeploymentResponseEvaluation:
     action_decision: TerminalActionResponseDecision
     processor_equivalence: ProcessorEquivalenceDecision
     visibility_equivalence: VisibilityEquivalenceDecision
-    generation_alignment_pass: bool
+    generation_self_alignment_pass: bool
     processor_float_views_exact: bool
     rgb_delta_exact: bool
     token_mapping_exact: bool
@@ -202,6 +232,7 @@ class TerminalDeploymentResponseBundleDecision:
 @dataclass(frozen=True)
 class _ValidatedPath:
     generated_classes: NDArray[np.int64]
+    generation_logits: NDArray[np.float64]
     teacher_logits: NDArray[np.float64]
 
 
@@ -210,7 +241,8 @@ def _validate_path(
     evidence: ActionPathEvidence,
 ) -> _ValidatedPath:
     generated = np.asarray(evidence.generated_classes)
-    logits = np.asarray(evidence.teacher_logits)
+    generation_logits = np.asarray(evidence.generation_logits)
+    teacher_logits = np.asarray(evidence.teacher_logits)
     if generated.ndim != 1 or generated.size == 0:
         raise TerminalDeploymentResponseAuditError(
             f"{name} generated_classes 必须为非空 [action_dim]"
@@ -219,28 +251,40 @@ def _validate_path(
         raise TerminalDeploymentResponseAuditError(
             f"{name} generated_classes 必须为整数"
         )
-    if logits.ndim != 2 or logits.shape[0] != generated.size:
+    if (
+        generation_logits.ndim != 2
+        or generation_logits.shape[0] != generated.size
+        or teacher_logits.shape != generation_logits.shape
+    ):
         raise TerminalDeploymentResponseAuditError(
-            f"{name} teacher_logits 必须为 [action_dim,num_classes]"
+            f"{name} generation/teacher logits必须为相同"
+            "[action_dim,num_classes]"
         )
-    if logits.shape[1] < 2 or not np.issubdtype(logits.dtype, np.floating):
+    if (
+        generation_logits.shape[1] < 2
+        or not np.issubdtype(generation_logits.dtype, np.floating)
+        or not np.issubdtype(teacher_logits.dtype, np.floating)
+    ):
         raise TerminalDeploymentResponseAuditError(
-            f"{name} teacher_logits 必须为至少两类的浮点数组"
+            f"{name} generation/teacher logits必须为至少两类的浮点数组"
         )
-    if not bool(np.isfinite(logits).all()):
+    if not bool(np.isfinite(generation_logits).all()) or not bool(
+        np.isfinite(teacher_logits).all()
+    ):
         raise TerminalDeploymentResponseAuditError(
-            f"{name} teacher_logits 包含 NaN/Inf"
+            f"{name} generation/teacher logits包含NaN/Inf"
         )
     generated_int64 = generated.astype(np.int64, copy=False)
     if bool(np.any(generated_int64 < 0)) or bool(
-        np.any(generated_int64 >= logits.shape[1])
+        np.any(generated_int64 >= generation_logits.shape[1])
     ):
         raise TerminalDeploymentResponseAuditError(
             f"{name} generated_classes 包含越界 class"
         )
     return _ValidatedPath(
         generated_classes=generated_int64,
-        teacher_logits=logits.astype(np.float64, copy=False),
+        generation_logits=generation_logits.astype(np.float64, copy=False),
+        teacher_logits=teacher_logits.astype(np.float64, copy=False),
     )
 
 
@@ -256,30 +300,53 @@ def _argmax_classes(row: NDArray[np.float64]) -> NDArray[np.int64]:
     return np.flatnonzero(row == np.max(row)).astype(np.int64, copy=False)
 
 
-def _alignment_failures(
+def _generation_self_alignment_failures(
+    *,
+    name: str,
+    path: _ValidatedPath,
+) -> tuple[str, ...]:
+    """验证每个生成token属于其真实自回归score的精确argmax集合。"""
+
+    failures: list[str] = []
+    for index in range(path.generated_classes.size):
+        expected_class = int(path.generated_classes[index])
+        argmax_classes = _argmax_classes(path.generation_logits[index])
+        if expected_class not in argmax_classes:
+            failures.append(
+                f"{name} token {index} generation class {expected_class} "
+                "不属于generation score argmax集合"
+            )
+    return tuple(failures)
+
+
+def _teacher_generation_alignment_diagnostic(
     *,
     name: str,
     clean_classes: NDArray[np.int64],
     path: _ValidatedPath,
     first_divergence_index: Optional[int],
-) -> tuple[str, ...]:
-    """验证 teacher logits 只在与生成共享 clean prefix 的位置上的含义。"""
+) -> TeacherGenerationAlignmentDiagnostic:
+    """记录训练代理在仍共享clean prefix的位置能否解释生成token。"""
 
     last_comparable_index = (
         clean_classes.size - 1
         if first_divergence_index is None
         else first_divergence_index
     )
-    failures: list[str] = []
-    for index in range(last_comparable_index + 1):
-        expected_class = int(path.generated_classes[index])
-        argmax_classes = _argmax_classes(path.teacher_logits[index])
-        if expected_class not in argmax_classes:
-            failures.append(
-                f"{name} token {index} generation class {expected_class} "
-                "不属于clean-prefix teacher argmax集合"
-            )
-    return tuple(failures)
+    mismatch_indices = tuple(
+        index
+        for index in range(last_comparable_index + 1)
+        if int(path.generated_classes[index])
+        not in _argmax_classes(path.teacher_logits[index])
+    )
+    comparable_token_count = last_comparable_index + 1
+    return TeacherGenerationAlignmentDiagnostic(
+        path_name=name,
+        comparable_token_count=comparable_token_count,
+        matching_token_count=comparable_token_count - len(mismatch_indices),
+        mismatch_token_indices=mismatch_indices,
+        all_comparable_match=not mismatch_indices,
+    )
 
 
 def _divergence_class(
@@ -298,20 +365,20 @@ def classify_terminal_action_response(
     """按首次因果分歧分类一组 ``C/A/B`` 静态动作响应。
 
     输入 schema 错误会抛出 :class:`TerminalDeploymentResponseAuditError`；模型
-    generation 与 clean-prefix teacher argmax 不一致则返回
-    ``invalid_response_alignment``，使上层 bundle evaluator 判整个审计无效。
+    generation token与对应generation score argmax不一致才返回
+    ``invalid_response_alignment``。teacher/generation差异仅作为训练代理诊断。
     """
 
     clean_path = _validate_path("clean", clean)
     training_path = _validate_path("training", training)
     deployment_path = _validate_path("deployment", deployment)
-    expected_shape = clean_path.teacher_logits.shape
+    expected_shape = clean_path.generation_logits.shape
     if (
-        training_path.teacher_logits.shape != expected_shape
-        or deployment_path.teacher_logits.shape != expected_shape
+        training_path.generation_logits.shape != expected_shape
+        or deployment_path.generation_logits.shape != expected_shape
     ):
         raise TerminalDeploymentResponseAuditError(
-            "C/A/B teacher_logits shape 必须完全一致"
+            "C/A/B generation/teacher logits shape必须完全一致"
         )
 
     clean_classes = clean_path.generated_classes
@@ -324,24 +391,31 @@ def classify_terminal_action_response(
         deployment_path.generated_classes,
     )
     failures = (
-        *_alignment_failures(
+        *_generation_self_alignment_failures(
             name="clean",
-            clean_classes=clean_classes,
             path=clean_path,
-            first_divergence_index=None,
         ),
-        *_alignment_failures(
+        *_generation_self_alignment_failures(
             name="training",
-            clean_classes=clean_classes,
             path=training_path,
-            first_divergence_index=training_index,
         ),
-        *_alignment_failures(
+        *_generation_self_alignment_failures(
             name="deployment",
-            clean_classes=clean_classes,
             path=deployment_path,
-            first_divergence_index=deployment_index,
         ),
+    )
+    teacher_generation_alignment = tuple(
+        _teacher_generation_alignment_diagnostic(
+            name=name,
+            clean_classes=clean_classes,
+            path=path,
+            first_divergence_index=first_divergence_index,
+        )
+        for name, path, first_divergence_index in (
+            ("clean", clean_path, None),
+            ("training", training_path, training_index),
+            ("deployment", deployment_path, deployment_index),
+        )
     )
     training_class = _divergence_class(training_path, training_index)
     deployment_class = _divergence_class(deployment_path, deployment_index)
@@ -361,10 +435,10 @@ def classify_terminal_action_response(
     else:
         assert training_class is not None
         training_argmax = _argmax_classes(
-            training_path.teacher_logits[training_index]
+            training_path.generation_logits[training_index]
         )
         deployment_argmax = _argmax_classes(
-            deployment_path.teacher_logits[deployment_index]
+            deployment_path.generation_logits[deployment_index]
         )
         classification = (
             "deployment_preserved_strict"
@@ -378,6 +452,7 @@ def classify_terminal_action_response(
         training_first_divergence_class=training_class,
         deployment_first_divergence_class=deployment_class,
         failures=tuple(failures),
+        teacher_generation_alignment=teacher_generation_alignment,
     )
 
 
@@ -754,14 +829,17 @@ def evaluate_terminal_response_evidence(
 
     _validate_terminal_evidence_schema(evidence)
     teacher_logits = np.asarray(evidence.teacher_logits)
+    generation_logits = np.asarray(evidence.generation_logits)
     generated_classes = np.asarray(evidence.generated_classes)
     action_decision = classify_terminal_action_response(
-        clean=ActionPathEvidence(generated_classes[0], teacher_logits[0]),
+        clean=ActionPathEvidence(
+            generated_classes[0], generation_logits[0], teacher_logits[0]
+        ),
         training=ActionPathEvidence(
-            generated_classes[1], teacher_logits[1]
+            generated_classes[1], generation_logits[1], teacher_logits[1]
         ),
         deployment=ActionPathEvidence(
-            generated_classes[2], teacher_logits[2]
+            generated_classes[2], generation_logits[2], teacher_logits[2]
         ),
     )
     processor_equivalence = evaluate_final_processor_equivalence(
@@ -780,22 +858,7 @@ def evaluate_terminal_response_evidence(
     )
 
     failures: list[str] = list(action_decision.failures)
-    generation_alignment_pass = True
-    generation_logits = np.asarray(evidence.generation_logits).astype(
-        np.float64, copy=False
-    )
-    for path_index, path_name in enumerate(("clean", "training", "deployment")):
-        for token_index, generated_class in enumerate(
-            generated_classes[path_index]
-        ):
-            argmax_classes = _argmax_classes(
-                generation_logits[path_index, token_index]
-            )
-            if int(generated_class) not in argmax_classes:
-                generation_alignment_pass = False
-                failures.append(
-                    f"{path_name} generation token {token_index}不属于score argmax集合"
-                )
+    generation_self_alignment_pass = not action_decision.failures
 
     expected_training_float = _bf16_bits_to_float32(
         evidence.training_exact_processor_bf16_bits
@@ -838,9 +901,6 @@ def evaluate_terminal_response_evidence(
     )
     if not token_mapping_exact:
         failures.append("generated token ID与action class mapping不一致")
-    if action_decision.classification == "invalid_response_alignment":
-        failures.append("teacher/generation first-divergence alignment无效")
-
     token_ids = np.asarray(evidence.generated_token_ids, dtype=np.int64)
     bin_indices = np.clip(
         evidence.vocab_size - token_ids - 1,
@@ -872,7 +932,7 @@ def evaluate_terminal_response_evidence(
         action_decision=action_decision,
         processor_equivalence=processor_equivalence,
         visibility_equivalence=visibility_equivalence,
-        generation_alignment_pass=generation_alignment_pass,
+        generation_self_alignment_pass=generation_self_alignment_pass,
         processor_float_views_exact=processor_float_views_exact,
         rgb_delta_exact=rgb_delta_exact,
         token_mapping_exact=token_mapping_exact,
@@ -940,14 +1000,16 @@ def _load_scalar(archive: np.lib.npyio.NpzFile, name: str) -> object:
     return value.item()
 
 
-def load_terminal_response_npz(
+def _load_terminal_response_npz(
     path: str | Path,
+    *,
+    expected_schema_version: str,
 ) -> TerminalDeploymentResponseEvidence:
-    """无pickle加载一行权威Gate 6g NPZ并验证schema version。"""
+    """无pickle加载一行Gate 6g NPZ并验证调用方指定的schema。"""
 
     with np.load(Path(path), allow_pickle=False) as archive:
         schema_version = str(_load_scalar(archive, "schema_version"))
-        if schema_version != TERMINAL_DEPLOYMENT_RESPONSE_SCHEMA_VERSION:
+        if schema_version != expected_schema_version:
             raise TerminalDeploymentResponseAuditError(
                 f"Gate 6g NPZ schema不匹配: {schema_version}"
             )
@@ -997,6 +1059,30 @@ def load_terminal_response_npz(
         )
     _validate_terminal_evidence_schema(evidence)
     return evidence
+
+
+def load_terminal_response_npz(
+    path: str | Path,
+) -> TerminalDeploymentResponseEvidence:
+    """加载v2权威证据；旧失败bundle不能被v2 manifest重新包装。"""
+
+    return _load_terminal_response_npz(
+        path,
+        expected_schema_version=TERMINAL_DEPLOYMENT_RESPONSE_SCHEMA_VERSION,
+    )
+
+
+def load_legacy_terminal_response_npz_for_diagnostic(
+    path: str | Path,
+) -> TerminalDeploymentResponseEvidence:
+    """只为已冻结numerical diagnostic读取旧v1失败NPZ。"""
+
+    return _load_terminal_response_npz(
+        path,
+        expected_schema_version=(
+            LEGACY_TERMINAL_DEPLOYMENT_RESPONSE_SCHEMA_VERSION
+        ),
+    )
 
 
 def evaluate_terminal_response_npz(
@@ -1190,6 +1276,10 @@ def _evaluate_terminal_response_bundle(
         failures.append(
             f"expected_state_ids未冻结为{list(frozen_state_ids)}"
         )
+    if manifest.get("response_authority") != (
+        TERMINAL_RESPONSE_AUTHORITY_CONTRACT
+    ):
+        failures.append("response_authority未冻结为Gate 6g v2契约")
     raw_fingerprints = manifest.get("state_fingerprints")
     if (
         not isinstance(raw_fingerprints, list)

@@ -48,9 +48,9 @@ from openvla_attack.fixed_support_source_training import (  # noqa: E402
     verify_executing_commit,
 )
 from openvla_attack.terminal_deployment_response_audit import (  # noqa: E402
-    TERMINAL_DEPLOYMENT_RESPONSE_SMOKE_BUNDLE_SCHEMA_VERSION,
+    LEGACY_TERMINAL_DEPLOYMENT_RESPONSE_SMOKE_BUNDLE_SCHEMA_VERSION,
     TerminalDeploymentResponseEvidence,
-    load_terminal_response_npz,
+    load_legacy_terminal_response_npz_for_diagnostic,
 )
 from openvla_attack.terminal_numerical_inference import (  # noqa: E402
     AttributionReplay,
@@ -172,7 +172,7 @@ def _load_source_bundle(
     failure = json.loads(failure_path.read_text(encoding="utf-8"))
     if (
         failure.get("schema_version")
-        != TERMINAL_DEPLOYMENT_RESPONSE_SMOKE_BUNDLE_SCHEMA_VERSION
+        != LEGACY_TERMINAL_DEPLOYMENT_RESPONSE_SMOKE_BUNDLE_SCHEMA_VERSION
         or failure.get("status") != "audit_invalid"
         or failure.get("failed_stage") != "manifest_publication"
     ):
@@ -189,7 +189,7 @@ def _load_source_bundle(
     hashes = {"audit_failed_sha256": _file_sha256(failure_path)}
     for variant in NUMERICAL_VARIANTS:
         npz_path = bundle_dir / "arrays" / variant / "state_00.npz"
-        loaded = load_terminal_response_npz(npz_path)
+        loaded = load_legacy_terminal_response_npz_for_diagnostic(npz_path)
         if loaded.variant != variant or loaded.state_id != 0:
             raise RuntimeError(f"source NPZ身份漂移: {variant}")
         evidence[variant] = loaded

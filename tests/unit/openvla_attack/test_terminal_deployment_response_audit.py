@@ -8,6 +8,7 @@ from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 
 LIBERO_EXPERIMENT_DIR = (
@@ -17,6 +18,9 @@ sys.path.insert(0, str(LIBERO_EXPERIMENT_DIR))
 
 from openvla_attack.terminal_deployment_response_audit import (  # noqa: E402
     ActionPathEvidence,
+    TERMINAL_DEPLOYMENT_RESPONSE_BUNDLE_SCHEMA_VERSION,
+    TERMINAL_DEPLOYMENT_RESPONSE_SMOKE_BUNDLE_SCHEMA_VERSION,
+    TERMINAL_RESPONSE_AUTHORITY_CONTRACT,
     TerminalActionResponseDecision,
     TerminalDeploymentResponseEvidence,
     classify_terminal_action_response,
@@ -148,21 +152,30 @@ def _bundle_provenance() -> dict[str, object]:
     }
 
 
+def _action_path(
+    classes: list[int],
+    *,
+    generation_logits: np.ndarray | None = None,
+    teacher_logits: np.ndarray | None = None,
+) -> ActionPathEvidence:
+    default_logits = _unique_logits(classes)
+    return ActionPathEvidence(
+        generated_classes=np.asarray(classes, dtype=np.int64),
+        generation_logits=(
+            default_logits if generation_logits is None else generation_logits
+        ),
+        teacher_logits=(
+            default_logits if teacher_logits is None else teacher_logits
+        ),
+    )
+
+
 def test_same_unique_first_divergence_is_strictly_preserved() -> None:
     """后续序列可分叉；相同的首次唯一响应仍应判为严格保留。"""
 
-    clean = ActionPathEvidence(
-        generated_classes=np.asarray([0, 1, 2], dtype=np.int64),
-        teacher_logits=_unique_logits([0, 1, 2]),
-    )
-    training = ActionPathEvidence(
-        generated_classes=np.asarray([0, 3, 4], dtype=np.int64),
-        teacher_logits=_unique_logits([0, 3, 4]),
-    )
-    deployment = ActionPathEvidence(
-        generated_classes=np.asarray([0, 3, 5], dtype=np.int64),
-        teacher_logits=_unique_logits([0, 3, 5]),
-    )
+    clean = _action_path([0, 1, 2])
+    training = _action_path([0, 3, 4])
+    deployment = _action_path([0, 3, 5])
 
     result = classify_terminal_action_response(
         clean=clean,
@@ -178,16 +191,10 @@ def test_same_unique_first_divergence_is_strictly_preserved() -> None:
 
 
 def test_same_tied_first_divergence_is_marked_tie_sensitive() -> None:
-    clean = ActionPathEvidence(
-        generated_classes=np.asarray([0, 1], dtype=np.int64),
-        teacher_logits=_unique_logits([0, 1]),
-    )
+    clean = _action_path([0, 1])
     tied_logits = _unique_logits([0, 3])
     tied_logits[1, 1] = tied_logits[1, 3]
-    path = ActionPathEvidence(
-        generated_classes=np.asarray([0, 3], dtype=np.int64),
-        teacher_logits=tied_logits,
-    )
+    path = _action_path([0, 3], generation_logits=tied_logits)
 
     result = classify_terminal_action_response(
         clean=clean,
@@ -199,14 +206,8 @@ def test_same_tied_first_divergence_is_marked_tie_sensitive() -> None:
 
 
 def test_deployment_without_any_divergence_is_lost() -> None:
-    clean = ActionPathEvidence(
-        generated_classes=np.asarray([0, 1], dtype=np.int64),
-        teacher_logits=_unique_logits([0, 1]),
-    )
-    training = ActionPathEvidence(
-        generated_classes=np.asarray([0, 3], dtype=np.int64),
-        teacher_logits=_unique_logits([0, 3]),
-    )
+    clean = _action_path([0, 1])
+    training = _action_path([0, 3])
 
     result = classify_terminal_action_response(
         clean=clean,
@@ -218,18 +219,9 @@ def test_deployment_without_any_divergence_is_lost() -> None:
 
 
 def test_different_deployment_first_response_is_altered() -> None:
-    clean = ActionPathEvidence(
-        generated_classes=np.asarray([0, 1], dtype=np.int64),
-        teacher_logits=_unique_logits([0, 1]),
-    )
-    training = ActionPathEvidence(
-        generated_classes=np.asarray([0, 3], dtype=np.int64),
-        teacher_logits=_unique_logits([0, 3]),
-    )
-    deployment = ActionPathEvidence(
-        generated_classes=np.asarray([0, 4], dtype=np.int64),
-        teacher_logits=_unique_logits([0, 4]),
-    )
+    clean = _action_path([0, 1])
+    training = _action_path([0, 3])
+    deployment = _action_path([0, 4])
 
     result = classify_terminal_action_response(
         clean=clean,
@@ -240,14 +232,13 @@ def test_different_deployment_first_response_is_altered() -> None:
     assert result.classification == "deployment_response_altered"
 
 
-def test_negative_teacher_margin_without_generation_change_is_invalid() -> None:
-    clean = ActionPathEvidence(
-        generated_classes=np.asarray([0, 1], dtype=np.int64),
-        teacher_logits=_unique_logits([0, 1]),
-    )
+def test_teacher_generation_disagreement_is_diagnostic_only() -> None:
+    """固定clean-prefix teacher不是部署生成行为的有效性oracle。"""
+
+    clean = _action_path([0, 1])
     inconsistent_logits = _unique_logits([0, 3])
-    inconsistent = ActionPathEvidence(
-        generated_classes=np.asarray([0, 1], dtype=np.int64),
+    inconsistent = _action_path(
+        [0, 1],
         teacher_logits=inconsistent_logits,
     )
 
@@ -257,8 +248,31 @@ def test_negative_teacher_margin_without_generation_change_is_invalid() -> None:
         deployment=clean,
     )
 
+    assert result.classification == "no_training_response"
+    assert result.failures == ()
+    training_diagnostic = result.teacher_generation_alignment[1]
+    assert training_diagnostic.path_name == "training"
+    assert training_diagnostic.mismatch_token_indices == (1,)
+    assert training_diagnostic.all_comparable_match is False
+
+
+def test_generation_class_outside_own_score_argmax_is_invalid() -> None:
+    """只有生成token与其对应autoregressive score自相矛盾才使case无效。"""
+
+    clean = _action_path([0, 1])
+    inconsistent_generation = _action_path(
+        [0, 1],
+        generation_logits=_unique_logits([0, 3]),
+    )
+
+    result = classify_terminal_action_response(
+        clean=clean,
+        training=inconsistent_generation,
+        deployment=clean,
+    )
+
     assert result.classification == "invalid_response_alignment"
-    assert result.failures
+    assert any("generation score argmax" in failure for failure in result.failures)
 
 
 def test_summary_uses_null_when_no_training_response_exists() -> None:
@@ -359,6 +373,24 @@ def test_npz_round_trip_independently_recomputes_terminal_response(
     assert result.visibility_equivalence.gate_pass is True
 
 
+def test_v2_evaluator_rejects_legacy_v1_evidence(tmp_path: Path) -> None:
+    current_path = tmp_path / "current.npz"
+    legacy_path = tmp_path / "legacy.npz"
+    write_terminal_response_npz(
+        _terminal_evidence(),
+        output_path=current_path,
+    )
+    with np.load(current_path, allow_pickle=False) as archive:
+        legacy_payload = {name: archive[name].copy() for name in archive.files}
+    legacy_payload["schema_version"] = np.asarray(
+        "openvla-terminal-deployment-response-v1"
+    )
+    np.savez_compressed(legacy_path, **legacy_payload)
+
+    with pytest.raises(ValueError, match="schema不匹配"):
+        evaluate_terminal_response_npz(legacy_path)
+
+
 def test_evaluator_recomputes_decoded_actions_from_codec_evidence() -> None:
     """runner写入的连续动作被篡改时，CPU不能继续信任该case。"""
 
@@ -373,6 +405,21 @@ def test_evaluator_recomputes_decoded_actions_from_codec_evidence() -> None:
     assert result.evidence_valid is False
     assert result.decoded_actions_exact is False
     assert any("decoded action" in failure for failure in result.failures)
+
+
+def test_evaluator_keeps_teacher_disagreement_as_non_blocking_diagnostic() -> None:
+    evidence = _terminal_evidence()
+    teacher_logits = evidence.teacher_logits.copy()
+    teacher_logits[1, 1] = _unique_logits([0, 4, 4])[1]
+
+    result = evaluate_terminal_response_evidence(
+        replace(evidence, teacher_logits=teacher_logits)
+    )
+
+    assert result.evidence_valid is True
+    assert result.generation_self_alignment_pass is True
+    training_diagnostic = result.action_decision.teacher_generation_alignment[1]
+    assert training_diagnostic.mismatch_token_indices == (1,)
 
 
 def test_bundle_rejects_missing_variant_state_case(tmp_path: Path) -> None:
@@ -402,7 +449,7 @@ def test_bundle_rejects_missing_variant_state_case(tmp_path: Path) -> None:
                 }
             )
     manifest = {
-        "schema_version": "openvla-terminal-deployment-response-bundle-v1",
+        "schema_version": TERMINAL_DEPLOYMENT_RESPONSE_BUNDLE_SCHEMA_VERSION,
         "status": "complete",
         "code_commit": "a" * 40,
         "config_sha256": "b" * 64,
@@ -410,6 +457,7 @@ def test_bundle_rejects_missing_variant_state_case(tmp_path: Path) -> None:
         "expected_state_ids": list(range(10)),
         "state_fingerprints": [f"{state_id + 1:064x}" for state_id in range(10)],
         "terminal_pairing": _terminal_pairing(),
+        "response_authority": dict(TERMINAL_RESPONSE_AUTHORITY_CONTRACT),
         "cases": cases,
         "provenance": _bundle_provenance(),
     }
@@ -447,9 +495,7 @@ def test_smoke_bundle_requires_exactly_two_state_zero_cases(
             }
         )
     manifest = {
-        "schema_version": (
-            "openvla-terminal-deployment-response-smoke-bundle-v1"
-        ),
+        "schema_version": TERMINAL_DEPLOYMENT_RESPONSE_SMOKE_BUNDLE_SCHEMA_VERSION,
         "status": "complete",
         "code_commit": "a" * 40,
         "config_sha256": "b" * 64,
@@ -457,6 +503,7 @@ def test_smoke_bundle_requires_exactly_two_state_zero_cases(
         "expected_state_ids": [0],
         "state_fingerprints": ["1" * 64],
         "terminal_pairing": _terminal_pairing(),
+        "response_authority": dict(TERMINAL_RESPONSE_AUTHORITY_CONTRACT),
         "cases": cases,
         "provenance": _bundle_provenance(),
     }
@@ -472,6 +519,31 @@ def test_smoke_bundle_requires_exactly_two_state_zero_cases(
     assert decision.audit_valid is True
     assert decision.case_count == 2
     assert decision.per_variant_summary["action_spectral"]["row_count"] == 1
+
+    legacy_manifest = dict(manifest)
+    legacy_manifest["schema_version"] = (
+        "openvla-terminal-deployment-response-smoke-bundle-v1"
+    )
+    legacy_path = tmp_path / "legacy_manifest.json"
+    legacy_path.write_text(json.dumps(legacy_manifest), encoding="utf-8")
+    legacy_decision = evaluate_terminal_response_smoke_bundle(legacy_path)
+    assert legacy_decision.audit_valid is False
+    assert any("schema_version" in failure for failure in legacy_decision.failures)
+
+    missing_authority_manifest = dict(manifest)
+    del missing_authority_manifest["response_authority"]
+    missing_authority_path = tmp_path / "missing_authority_manifest.json"
+    missing_authority_path.write_text(
+        json.dumps(missing_authority_manifest), encoding="utf-8"
+    )
+    missing_authority_decision = evaluate_terminal_response_smoke_bundle(
+        missing_authority_path
+    )
+    assert missing_authority_decision.audit_valid is False
+    assert any(
+        "response_authority" in failure
+        for failure in missing_authority_decision.failures
+    )
 
 
 def test_smoke_bundle_rejects_variant_specific_clean_evidence(
@@ -513,9 +585,7 @@ def test_smoke_bundle_rejects_variant_specific_clean_evidence(
             }
         )
     manifest = {
-        "schema_version": (
-            "openvla-terminal-deployment-response-smoke-bundle-v1"
-        ),
+        "schema_version": TERMINAL_DEPLOYMENT_RESPONSE_SMOKE_BUNDLE_SCHEMA_VERSION,
         "status": "complete",
         "code_commit": "a" * 40,
         "config_sha256": "b" * 64,
@@ -523,6 +593,7 @@ def test_smoke_bundle_rejects_variant_specific_clean_evidence(
         "expected_state_ids": [0],
         "state_fingerprints": ["1" * 64],
         "terminal_pairing": _terminal_pairing(),
+        "response_authority": dict(TERMINAL_RESPONSE_AUTHORITY_CONTRACT),
         "cases": cases,
         "provenance": _bundle_provenance(),
     }

@@ -93,6 +93,7 @@ from openvla_attack.scene import (  # noqa: E402
 )
 from openvla_attack.terminal_deployment_response_audit import (  # noqa: E402
     TERMINAL_DEPLOYMENT_RESPONSE_SMOKE_BUNDLE_SCHEMA_VERSION,
+    TERMINAL_RESPONSE_AUTHORITY_CONTRACT,
     TERMINAL_RESPONSE_VARIANTS,
     TerminalDeploymentResponseEvidence,
     publish_terminal_response_smoke_manifest,
@@ -1100,6 +1101,9 @@ def run_terminal_deployment_response_smoke(
             "expected_variants": list(TERMINAL_RESPONSE_VARIANTS),
             "expected_state_ids": [cfg.state_id],
             "state_fingerprints": [initial_sha256],
+            "response_authority": dict(
+                TERMINAL_RESPONSE_AUTHORITY_CONTRACT
+            ),
             "terminal_pairing": preflight_manifest["terminal_pairing"],
             "cases": cases,
             "provenance": {
