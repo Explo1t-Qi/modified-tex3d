@@ -110,6 +110,31 @@ def _file_sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _json_sha256(value: Any) -> str:
+    encoded = json.dumps(
+        value,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _loaded_forbidden_modules() -> tuple[str, ...]:
+    """返回Gate 6h只读NPZ replay不应加载的环境/renderer模块。"""
+
+    return tuple(
+        sorted(
+            name
+            for name in sys.modules
+            if name == "libero_utils"
+            or name == "libero"
+            or name.startswith("libero.")
+            or name.startswith("nvdiffrast")
+            or name.endswith("openvla_attack.renderer")
+        )
+    )
+
+
 def _validate_config(cfg: TerminalGainCounterfactualConfig) -> None:
     if (
         cfg.task_suite_name != "libero_spatial"
@@ -243,57 +268,113 @@ def _run(cfg: TerminalGainCounterfactualConfig) -> Path:
         processor=processor,
     )
     pad_token_id = int(processor.tokenizer.pad_token_id)
-    case_records: list[dict[str, Any]] = []
+    source_by_key: dict[tuple[str, int], Any] = {}
+    prompt_by_state: dict[int, torch.Tensor] = {}
+    teacher_by_state: dict[int, torch.Tensor] = {}
+    pixel_by_key_path: dict[tuple[str, int, int], torch.Tensor] = {}
+    counterfactual_by_key: dict[tuple[str, int], Any] = {}
+    gain_pixels_by_key: dict[tuple[str, int], torch.Tensor] = {}
     for case in source_cases:
         variant, state_id = str(case["variant"]), int(case["state_id"])
+        key = (variant, state_id)
         source_npz = source_manifest_path.parent / str(
             case["npz_relative_path"]
         )
         if _file_sha256(source_npz) != case["npz_sha256"]:
             raise RuntimeError(f"{variant}/state{state_id} source NPZ SHA漂移")
         source = load_terminal_response_npz(source_npz)
-        print(f"[GATE-6H] replay {variant}/state{state_id} C/A/B+gain")
-        prompt = (
-            torch.from_numpy(source.prompt_input_ids.astype(np.int64))
-            .unsqueeze(0)
-            .to(model.device)
-        )
-        teacher = (
-            torch.from_numpy(source.teacher_input_ids.astype(np.int64))
-            .unsqueeze(0)
-            .to(model.device)
-        )
-        source_samples: list[FidelitySample] = []
-        for bits in _selected_source_bits(source):
-            source_samples.append(
-                capture_fidelity_sample(
-                    model,
-                    prompt_input_ids=prompt,
-                    teacher_input_ids=teacher,
-                    pixel_values=tensor_from_bfloat16_bits(
-                        bits, device=model.device
-                    ),
-                    pad_token_id=pad_token_id,
-                    unnorm_key=cfg.unnorm_key,
-                )
+        source_by_key[key] = source
+        if state_id not in prompt_by_state:
+            prompt_by_state[state_id] = (
+                torch.from_numpy(source.prompt_input_ids.astype(np.int64))
+                .unsqueeze(0)
+                .to(model.device)
+            )
+            teacher_by_state[state_id] = (
+                torch.from_numpy(source.teacher_input_ids.astype(np.int64))
+                .unsqueeze(0)
+                .to(model.device)
+            )
+        for path_index, bits in enumerate(_selected_source_bits(source)):
+            pixel_by_key_path[(variant, state_id, path_index)] = (
+                tensor_from_bfloat16_bits(bits, device=model.device)
             )
         counterfactual = construct_scalar_gain_counterfactual(
             source.effective_rgb
         )
+        counterfactual_by_key[key] = counterfactual
         gain_rgb = torch.from_numpy(counterfactual.quantized_gain_rgb).to(
             device=model.device, dtype=torch.float32
         ).permute(2, 0, 1).unsqueeze(0).div(255.0)
-        gain_pixels = image_processor.build_fused_pixel_values(gain_rgb).to(
-            torch.bfloat16
+        gain_pixels_by_key[key] = (
+            image_processor.build_fused_pixel_values(gain_rgb).to(
+                torch.bfloat16
+            )
         )
-        gain_sample = capture_fidelity_sample(
+
+    source_sample_by_key_path: dict[
+        tuple[str, int, int], FidelitySample
+    ] = {}
+    gain_sample_by_key: dict[tuple[str, int], FidelitySample] = {}
+    for state_id in range(10):
+        prompt = prompt_by_state[state_id]
+        teacher = teacher_by_state[state_id]
+        reference_variant = TERMINAL_RESPONSE_VARIANTS[0]
+        print(f"[GATE-6H] replay state{state_id} shared Clean")
+        shared_clean = capture_fidelity_sample(
             model,
             prompt_input_ids=prompt,
             teacher_input_ids=teacher,
-            pixel_values=gain_pixels,
+            pixel_values=pixel_by_key_path[
+                (reference_variant, state_id, 0)
+            ],
             pad_token_id=pad_token_id,
             unnorm_key=cfg.unnorm_key,
         )
+        for variant in TERMINAL_RESPONSE_VARIANTS:
+            source_sample_by_key_path[(variant, state_id, 0)] = shared_clean
+        # 严格复用Gate 6g模型调用顺序：共享Clean一次、两个A、两个B。
+        for path_index, path_name in ((1, "A"), (2, "B")):
+            for variant in TERMINAL_RESPONSE_VARIANTS:
+                print(
+                    f"[GATE-6H] replay state{state_id} "
+                    f"{variant}/{path_name}"
+                )
+                source_sample_by_key_path[(variant, state_id, path_index)] = (
+                    capture_fidelity_sample(
+                        model,
+                        prompt_input_ids=prompt,
+                        teacher_input_ids=teacher,
+                        pixel_values=pixel_by_key_path[
+                            (variant, state_id, path_index)
+                        ],
+                        pad_token_id=pad_token_id,
+                        unnorm_key=cfg.unnorm_key,
+                    )
+                )
+        for variant in TERMINAL_RESPONSE_VARIANTS:
+            print(f"[GATE-6H] replay state{state_id} {variant}/gain")
+            gain_sample_by_key[(variant, state_id)] = capture_fidelity_sample(
+                model,
+                prompt_input_ids=prompt,
+                teacher_input_ids=teacher,
+                pixel_values=gain_pixels_by_key[(variant, state_id)],
+                pad_token_id=pad_token_id,
+                unnorm_key=cfg.unnorm_key,
+            )
+
+    case_records: list[dict[str, Any]] = []
+    for case in source_cases:
+        variant, state_id = str(case["variant"]), int(case["state_id"])
+        key = (variant, state_id)
+        source = source_by_key[key]
+        counterfactual = counterfactual_by_key[key]
+        source_samples = [
+            source_sample_by_key_path[(variant, state_id, path_index)]
+            for path_index in range(3)
+        ]
+        gain_sample = gain_sample_by_key[key]
+        gain_pixels = gain_pixels_by_key[key]
         evidence = GainCounterfactualModelEvidence(
             variant=variant,
             state_id=state_id,
@@ -351,10 +432,18 @@ def _run(cfg: TerminalGainCounterfactualConfig) -> Path:
                 "evaluation": gain_counterfactual_decision_record(decision),
             }
         )
+    forbidden_modules = _loaded_forbidden_modules()
+    if forbidden_modules:
+        raise RuntimeError(
+            "Gate 6h进程加载了LIBERO/renderer模块: "
+            + ", ".join(forbidden_modules)
+        )
+    configuration = asdict(cfg)
     payload = {
         "schema_version": GAIN_COUNTERFACTUAL_BUNDLE_SCHEMA_VERSION,
         "status": "complete",
         "code_commit": cfg.code_commit,
+        "config_sha256": _json_sha256(configuration),
         "source_gate6g_manifest_path": str(source_manifest_path),
         "source_gate6g_manifest_sha256": _file_sha256(source_manifest_path),
         "source_gate6g_code_commit": source_manifest.get("code_commit"),
@@ -365,7 +454,7 @@ def _run(cfg: TerminalGainCounterfactualConfig) -> Path:
             "deployment_response_altered",
         ],
         "response_authority": source_manifest.get("response_authority"),
-        "configuration": asdict(cfg),
+        "configuration": configuration,
         "command": " ".join(shlex.quote(value) for value in sys.argv),
         "provenance": {
             "checkpoint_fingerprints": source_checkpoint_fingerprints,
@@ -380,7 +469,7 @@ def _run(cfg: TerminalGainCounterfactualConfig) -> Path:
             ).get("policy_view_specification"),
             "legacy_optimizer_modules": list(loaded_legacy_optimizer_modules()),
             "training_or_backward_run": False,
-            "libero_or_renderer_loaded": False,
+            "libero_or_renderer_modules": list(forbidden_modules),
         },
         "cases": case_records,
     }

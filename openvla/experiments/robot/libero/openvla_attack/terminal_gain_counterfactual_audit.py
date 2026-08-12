@@ -682,6 +682,15 @@ def _is_sha(value: object, length: int) -> bool:
     )
 
 
+def _json_sha256(value: Any) -> str:
+    encoded = json.dumps(
+        value,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
 def _resolve(root: Path, value: object) -> Path:
     if not isinstance(value, str) or not value:
         raise TerminalGainCounterfactualAuditError("artifact相对路径无效")
@@ -785,6 +794,11 @@ def evaluate_gain_counterfactual_bundle(
         failures.append("bundle status必须为complete")
     if not _is_sha(manifest.get("code_commit"), 40):
         failures.append("code_commit无效")
+    configuration = manifest.get("configuration")
+    if not isinstance(configuration, dict) or manifest.get(
+        "config_sha256"
+    ) != _json_sha256(configuration):
+        failures.append("configuration/config_sha256无效")
     if _file_sha256(source_manifest_path) != manifest.get(
         "source_gate6g_manifest_sha256"
     ):
@@ -829,7 +843,7 @@ def evaluate_gain_counterfactual_bundle(
             failures.append("Gate 6h加载了legacy optimizer")
         if provenance.get("training_or_backward_run") is not False:
             failures.append("Gate 6h training/backward provenance无效")
-        if provenance.get("libero_or_renderer_loaded") is not False:
+        if provenance.get("libero_or_renderer_modules") != []:
             failures.append("Gate 6h加载了LIBERO或renderer")
     cases = manifest.get("cases")
     if not isinstance(cases, list):
