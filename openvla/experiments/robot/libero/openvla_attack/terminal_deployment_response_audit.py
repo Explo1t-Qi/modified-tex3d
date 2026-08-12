@@ -18,7 +18,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import (
     Any,
@@ -940,6 +940,19 @@ def evaluate_terminal_response_evidence(
     )
 
 
+def terminal_response_evaluation_record(
+    evaluation: TerminalDeploymentResponseEvaluation,
+) -> dict[str, Any]:
+    """生成可写入JSON并可由CPU逐值复核的单case结论记录。"""
+
+    # dataclass中的tuple经JSON发布后会变成list；在这里先做一次标准JSON round
+    # trip，使runner端记录与evaluator重新加载后的表示完全一致。
+    value = json.loads(json.dumps(asdict(evaluation), sort_keys=True))
+    if not isinstance(value, dict):
+        raise AssertionError("Terminal response evaluation必须编码为object")
+    return value
+
+
 def write_terminal_response_npz(
     evidence: TerminalDeploymentResponseEvidence,
     *,
@@ -1422,6 +1435,13 @@ def _evaluate_terminal_response_bundle(
             failures.extend(
                 f"{variant}/state{state_id}: {failure}"
                 for failure in evaluation.failures
+            )
+        expected_evaluation_record = terminal_response_evaluation_record(
+            evaluation
+        )
+        if raw_case.get("response_evaluation") != expected_evaluation_record:
+            failures.append(
+                f"{variant}/state{state_id} response_evaluation不能由NPZ复算"
             )
         per_variant_decisions[variant].append(evaluation.action_decision)
 

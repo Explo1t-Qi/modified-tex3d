@@ -33,6 +33,7 @@ from openvla_attack.terminal_deployment_response_audit import (  # noqa: E402
     evaluate_visibility_equivalence,
     publish_terminal_response_smoke_manifest,
     summarize_terminal_action_responses,
+    terminal_response_evaluation_record,
     write_audit_failure_record,
     write_json_atomically,
     write_terminal_response_npz,
@@ -431,8 +432,12 @@ def test_bundle_rejects_missing_variant_state_case(tmp_path: Path) -> None:
             if variant == "action_only_control" and state_id == 9:
                 continue
             relative_path = Path("arrays") / variant / f"state_{state_id:02d}.npz"
+            evidence = _terminal_evidence(
+                variant=variant,
+                state_id=state_id,
+            )
             artifact_sha256 = write_terminal_response_npz(
-                _terminal_evidence(variant=variant, state_id=state_id),
+                evidence,
                 output_path=tmp_path / relative_path,
             )
             cases.append(
@@ -446,6 +451,9 @@ def test_bundle_rejects_missing_variant_state_case(tmp_path: Path) -> None:
                     "deployment_static_scene_sha256": f"{state_id + 11:064x}",
                     "transaction_verified": True,
                     "asset_restore_verified": True,
+                    "response_evaluation": terminal_response_evaluation_record(
+                        evaluate_terminal_response_evidence(evidence)
+                    ),
                 }
             )
     manifest = {
@@ -477,8 +485,9 @@ def test_smoke_bundle_requires_exactly_two_state_zero_cases(
     cases: list[dict[str, object]] = []
     for variant in ("action_spectral", "action_only_control"):
         relative_path = Path("arrays") / variant / "state_00.npz"
+        evidence = _terminal_evidence(variant=variant, state_id=0)
         artifact_sha256 = write_terminal_response_npz(
-            _terminal_evidence(variant=variant, state_id=0),
+            evidence,
             output_path=tmp_path / relative_path,
         )
         cases.append(
@@ -492,6 +501,9 @@ def test_smoke_bundle_requires_exactly_two_state_zero_cases(
                 "deployment_static_scene_sha256": "2" * 64,
                 "transaction_verified": True,
                 "asset_restore_verified": True,
+                "response_evaluation": terminal_response_evaluation_record(
+                    evaluate_terminal_response_evidence(evidence)
+                ),
             }
         )
     manifest = {
@@ -545,6 +557,23 @@ def test_smoke_bundle_requires_exactly_two_state_zero_cases(
         for failure in missing_authority_decision.failures
     )
 
+    tampered_evaluation_manifest = json.loads(json.dumps(manifest))
+    tampered_evaluation_manifest["cases"][0]["response_evaluation"][
+        "evidence_valid"
+    ] = False
+    tampered_evaluation_path = tmp_path / "tampered_evaluation_manifest.json"
+    tampered_evaluation_path.write_text(
+        json.dumps(tampered_evaluation_manifest), encoding="utf-8"
+    )
+    tampered_evaluation_decision = evaluate_terminal_response_smoke_bundle(
+        tampered_evaluation_path
+    )
+    assert tampered_evaluation_decision.audit_valid is False
+    assert any(
+        "response_evaluation" in failure
+        for failure in tampered_evaluation_decision.failures
+    )
+
 
 def test_smoke_bundle_rejects_variant_specific_clean_evidence(
     tmp_path: Path,
@@ -582,6 +611,9 @@ def test_smoke_bundle_rejects_variant_specific_clean_evidence(
                 "deployment_static_scene_sha256": "2" * 64,
                 "transaction_verified": True,
                 "asset_restore_verified": True,
+                "response_evaluation": terminal_response_evaluation_record(
+                    evaluate_terminal_response_evidence(evidence)
+                ),
             }
         )
     manifest = {

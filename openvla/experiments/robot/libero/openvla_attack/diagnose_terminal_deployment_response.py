@@ -96,7 +96,9 @@ from openvla_attack.terminal_deployment_response_audit import (  # noqa: E402
     TERMINAL_RESPONSE_AUTHORITY_CONTRACT,
     TERMINAL_RESPONSE_VARIANTS,
     TerminalDeploymentResponseEvidence,
+    evaluate_terminal_response_evidence,
     publish_terminal_response_smoke_manifest,
+    terminal_response_evaluation_record,
     write_json_atomically,
     write_terminal_response_npz,
 )
@@ -1035,6 +1037,7 @@ def run_terminal_deployment_response_smoke(
                 evidence,
                 output_path=npz_path,
             )
+            response_evaluation = evaluate_terminal_response_evidence(evidence)
             cases.append(
                 {
                     "variant": variant,
@@ -1052,6 +1055,11 @@ def run_terminal_deployment_response_smoke(
                     ),
                     "asset_restore_verified": bool(
                         xml_restored and texture_restored
+                    ),
+                    "response_evaluation": (
+                        terminal_response_evaluation_record(
+                            response_evaluation
+                        )
                     ),
                 }
             )
