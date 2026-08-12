@@ -75,6 +75,7 @@
 | 2026-08-12 | Gate 6g numerical replay正式证据 | commit `9bf8f99`上六个逻辑输入×3轮的BF16输入、默认generation/teacher token及完整logits均与旧失败NPZ逐位一致；`fidelity_pass=true`、`attribution_valid=true` | 唯一分叉稳定为Action-only A/index1：cached generation选128、teacher选138；三个no-cache generation变体在128/138精确tie，显式no-cache full teacher与默认teacher逐位相同；运行时attention为eager | 支持近边界token对执行shape稳定敏感；不支持单纯KV-cache/FlashAttention归因，也不支持把它解释为2/10源强度瓶颈；允许修订测量合同，不改变方法 | [当前状态](../status/openvla-spectral-current.md) |
 | 2026-08-12 | Gate 6g deployment-authority v2合同 | commits `3e19a7a`/`575f1cc`冻结默认cached generation为部署行为权威，clean-prefix teacher为训练代理诊断；首次分歧和tie只读generation logits | 仅generation token不属于自身score精确argmax才使case无效；NPZ、smoke/formal bundle升级v2并绑定authority mapping；每个case的结构化response evaluation由CPU从NPZ逐值核对；旧v1只允许numerical diagnostic显式加载 | 旧`0642188`失败bundle不追认；下一步必须由新commit在新目录重跑state0 v2 smoke，通过后才进入states0--9 formal audit | [当前状态](../status/openvla-spectral-current.md) |
 | 2026-08-12 | Gate 6g v2 state 0双终态smoke | commit `9abee27`；全新v2目录2/2 case由WSL独立复算`audit_valid=true`；八个上游输入SHA、共享Clean/static scene、processor/visibility/token/codec/asset恢复全部通过 | Action+Spectral为`deployment_lost`：A在index1产生class145响应，B回到Clean；Action-only为`no_training_response`，A的teacher/generation index1差异只作诊断 | 单点工程smoke通过，但没有观察到部署保留响应，不能估计总体率；下一步实现并同commit重采states0--9 formal 20-case，不拼接smoke、不进入OFT | [当前状态](../status/openvla-spectral-current.md) |
+| 2026-08-12 | Gate 6g states0--9 formal runner实现 | commit `543d6da`复用v2单state采集引擎；formal scope固定states0--9与20-case inventory，完整CPU复算后才原子发布成功manifest | 每state共享一次Clean、seed/fingerprint/static scene独立绑定；单模型/renderer/资产事务跨state复用；失败保存stage/completed keys并恢复资产；43项定向回归通过 | 尚无formal GPU响应结论；下一步服务器无GPU回归后在全新目录运行完整20-case并rsync回WSL复核，不调方法、不进入OFT | [当前状态](../status/openvla-spectral-current.md) |
 
 ## 当前待执行队列
 
@@ -91,7 +92,7 @@
 | 6d（已通过） | 服务器Fixed-Support Action+Spectral trainer两步工程smoke | 两级校准均通过；`4a061a2` runner复用正式Action objective、共享更新核心与冻结权重 | Step 0零点严格退化为Action-only；Step 1谱hinge/梯度激活，逐值复算联合梯度且每步只作一次update；bake/Active Texture/资产恢复通过 | `f73b183`正式bundle及WSL独立复核已通过 |
 | 6e（已完成，未通过） | 正式Fixed-Support Action+Spectral source训练与paired source-development rollout | 5000轮训练artifact和恢复评估完整性均通过 | paired新增失败2/10，未达到至少3/10 | 不进入OFT；转入预注册Action-only control，不改lambda/K_nat/Support |
 | 6f（已完成，未通过） | Fixed-Support Action-only 5000轮control及paired source-development rollout | 与6e仅差关闭Spectral Guard，训练与paired artifact均通过独立复核 | paired新增失败2/10，与主候选count相同，未达到3/10；终态自然性比例也未显示主候选改善 | 不进入OFT；结果更指向Support/Action proxy瓶颈，同时表明固定lambda Guard在本轮未显示自然性收益 |
-| 6g（v2 state 0已通过；formal待实现） | Terminal Deployment Response Audit | state0成功manifest及WSL独立复核通过；v2 authority/evidence contract冻结 | 同一formal commit/全新目录完成states0--9×双终态20个唯一case，全部硬条件通过且原子发布formal v2成功manifest | 任一case失败则整bundle无效并保存失败阶段；不得拼接smoke、重训、调方法或进入OFT |
+| 6g（v2 state 0已通过；formal待运行） | Terminal Deployment Response Audit | state0成功manifest及WSL独立复核通过；commit `543d6da`已实现固定20-case formal runner | 同一formal commit/全新目录完成states0--9×双终态20个唯一case，全部硬条件通过且原子发布formal v2成功manifest | 任一case失败则整bundle无效并保存失败阶段；不得拼接smoke、重训、调方法或进入OFT |
 | 7 | OFT开发期 rollout | 出现满足至少3/10 paired新增失败的冻结谱候选 | 旧0/10迁移基线上至少出现2/10失败信号 | 记录机制失败，不包装为迁移提升 |
 | 8 | 新任务/第三模型无偏验证 | 方法和超参数冻结 | 预注册门槛 | 区分开发期选择偏差与真实迁移 |
 

@@ -51,6 +51,8 @@ Gate 6g v2结构化响应证据绑定基线：
 `575f1ccedc5a1b0a95832ddfba4a1e524ea12fbf`
 Gate 6g v2 state 0正式smoke证据基线：
 `9abee27ee5876d1bbaac229a2e4801e287bd3762`
+Gate 6g states 0--9 formal runner实现基线：
+`543d6da527c3ae1f52b5c7164b182aaa50154e65`
 
 本文是 OpenVLA 谱纹理研究的**当前状态入口**。新一轮开发应先读本文，再按需
 进入专题文档；不要从长篇实验时间线推测当前优先级。历史实验索引见
@@ -84,7 +86,7 @@ Gate 6g v2 state 0正式smoke证据基线：
 | 谱自然性uniform Support校准 | 已通过 | 连续K_nat=128+常数频带通过数值审计；`rho_nat=0.0992735862`并由两个输入artifact独立复算 |
 | BPDA 下源攻击基线 | 主候选与Action-only对照均未过门槛 | 两者paired states 10--19均为Clean 9/10、Adversarial 8/10和2/10新增失败；失败state不同，但都低于预注册3/10门槛 |
 | BPDA 下 OFT 迁移信号 | 未开始 | 新源候选未过门槛前不得进入 OFT |
-| Gate 6g Terminal Deployment Response | v2 state 0已通过，states 0--9 formal待实现 | state 0双终态2/2 case及全部工程硬条件通过；单点只观察到Action+Spectral `deployment_lost`与Action-only `no_training_response`，不能代替总体结论 |
+| Gate 6g Terminal Deployment Response | v2 state 0已通过，states 0--9 formal待运行 | formal runner已固定20-case inventory与原子发布；state 0单点只观察到Action+Spectral `deployment_lost`与Action-only `no_training_response`，不能代替总体结论 |
 | 无偏跨模型迁移与鲁棒性提升 | 未开始 | 需方法冻结后的新任务/第三模型与后续防御实验 |
 
 ## 当前已确认的科学结论
@@ -1395,10 +1397,70 @@ class 128的结构化诊断，但不影响case有效性。该单点没有“保�
 两个方法的总体部署保留率或攻击效果。同步内容没有单独的pytest输出日志，因此
 服务器定向/全量回归只能登记为用户运行完成，不能登记为WSL独立复核。
 
-Gate 6g唯一下一门槛现为实现states 0--9 formal采集runner及成功发布流程。它必须
-复用已通过的v2单case采集、authority contract和CPU evaluator，产生恰好20个唯一
-`(variant,state)`并绑定10个既有state fingerprint；不得重训、调方法或提前进入
-OFT。state 0结果将在formal同一commit bundle中重新采集，不能与smoke目录拼接。
+commit `543d6da`已实现Gate 6g唯一下一门槛所需的states 0--9 formal runner。
+`audit_scope=formal`固定十个state，不能由CLI改成任意子集；模型、renderer和单个
+Runtime Asset Transaction在run内复用，但每个state独立设定`seed+state_id`、共享
+一次Clean并采集两个终态A/B。每行继续使用已通过的v2 NPZ与response evaluation
+契约，10个state fingerprint在加载后先整体核对。任一中途异常关闭当前环境、恢复
+资产并写formal v2失败记录；只有恰好20个唯一case全部落盘后，CPU evaluator才从
+磁盘重载、复算并原子发布`terminal_response_manifest.json`。新增独立CPU CLI可
+分别复核smoke/formal；现有v2 smoke已用该CLI重算通过。相关本地定向回归为
+`43 passed`；全量WSL仍受缺失`nvdiffrast`和LIBERO阻断。
+
+服务器同步到包含`543d6da`的目标commit后，先运行定向与完整无GPU测试；两项均
+通过后才能运行formal GPU审计。输出目录必须全新且为空：
+
+```bash
+set -o pipefail
+CODE_COMMIT="$(git rev-parse HEAD)"
+RUN_ID="gate6g-formal-${CODE_COMMIT:0:7}-20260812"
+
+CUDA_VISIBLE_DEVICES='' PYTHONDONTWRITEBYTECODE=1 TF_CPP_MIN_LOG_LEVEL=3 \
+  NUMBA_CACHE_DIR=/tmp/tex3d-numba-cache \
+  /home/xiaomengqi/miniconda3/envs/tex3d-openvla/bin/python -m pytest -q \
+  tests/unit/openvla_attack/test_terminal_deployment_response_audit.py \
+  tests/unit/openvla_attack/test_terminal_deployment_response_inputs.py \
+  tests/unit/openvla_attack/test_terminal_openvla_response.py \
+  tests/unit/openvla_attack/test_terminal_numerical_inference.py \
+  tests/unit/openvla_attack/test_terminal_numerical_inference_audit.py \
+  tests/unit/openvla_attack/test_terminal_rebake_preflight.py
+
+CUDA_VISIBLE_DEVICES='' PYTHONDONTWRITEBYTECODE=1 TF_CPP_MIN_LOG_LEVEL=3 \
+  NUMBA_CACHE_DIR=/tmp/tex3d-numba-cache \
+  /home/xiaomengqi/miniconda3/envs/tex3d-openvla/bin/python -m pytest -q tests
+
+CUDA_VISIBLE_DEVICES=0 PYTHONDONTWRITEBYTECODE=1 TF_CPP_MIN_LOG_LEVEL=3 \
+  /home/xiaomengqi/miniconda3/envs/tex3d-openvla/bin/python \
+  openvla/experiments/robot/libero/openvla_attack/diagnose_terminal_deployment_response.py \
+  --audit_scope formal \
+  --pretrained_checkpoint \
+  /data/huangsimin/openvla-7b-finetuned-libero-spatial \
+  --action_spectral_manifest_path \
+  experiments_inbox/formal_fixed_support_source_0aca525_20260809/attack_artifacts/fixed-support-action-spectral-source-0aca525-EVAL-libero_spatial-2026_08_09-18_35_55/formal_source_training_manifest.json \
+  --action_only_manifest_path \
+  experiments_inbox/formal_fixed_support_action_only_6cf8c12_20260810/attack_artifacts/fixed-support-action-only-control-3c085e7-EVAL-libero_spatial-2026_08_10-09_28_56/formal_source_training_manifest.json \
+  --production_support_path \
+  experiments_inbox/production_fixed_support_89d3bd8_20260809/production_fixed_support.npz \
+  --rebake_preflight_manifest_path \
+  experiments_inbox/gate6g_rebake_preflight_cfb9f77_20260811/terminal_rebake_preflight_manifest.json \
+  --output_dir "experiments_inbox/${RUN_ID}" \
+  --code_commit "${CODE_COMMIT}" \
+  --seed 7 \
+  --unnorm_key libero_spatial_no_noops \
+  2>&1 | tee "experiments_inbox/${RUN_ID}.log"
+
+CUDA_VISIBLE_DEVICES='' PYTHONDONTWRITEBYTECODE=1 \
+  /home/xiaomengqi/miniconda3/envs/tex3d-openvla/bin/python -m \
+  openvla.experiments.robot.libero.openvla_attack.evaluate_terminal_deployment_response \
+  --audit_scope formal \
+  --manifest_path \
+  "experiments_inbox/${RUN_ID}/terminal_response_manifest.json"
+```
+
+正式验收要求`audit_valid=true`、`case_count=20`、无failure，并逐variant报告10行
+分类汇总。若GPU命令失败，只同步日志、该新目录与`audit_failed.json`；不要复用
+目录续跑、拼接smoke或跳过失败state。成功后也先同步完整目录和日志，由WSL独立
+复核后再解释响应分布；不得仅凭stdout汇总形成科学结论。
 
 已冻结的第一项设计决定：谱方法在新候选中作为作用于最终 Surface Delta 的软
 自然性正则，只惩罚高频谱能量；它不再把扰动硬限制在前 K 个谱基中，也不是与

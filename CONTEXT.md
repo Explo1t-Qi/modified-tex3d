@@ -178,9 +178,10 @@ _Avoid_: action-success gate, target-model probe, rollout replacement
 对同一个训练完成且哈希绑定的 Fixed-Support 终态，以 Clean、训练期
 **Renderer Delta Composition** 和真实 MuJoCo **Active Texture** 构成静态
 `C/A/B` 三元组，并比较 source OpenVLA 实际接收的有效视野、processor tensor、
-teacher-forced clean-token margin、自回归首次分歧和解码动作。它只判断训练路径
-产生的终态离散响应是否穿过部署链路，不重新训练、不评价闭环恢复，也不使用
-source development rollout 选择超参数。
+clean-prefix teacher训练代理、默认cached自回归generation的首次分歧和解码动作。
+部署行为分类与tie只以真实generation score为权威；teacher/generation关系只作
+结构化诊断。它只判断训练路径产生的终态离散响应是否穿过部署链路，不重新训练、
+不评价闭环恢复，也不使用source development rollout选择超参数。
 _Avoid_: terminal attack gate, rollout recovery proof, bake-only replay
 
 **Support Seed Score**:
