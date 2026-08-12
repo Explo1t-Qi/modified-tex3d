@@ -72,6 +72,8 @@
 | 2026-08-11 | Gate 6g state 0 C/A/B首次运行（无效） | Clean、双终态A及Action+Spectral路径B已执行，但首个NPZ在codec schema校验时停止；无成功manifest、无权威case | 实现误将256个action token class与真实255个`bin_centers`要求等长；XML/真实纹理恢复为clean hash | commit `f8943ed`按正式codec修复为`num_centers=num_classes-1`并通过70项回归；必须在新目录重跑，不从失败目录提取科学结论 | [当前状态](../status/openvla-spectral-current.md) |
 | 2026-08-11 | Gate 6g state 0 C/A/B第二次运行（无效） | 两个variant全部C/A/B及两个NPZ完成；Action-only A token index 1为generation class 128、teacher唯一argmax class 138，gap为`+0.375/-0.125` | XML/真实纹理恢复；processor、visibility、RGB/token/codec数组独立复核通过，但无成功manifest；Action+Spectral的`deployment_lost`只作失败bundle诊断观察 | 不撤销原始mismatch，也不形成Gate科学结论；KV-cache/BF16/FlashAttention仅为假设，先对失败NPZ做轻量GPU replay | [当前状态](../status/openvla-spectral-current.md) |
 | 2026-08-12 | Gate 6g numerical inference replay实现 | commit `02f298a`只加载失败NPZ与source checkpoint；全部C/A/B按原模型调用顺序重复3次默认generation/teacher，完整保存`7x256` logits | per-input/run-level Fidelity、原始mismatch、双prefix、完整no-cache generation和显式full-teacher no-cache均由CPU evaluator复算；30项定向回归通过 | Fidelity任一失败即停止attribution；全部逐位通过后才允许解释execution-path差异，Gate 6g合同仍冻结 | [当前状态](../status/openvla-spectral-current.md) |
+| 2026-08-12 | Gate 6g numerical replay正式证据 | commit `9bf8f99`上六个逻辑输入×3轮的BF16输入、默认generation/teacher token及完整logits均与旧失败NPZ逐位一致；`fidelity_pass=true`、`attribution_valid=true` | 唯一分叉稳定为Action-only A/index1：cached generation选128、teacher选138；三个no-cache generation变体在128/138精确tie，显式no-cache full teacher与默认teacher逐位相同；运行时attention为eager | 支持近边界token对执行shape稳定敏感；不支持单纯KV-cache/FlashAttention归因，也不支持把它解释为2/10源强度瓶颈；允许修订测量合同，不改变方法 | [当前状态](../status/openvla-spectral-current.md) |
+| 2026-08-12 | Gate 6g deployment-authority v2合同 | commits `3e19a7a`/`575f1cc`冻结默认cached generation为部署行为权威，clean-prefix teacher为训练代理诊断；首次分歧和tie只读generation logits | 仅generation token不属于自身score精确argmax才使case无效；NPZ、smoke/formal bundle升级v2并绑定authority mapping；每个case的结构化response evaluation由CPU从NPZ逐值核对；旧v1只允许numerical diagnostic显式加载 | 旧`0642188`失败bundle不追认；下一步必须由新commit在新目录重跑state0 v2 smoke，通过后才进入states0--9 formal audit | [当前状态](../status/openvla-spectral-current.md) |
 
 ## 当前待执行队列
 
@@ -88,7 +90,7 @@
 | 6d（已通过） | 服务器Fixed-Support Action+Spectral trainer两步工程smoke | 两级校准均通过；`4a061a2` runner复用正式Action objective、共享更新核心与冻结权重 | Step 0零点严格退化为Action-only；Step 1谱hinge/梯度激活，逐值复算联合梯度且每步只作一次update；bake/Active Texture/资产恢复通过 | `f73b183`正式bundle及WSL独立复核已通过 |
 | 6e（已完成，未通过） | 正式Fixed-Support Action+Spectral source训练与paired source-development rollout | 5000轮训练artifact和恢复评估完整性均通过 | paired新增失败2/10，未达到至少3/10 | 不进入OFT；转入预注册Action-only control，不改lambda/K_nat/Support |
 | 6f（已完成，未通过） | Fixed-Support Action-only 5000轮control及paired source-development rollout | 与6e仅差关闭Spectral Guard，训练与paired artifact均通过独立复核 | paired新增失败2/10，与主候选count相同，未达到3/10；终态自然性比例也未显示主候选改善 | 不进入OFT；结果更指向Support/Action proxy瓶颈，同时表明固定lambda Guard在本轮未显示自然性收益 |
-| 6g（state 0 smoke无效，当前numerical replay） | Terminal Deployment Response Audit | 双终态parameter/bake preflight通过；state 0第二次C/A/B因Action-only A/token index 1严格对齐失败保持无效 | 所有失败NPZ输入三次默认路径逐位重放；全部通过后才执行双prefix/no-cache attribution | 任一Fidelity失败即保存分类并停止因果归因；不重跑LIBERO、不放宽原Gate、不调方法 |
+| 6g（v2 state 0待重跑） | Terminal Deployment Response Audit | numerical replay已完成并形成v2 deployment-authority合同；双终态parameter/bake preflight继续有效 | 全新目录恰有2个state0 v2 NPZ；generation自对齐、processor/visibility/scene/asset/hash全部通过并原子发布v2成功manifest | 失败则保留新失败bundle并诊断对应硬条件；不得救活旧v1目录，不调Support/训练方法 |
 | 7 | OFT开发期 rollout | 出现满足至少3/10 paired新增失败的冻结谱候选 | 旧0/10迁移基线上至少出现2/10失败信号 | 记录机制失败，不包装为迁移提升 |
 | 8 | 新任务/第三模型无偏验证 | 方法和超参数冻结 | 预注册门槛 | 区分开发期选择偏差与真实迁移 |
 

@@ -45,6 +45,10 @@ Gate 6g OpenVLA action codec schema修复基线：
 `f8943edf9034869e41ef13bd0713c22859ee566f`
 Gate 6g numerical inference replay实现基线：
 `02f298a71e66ab475a14b55d9f604b5d43b5d937`
+Gate 6g deployment-authority v2契约实现基线：
+`3e19a7a07fd5f292a75e4f1a23e250cca337640c`
+Gate 6g v2结构化响应证据绑定基线：
+`575f1ccedc5a1b0a95832ddfba4a1e524ea12fbf`
 
 本文是 OpenVLA 谱纹理研究的**当前状态入口**。新一轮开发应先读本文，再按需
 进入专题文档；不要从长篇实验时间线推测当前优先级。历史实验索引见
@@ -78,6 +82,7 @@ Gate 6g numerical inference replay实现基线：
 | 谱自然性uniform Support校准 | 已通过 | 连续K_nat=128+常数频带通过数值审计；`rho_nat=0.0992735862`并由两个输入artifact独立复算 |
 | BPDA 下源攻击基线 | 主候选与Action-only对照均未过门槛 | 两者paired states 10--19均为Clean 9/10、Adversarial 8/10和2/10新增失败；失败state不同，但都低于预注册3/10门槛 |
 | BPDA 下 OFT 迁移信号 | 未开始 | 新源候选未过门槛前不得进入 OFT |
+| Gate 6g Terminal Deployment Response | numerical诊断已完成，v2 state 0待重跑 | 默认cached generation已冻结为部署行为权威；旧失败bundle不升级，必须由新commit/新目录产生v2证据 |
 | 无偏跨模型迁移与鲁棒性提升 | 未开始 | 需方法冻结后的新任务/第三模型与后续防御实验 |
 
 ## 当前已确认的科学结论
@@ -142,9 +147,12 @@ source training及同一source development states 10--19成对Clean/Adversarial 
 是source强度不足的主要原因。Gate 6g Terminal Deployment Response Audit的
 设计现已冻结，双终态CUDA canonical re-bake preflight也已通过；state 0第二次
 C/A/B smoke完成全部采集，但因Action-only训练路径一个近边界token的
-generation/teacher严格对齐失败而保持`audit_invalid`。当前唯一下一门槛是只用
-失败NPZ进行numerical inference replay，先确认原结果能否逐位重现，再区分
-cache/incremental与full-sequence执行路径；不重新进入LIBERO。Gate 6g只读比较
+generation/teacher严格对齐失败而保持`audit_invalid`。numerical replay已证明该
+分叉稳定逐位复现，且不是单纯的KV-cache开关差异；它是一个近决策边界token对
+执行shape敏感的测量问题，不能归因于FlashAttention或源攻击瓶颈。commit
+`3e19a7a`已将默认cached generation冻结为部署行为权威，把clean-prefix teacher
+forward降为训练代理诊断，并把NPZ/smoke/formal bundle升级为v2。当前唯一下一
+门槛是在全新目录重跑v2 state 0 smoke；旧失败bundle不得追认。Gate 6g只读比较
 两个已有终态在train states 0--9的Renderer Delta Composition与真实MuJoCo
 Active Texture响应，不自动启动训练或调参；OFT仍不得提前进入。
 
@@ -1136,25 +1144,32 @@ Production Support，主审计只使用train states 0--9。每个state共享一�
 路径B不得用renderer替代MuJoCo成像。
 
 每个`(variant,state)`保存C/A/B的effective-view RGB、hard visibility alpha、最终
-BF16 fused `pixel_values` bit pattern、teacher action logits、自回归generation
-logits/token及解码7-D action。task instruction、prompt/input IDs、action-token
-slice、generation配置、action codec统计、checkpoint/processor/policy-view身份、
+BF16 fused `pixel_values` bit pattern、clean-prefix teacher action logits、默认
+cached自回归generation logits/token及解码7-D action。task instruction、
+prompt/input IDs、action-token slice、generation配置、action codec统计、
+checkpoint/processor/policy-view身份、
 initial/static-scene fingerprint、全部输入/输出SHA和Runtime Asset Transaction
 恢复证据必须同时绑定。GPU runner只采集事实；独立CPU evaluator从权威NPZ复算
 全部margin、argmax/tie、首次分歧、动作与RGB响应指标。
 
-主分类只比较相对于Clean的首次因果分歧，不要求A/B完整自回归序列逐项相同。
+主分类只比较默认cached generation相对于Clean的首次因果分歧，不要求A/B完整
+自回归序列逐项相同。每步generation token必须属于同一步真实自回归score的精确
+argmax集合；固定clean-prefix teacher forward只代表训练代理，其与generation的
+关系继续结构化记录，但不决定部署响应分类或case有效性。
 冻结分类为`no_training_response`、`deployment_lost`、
 `deployment_response_altered`、`deployment_preserved_strict`、
-`deployment_preserved_tie_sensitive`与`invalid_response_alignment`。tie只指保存
-logits中多个类与最大值严格相等，不使用数值容差；完整序列equality、Hamming和
-top1--top2 gap只作二级诊断。汇总只报告明确state计数及条件分母，分母为零时写
+`deployment_preserved_tie_sensitive`与`invalid_response_alignment`；最后一类
+只表示generation token与其对应generation score自相矛盾。tie只指保存的
+generation logits中多个类与最大值严格相等，不使用数值容差；完整序列equality、
+Hamming、teacher/generation关系和top1--top2 gap只作二级诊断。汇总只报告明确
+state计数及条件分母，分母为零时写
 `null/not_applicable`，禁止用“大量”或“普遍”等未冻结阈值给出总体机制标签。
 
 Gate 6g没有攻击性能pass/fail。只有全部20个唯一`(variant,state)`、parameter到
 Surface Delta到重复re-bake再到bound PNG、最终processor tensor、C/B整数
-segmentation与hard alpha、teacher/generation首次分歧、scene fingerprint、文件
-inventory及资产恢复全部通过时，独立evaluator才返回`audit_valid`；任一失败均为
+segmentation与hard alpha、generation token/score自对齐、scene fingerprint、
+文件inventory及资产恢复全部通过时，独立evaluator才返回`audit_valid`；
+teacher/generation只读差异不得作为失败。任一其他硬条件失败均为
 `audit_invalid`，不得产生科学结论或事后放宽容差。`iteration=4999`训练Action
 证据在第5000次update前采集，而终态parameter/bake在update后保存，因此前者只作
 state/static-scene绑定和描述性参考，不能作为终态margin逐值oracle。
@@ -1269,6 +1284,84 @@ CUDA_VISIBLE_DEVICES='' PYTHONDONTWRITEBYTECODE=1 \
 CPU evaluator的`bundle_valid=true`只表示诊断产物完整。若`fidelity_pass=false`，
 本轮仍是有效的“无法忠实重放”诊断，应直接同步bundle并停止，不得重跑LIBERO或
 增加容差；只有`causal_attribution_allowed=true`才允许解释双prefix数值差异。
+
+服务器随后在commit `9bf8f99`完成正式numerical replay。六个逻辑输入各重复三
+轮，BF16输入、generation token/完整logits和teacher token/完整logits均与旧失败
+NPZ逐位一致；`fidelity_pass=true`、`attribution_valid=true`。唯一原始分叉稳定
+保持在`action_only_control/training/token_index=1`：默认cached generation选择
+class 128，logits为`27.125`对class 138的`26.75`；默认full teacher选择class
+138，二者为`26.75`对`26.625`。完整no-cache generation、generation-prefix
+no-cache和clean-prefix no-cache均在128/138上精确并列`26.875/26.875`，而显式
+no-cache full teacher与默认teacher逐位相同。六个输入的cached与no-cache生成
+序列均相同，只有该位置的argmax集合发生变化。运行时语言模型配置记录
+`_attn_implementation=eager`、BF16、`use_cache=True`，因此不能把该现象归因于
+加载日志中的FlashAttention字样。上述证据支持“近边界token对推理执行shape稳定
+敏感”，不支持“单纯KV-cache故障”“源攻击2/10的主要原因”或“Action objective
+已被证伪”。manifest、Fidelity与Attribution SHA-256依次为
+`9e49164b2576c7d0753b79af26b84ce4852055fa1dd59ae8f6dcb6b4480d18b7`、
+`06159fd4adc6a1678895690e34a0d540d0ba592bd3d85a847931b82d1277ec58`和
+`18986e23bc03d8a27fd26ad11796c1fbfbc543167d1661ff30572ddeecd46e0b`。
+
+commit `3e19a7a`据此发布Gate 6g v2契约：默认cached generation是部署行为权威；
+teacher forward是训练代理诊断；首次响应与tie均只从generation logits复算；仅
+generation token不属于自身score精确argmax时返回
+`invalid_response_alignment`。权威NPZ、smoke bundle与formal bundle schema均升
+为v2，并将该authority mapping写入成功manifest；follow-up `575f1cc`又要求每个
+case把包含teacher/generation诊断的完整response evaluation写入manifest，并由
+CPU从NPZ逐值复核，防止诊断状态在产物发布时丢失。numerical工具保留唯一显式的
+legacy-v1只读入口用于已完成诊断。旧`0642188`目录仍无成功manifest，其v1 NPZ也
+会被v2 evaluator拒绝，不能通过新语义追认。相关本地CPU回归为`33 passed`；全量
+WSL收集仍按预期受缺失`nvdiffrast`和LIBERO阻断。下一步只允许从commit
+`575f1cc`或包含该commit的新文档基线，在全新目录重跑state 0 smoke；通过后才
+实现或运行states 0--9 formal audit。
+
+服务器拉取包含v2实现与本文档的目标commit后，先运行定向与完整无GPU回归。随后
+只在前两项均通过时执行state 0；以下路径与既有正式输入逐字绑定，输出目录必须
+全新且为空：
+
+```bash
+set -o pipefail
+CODE_COMMIT="$(git rev-parse HEAD)"
+RUN_ID="gate6g-state0-v2-${CODE_COMMIT:0:7}-20260812"
+
+CUDA_VISIBLE_DEVICES='' PYTHONDONTWRITEBYTECODE=1 TF_CPP_MIN_LOG_LEVEL=3 \
+  NUMBA_CACHE_DIR=/tmp/tex3d-numba-cache \
+  /home/xiaomengqi/miniconda3/envs/tex3d-openvla/bin/python -m pytest -q \
+  tests/unit/openvla_attack/test_terminal_deployment_response_audit.py \
+  tests/unit/openvla_attack/test_terminal_openvla_response.py \
+  tests/unit/openvla_attack/test_terminal_numerical_inference.py \
+  tests/unit/openvla_attack/test_terminal_numerical_inference_audit.py
+
+CUDA_VISIBLE_DEVICES='' PYTHONDONTWRITEBYTECODE=1 TF_CPP_MIN_LOG_LEVEL=3 \
+  NUMBA_CACHE_DIR=/tmp/tex3d-numba-cache \
+  /home/xiaomengqi/miniconda3/envs/tex3d-openvla/bin/python -m pytest -q tests
+
+CUDA_VISIBLE_DEVICES=0 PYTHONDONTWRITEBYTECODE=1 TF_CPP_MIN_LOG_LEVEL=3 \
+  /home/xiaomengqi/miniconda3/envs/tex3d-openvla/bin/python \
+  openvla/experiments/robot/libero/openvla_attack/diagnose_terminal_deployment_response.py \
+  --pretrained_checkpoint \
+  /data/huangsimin/openvla-7b-finetuned-libero-spatial \
+  --action_spectral_manifest_path \
+  experiments_inbox/formal_fixed_support_source_0aca525_20260809/attack_artifacts/fixed-support-action-spectral-source-0aca525-EVAL-libero_spatial-2026_08_09-18_35_55/formal_source_training_manifest.json \
+  --action_only_manifest_path \
+  experiments_inbox/formal_fixed_support_action_only_6cf8c12_20260810/attack_artifacts/fixed-support-action-only-control-3c085e7-EVAL-libero_spatial-2026_08_10-09_28_56/formal_source_training_manifest.json \
+  --production_support_path \
+  experiments_inbox/production_fixed_support_89d3bd8_20260809/production_fixed_support.npz \
+  --rebake_preflight_manifest_path \
+  experiments_inbox/gate6g_rebake_preflight_cfb9f77_20260811/terminal_rebake_preflight_manifest.json \
+  --output_dir "experiments_inbox/${RUN_ID}" \
+  --code_commit "${CODE_COMMIT}" \
+  --seed 7 \
+  --unnorm_key libero_spatial_no_noops \
+  2>&1 | tee "experiments_inbox/${RUN_ID}.log"
+```
+
+验收要求是存在`terminal_response_smoke_manifest.json`且其中
+`schema_version=openvla-terminal-deployment-response-smoke-bundle-v2`、
+`status=complete`、`response_authority`与代码冻结常量完全一致、恰有两个state 0
+case；两个NPZ必须为`openvla-terminal-deployment-response-v2`并由runner发布前
+独立复核。任一异常只同步新目录、日志和`audit_failed.json`，不要覆盖或复用旧
+目录，也不要提前运行states 0--9。
 
 已冻结的第一项设计决定：谱方法在新候选中作为作用于最终 Surface Delta 的软
 自然性正则，只惩罚高频谱能量；它不再把扰动硬限制在前 K 个谱基中，也不是与
