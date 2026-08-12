@@ -77,6 +77,7 @@
 | 2026-08-12 | Gate 6g v2 state 0双终态smoke | commit `9abee27`；全新v2目录2/2 case由WSL独立复算`audit_valid=true`；八个上游输入SHA、共享Clean/static scene、processor/visibility/token/codec/asset恢复全部通过 | Action+Spectral为`deployment_lost`：A在index1产生class145响应，B回到Clean；Action-only为`no_training_response`，A的teacher/generation index1差异只作诊断 | 单点工程smoke通过，但没有观察到部署保留响应，不能估计总体率；下一步实现并同commit重采states0--9 formal 20-case，不拼接smoke、不进入OFT | [当前状态](../status/openvla-spectral-current.md) |
 | 2026-08-12 | Gate 6g states0--9 formal runner实现 | commit `543d6da`复用v2单state采集引擎；formal scope固定states0--9与20-case inventory，完整CPU复算后才原子发布成功manifest | 每state共享一次Clean、seed/fingerprint/static scene独立绑定；单模型/renderer/资产事务跨state复用；失败保存stage/completed keys并恢复资产；43项定向回归通过 | 尚无formal GPU响应结论；下一步服务器无GPU回归后在全新目录运行完整20-case并rsync回WSL复核，不调方法、不进入OFT | [当前状态](../status/openvla-spectral-current.md) |
 | 2026-08-12 | Gate 6g states0--9双终态formal正式证据 | commit `c1c4361`；20/20 case、states0--9×双终态、成功manifest和WSL独立复算均为`audit_valid=true`，无failure/tie/invalid | Action+Spectral训练响应7/10，严格部署保留3/7、lost 2、altered 2；Action-only训练响应6/10，严格保留4/6、lost 1、altered 1；共同响应states中仅state4分类不同且control更好 | 证明存在决策敏感的Renderer→MuJoCo surrogate gap，但不证明它是2/10 rollout的唯一/主要原因，也无Spectral Guard提高部署保留的信号；先讨论冻结最小机制验证，不训练、不调参、不进入OFT | [当前状态](../status/openvla-spectral-current.md) |
+| 2026-08-12 | Gate 6h Scalar-Gain Counterfactual合同与实现 | commits `468ea76`/`88bb2d6`；完整224×224 RGB拟合无约束`alpha_star`并构造`I_gain`；20个case全部C/A/B逐值replay，正式分母固定为Gate 6g的6个lost/altered case | cached首次响应分类为`gain_sufficient/residual_necessary_for_first_response/ambiguous`；不设比例pass/fail，预注册跨variant解释树；CPU独立复算反事实、processor BF16 bits、token/logits、SHA与inventory；replay复用Gate 6g的state-first共享Clean调用顺序 | 只加载source OpenVLA和已有NPZ，不加载LIBERO/renderer，不训练/反传/rollout/OFT；45项定向与334项可运行全仓回归通过，正式GPU结果待服务器运行 | [当前状态](../status/openvla-spectral-current.md) |
 
 ## 当前待执行队列
 
@@ -94,7 +95,7 @@
 | 6e（已完成，未通过） | 正式Fixed-Support Action+Spectral source训练与paired source-development rollout | 5000轮训练artifact和恢复评估完整性均通过 | paired新增失败2/10，未达到至少3/10 | 不进入OFT；转入预注册Action-only control，不改lambda/K_nat/Support |
 | 6f（已完成，未通过） | Fixed-Support Action-only 5000轮control及paired source-development rollout | 与6e仅差关闭Spectral Guard，训练与paired artifact均通过独立复核 | paired新增失败2/10，与主候选count相同，未达到3/10；终态自然性比例也未显示主候选改善 | 不进入OFT；结果更指向Support/Action proxy瓶颈，同时表明固定lambda Guard在本轮未显示自然性收益 |
 | 6g（已完成） | Terminal Deployment Response Audit | commit `c1c4361`的全新formal目录完成states0--9×双终态20个唯一case，成功manifest与WSL独立复算全部通过 | Action+Spectral严格保留3/7训练响应，Action-only严格保留4/6；两者均有lost/altered且无tie/invalid | 不把静态响应差异包装成rollout因果或统计显著性；不进入OFT |
-| 6h（待讨论冻结） | A/B surrogate gap最小机制验证 | Gate 6g已证明像素扰动总体相近但离散动作响应并非稳定保留 | 先冻结单一机制假设、唯一变量、最小验证与停止规则；不得从现有结果直接选择新训练配置 | 未冻结前不实现、不训练、不调Support/K/lambda；讨论结果写回当前状态与本账本 |
+| 6h（合同已冻结，实现待GPU） | Scalar-Gain Counterfactual Audit | Gate 6g正式bundle有效；本地纯计算/artifact/GPU replay边界已实现并通过定向回归 | 20/20 case工程有效且C/A/B完整logits逐值重放；6个lost/altered case按三类机制汇总并应用预注册解释树，不设科学pass/fail | 任一工程失败整bundle无效；结果出来前不扩展photometric模型、不训练、不调Support/K/lambda、不进入OFT |
 | 7 | OFT开发期 rollout | 出现满足至少3/10 paired新增失败的冻结谱候选 | 旧0/10迁移基线上至少出现2/10失败信号 | 记录机制失败，不包装为迁移提升 |
 | 8 | 新任务/第三模型无偏验证 | 方法和超参数冻结 | 预注册门槛 | 区分开发期选择偏差与真实迁移 |
 

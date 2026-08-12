@@ -55,6 +55,8 @@ Gate 6g states 0--9 formal runner实现基线：
 `543d6da527c3ae1f52b5c7164b182aaa50154e65`
 Gate 6g states 0--9 formal正式证据基线：
 `c1c4361d5c6a5949a192b346234bba04a270ba39`
+Gate 6h Scalar-Gain Counterfactual实现基线：
+`88bb2d6`
 
 本文是 OpenVLA 谱纹理研究的**当前状态入口**。新一轮开发应先读本文，再按需
 进入专题文档；不要从长篇实验时间线推测当前优先级。历史实验索引见
@@ -1513,6 +1515,109 @@ Texture之间存在决策敏感的surrogate gap”，但train states静态单步
 针对A/B gap的单一机制假设和最小验证；在此之前不新训练、不调Support/K/lambda、
 不进入OFT。
 
+### Gate 6h：Scalar-Gain Counterfactual Audit（合同冻结，实现待服务器运行）
+
+Gate 6h只回答一个更窄的问题：对于Gate 6g中A到B首次响应发生改变的case，单个
+全局标量gain能否复现B的首次响应；若不能，移除B中的非标量residual后是否恢复
+A的首次响应。它是post-hoc诊断性反事实分解，不是物理renderer，也不证明该gap
+是2/10 rollout的原因。
+
+每个`(variant,state)`在完整224×224 Effective RGB和全部通道上独立计算：
+
+```text
+D_A = A - C
+D_B = B - C
+alpha_star = <D_A,D_B> / <D_A,D_A>
+I_gain = uint8(round(clip(C + alpha_star * D_A, 0, 255)))
+```
+
+`alpha_star`不加人为范围；`D_A`平方范数为零使case无效。`round`固定为与
+PyTorch/NumPy相同的ties-to-even。保存连续/量化`I_gain`、连续/量化residual、
+裁剪值数量、由Gate 6g已验证的checkpoint-derived training-exact processor生成的
+最终BF16 bits、完整generation/teacher logits与token；不再次center crop，也不以
+连续BPDA surrogate值作为模型forward。
+这里不能加目标mask，因为OpenVLA观察完整Effective View，轮廓和背景合成残差
+也可能影响决策。
+
+首次响应签名`g(I)`固定为相对于同一Clean的`None`，或
+`(first_divergence_index, generation_class)`；主分类只读默认cached generation，
+clean-prefix teacher和完整7-token序列继续只作诊断。20个case全部重放，但正式
+机制分母严格固定为Gate 6g的6个`deployment_lost/deployment_response_altered`
+case：Action+Spectral states 0/4/7/8与Action-only states 7/8。分类为：
+
+- `gain_sufficient`：`g(I_gain) == g(B)`；不需要非标量residual即可复现B；
+- `residual_necessary_for_first_response`：
+  `g(I_gain) == g(A) != g(B)`；necessary只针对该case与该构造；
+- `ambiguous`：`g(I_gain)`同时不同于`g(A)`和`g(B)`，不强行归因。
+
+Gate 6h不设科学pass/fail或比例门槛。预注册解释分支为：两个variant都至少出现
+一个`residual_necessary`，转向共享non-scalar surrogate fidelity机制；只在一个
+variant出现，判为endpoint/优化轨迹相关，不能称为共同主因；两者均没有且
+`gain_sufficient`总数严格多于`ambiguous`，优先简单scalar gain calibration；
+其余情况为counterfactual不足，停止自动扩展，不在看过结果后直接选择gamma、
+逐通道或局部模型。即使scalar不足，也不能声称所有photometric calibration无效。
+
+工程有效性要求source Gate 6g manifest先独立复核；20个source NPZ SHA全部绑定；
+GPU runner对每个case重放C/A/B且generated classes、完整generation/teacher logits
+与Gate 6g逐值相同；gain token属于自身generation score精确argmax；反事实数组由
+CPU从source RGB逐值重算；20个唯一case和冻结6-case主分母完整。任一失败使整个
+bundle无效，成功manifest最后原子发布。该进程只加载source OpenVLA与已有NPZ，
+不加载LIBERO/renderer/纹理参数，不训练、反传、rollout，也不使用Feature、wrist
+或OFT。
+
+commits `468ea76`/`88bb2d6`已按上述合同实现纯CPU构造/分类、无pickle NPZ、20-case bundle
+evaluator、原子发布、只读OpenVLA GPU runner和可重定位WSL evaluator。实现采用
+TDD纵切完成，相关Gate 6g/6h定向回归为`45 passed`；真实Gate 6g 20-case输入的
+CPU preflight中`alpha_star`范围为`[0.881867,1.016489]`且裁剪值总数为0。另用
+真实20-case source构造的非科学合成bundle仅验证evaluator端到端合同，得到
+`audit_valid=true`和严格6-case主分母，该产物不进入实验结论。本机完整测试仍因
+缺少`nvdiffrast`与LIBERO在10个既有文件收集失败；显式排除这些环境阻断文件后
+其余全仓无GPU回归为`334 passed`。
+
+服务器应同步到包含`468ea76`的目标commit，在全新空目录运行。先执行不依赖
+LIBERO/nvdiffrast的定向无GPU回归，再运行唯一正式GPU audit：
+
+```bash
+set -o pipefail
+CODE_COMMIT="$(git rev-parse HEAD)"
+RUN_ID="gate6h-gain-${CODE_COMMIT:0:7}-20260812"
+SOURCE_GATE6G="experiments_inbox/gate6g-formal-c1c4361-20260812/terminal_response_manifest.json"
+
+CUDA_VISIBLE_DEVICES='' PYTHONDONTWRITEBYTECODE=1 TF_CPP_MIN_LOG_LEVEL=3 \
+  NUMBA_CACHE_DIR=/tmp/tex3d-numba-cache \
+  /home/xiaomengqi/miniconda3/envs/tex3d-openvla/bin/python -m pytest -q \
+  tests/unit/openvla_attack/test_terminal_gain_counterfactual_audit.py \
+  tests/unit/openvla_attack/test_terminal_deployment_response_audit.py \
+  tests/unit/openvla_attack/test_terminal_openvla_response.py \
+  tests/unit/openvla_attack/test_terminal_numerical_inference.py \
+  tests/unit/openvla_attack/test_terminal_numerical_inference_audit.py
+
+CUDA_VISIBLE_DEVICES=0 PYTHONDONTWRITEBYTECODE=1 TF_CPP_MIN_LOG_LEVEL=3 \
+  /home/xiaomengqi/miniconda3/envs/tex3d-openvla/bin/python \
+  openvla/experiments/robot/libero/openvla_attack/diagnose_terminal_gain_counterfactual.py \
+  --pretrained_checkpoint \
+  /data/huangsimin/openvla-7b-finetuned-libero-spatial \
+  --source_gate6g_manifest_path "${SOURCE_GATE6G}" \
+  --output_dir "experiments_inbox/${RUN_ID}" \
+  --code_commit "${CODE_COMMIT}" \
+  --seed 7 \
+  --unnorm_key libero_spatial_no_noops \
+  2>&1 | tee "experiments_inbox/${RUN_ID}.log"
+
+CUDA_VISIBLE_DEVICES='' PYTHONDONTWRITEBYTECODE=1 \
+  /home/xiaomengqi/miniconda3/envs/tex3d-openvla/bin/python -m \
+  openvla.experiments.robot.libero.openvla_attack.evaluate_terminal_gain_counterfactual \
+  --manifest_path \
+  "experiments_inbox/${RUN_ID}/terminal_gain_counterfactual_manifest.json" \
+  --source_gate6g_manifest_path "${SOURCE_GATE6G}"
+```
+
+正式验收只要求`audit_valid=true`、`case_count=20`、
+`primary_case_count=6`、无failure，并报告三类计数与冻结解释分支；没有科学
+pass/fail比例门槛。失败时只同步新目录中的`audit_failed.json`与日志，不复用
+目录续跑。成功也需同步完整目录、日志和source Gate 6g bundle，由WSL通过显式
+本地`--source_gate6g_manifest_path`独立复核；不得仅根据服务器stdout登记结论。
+
 已冻结的第一项设计决定：谱方法在新候选中作为作用于最终 Surface Delta 的软
 自然性正则，只惩罚高频谱能量；它不再把扰动硬限制在前 K 个谱基中，也不是与
 顶点扰动相加的第二个可学习分量。
@@ -2204,8 +2309,10 @@ Gate 判断，但永远不能替代权威 30 行记录、NPZ 或逐 case 图。
 
 ## 当前禁止的捷径
 
-- Gate 6g已完成；下一机制假设与最小验证冻结前，不启动新训练、不修改
-  Support/Action objective/Spectral Guard，也不进入OFT；
+- Gate 6h合同与实现已冻结；正式GPU结果及WSL独立复核完成前，不启动新训练、
+  不修改Support/Action objective/Spectral Guard，也不进入OFT；
+- 不根据Gate 6h结果事后扩展gamma、逐通道或局部photometric模型；只能进入
+  预注册解释树指定的分支；
 - 不把 OFT 梯度用于 source-only loss、选基或超参数选择；
 - 不把旧预处理候选的成功率当成 BPDA 修正后的基线；
 - 不因 total/Feature loss 更优就声称任务攻击或迁移更强；
