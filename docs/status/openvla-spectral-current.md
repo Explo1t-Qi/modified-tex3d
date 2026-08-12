@@ -53,6 +53,8 @@ Gate 6g v2 state 0正式smoke证据基线：
 `9abee27ee5876d1bbaac229a2e4801e287bd3762`
 Gate 6g states 0--9 formal runner实现基线：
 `543d6da527c3ae1f52b5c7164b182aaa50154e65`
+Gate 6g states 0--9 formal正式证据基线：
+`c1c4361d5c6a5949a192b346234bba04a270ba39`
 
 本文是 OpenVLA 谱纹理研究的**当前状态入口**。新一轮开发应先读本文，再按需
 进入专题文档；不要从长篇实验时间线推测当前优先级。历史实验索引见
@@ -86,7 +88,7 @@ Gate 6g states 0--9 formal runner实现基线：
 | 谱自然性uniform Support校准 | 已通过 | 连续K_nat=128+常数频带通过数值审计；`rho_nat=0.0992735862`并由两个输入artifact独立复算 |
 | BPDA 下源攻击基线 | 主候选与Action-only对照均未过门槛 | 两者paired states 10--19均为Clean 9/10、Adversarial 8/10和2/10新增失败；失败state不同，但都低于预注册3/10门槛 |
 | BPDA 下 OFT 迁移信号 | 未开始 | 新源候选未过门槛前不得进入 OFT |
-| Gate 6g Terminal Deployment Response | v2 state 0已通过，states 0--9 formal待运行 | formal runner已固定20-case inventory与原子发布；state 0单点只观察到Action+Spectral `deployment_lost`与Action-only `no_training_response`，不能代替总体结论 |
+| Gate 6g Terminal Deployment Response | 已完成，20/20工程审计有效 | Action+Spectral有7/10训练响应，部署严格保留3/7；Action-only有6/10训练响应，部署严格保留4/6。两者均存在`lost/altered`，未观察到tie或invalid |
 | 无偏跨模型迁移与鲁棒性提升 | 未开始 | 需方法冻结后的新任务/第三模型与后续防御实验 |
 
 ## 当前已确认的科学结论
@@ -155,11 +157,14 @@ generation/teacher严格对齐失败而保持`audit_invalid`。numerical replay�
 分叉稳定逐位复现，且不是单纯的KV-cache开关差异；它是一个近决策边界token对
 执行shape敏感的测量问题，不能归因于FlashAttention或源攻击瓶颈。commit
 `3e19a7a`已将默认cached generation冻结为部署行为权威，把clean-prefix teacher
-forward降为训练代理诊断，并把NPZ/smoke/formal bundle升级为v2。当前唯一下一
-门槛已由后述全新目录v2 state 0 smoke通过，现推进为实现并运行states 0--9
-formal audit；旧失败bundle仍不得追认。Gate 6g只读比较
-两个已有终态在train states 0--9的Renderer Delta Composition与真实MuJoCo
-Active Texture响应，不自动启动训练或调参；OFT仍不得提前进入。
+forward降为训练代理诊断，并把NPZ/smoke/formal bundle升级为v2。全新目录中的
+state 0 smoke与states 0--9 formal audit现均已通过工程审计；旧失败bundle仍不得
+追认。Gate 6g只读比较两个已有终态在train states 0--9的Renderer Delta
+Composition与真实MuJoCo Active Texture响应，不自动启动训练或调参。正式结果
+表明两种终态的训练路径响应都只有一部分在部署路径严格保留，且Spectral Guard
+没有显示更高保留率；这支持存在决策敏感的训练—部署surrogate gap，但不能证明
+它是2/10 rollout结果的唯一或主要原因。当前唯一下一行动是先讨论并冻结针对该
+gap的单一机制假设与最小验证；冻结前不启动新训练，OFT仍不得提前进入。
 
 真实 Spatial checkpoint 的 CPU 差分记录为 fused pixel values MAE/L∞=`0/0`，
 输入梯度有限且非零；文档记录当时全量 CPU 回归为 `113 passed, 1 skipped`。
@@ -1462,6 +1467,52 @@ CUDA_VISIBLE_DEVICES='' PYTHONDONTWRITEBYTECODE=1 \
 目录续跑、拼接smoke或跳过失败state。成功后也先同步完整目录和日志，由WSL独立
 复核后再解释响应分布；不得仅凭stdout汇总形成科学结论。
 
+2026-08-12，服务器在commit `c1c4361`和全新目录
+`gate6g-formal-c1c4361-20260812`完成正式20-case采集。成功manifest schema为
+`openvla-terminal-deployment-response-bundle-v2`且`status=complete`；WSL使用
+当前CPU evaluator从20个NPZ逐值复算得到`audit_valid=true`、`case_count=20`、
+`failures=[]`。states 0--9完整、唯一且各参与两个variant；10个冻结state
+fingerprint、每state共享Clean与static-scene hash、processor/visibility/token/
+codec、generation token/score自对齐、文件inventory和逐state/final资产恢复均
+通过。两个variant所有state的像素与通道饱和比例均为0。正式manifest与GPU日志
+SHA-256分别为
+`323c37fa492a433f47b71f8469a8f5a9ee50fccdd50527289cd0d641b79d2fca`
+和
+`6b9f2b3023827aba9f806e3d84c2d38eddabc83fb62a68f3d7eecd845a23ad1a`。
+全部八个上游Support、re-bake、双终态formal manifest、parameter与bake SHA也已
+在WSL从同步文件重算匹配。state 0的两个正式NPZ与先前v2 smoke对应NPZ SHA完全
+相同，提供了跨运行的精确重复证据。
+
+正式响应分布如下：
+
+| Variant | 无训练响应 | 部署丢失 | 部署改变 | 严格保留 | tie-sensitive | invalid | 有训练响应时严格保留 |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| Action+Spectral | 3 | 2 | 2 | 3 | 0 | 0 | 3/7（42.9%） |
+| Action-only | 4 | 1 | 1 | 4 | 0 | 0 | 4/6（66.7%） |
+
+逐state分类为：Action+Spectral在states 1/2/9无训练响应，0/8丢失，4/7改变，
+3/5/6严格保留；Action-only在states 0/1/2/9无训练响应，8丢失，7改变，
+3/4/5/6严格保留。在两个variant共同产生训练响应的states 3--8上，分类只有
+state 4不同：Action-only严格保留，而Action+Spectral改变；其余五个state类别
+一致。没有观察到Spectral Guard提高部署保留率的信号；样本量也不足以作统计
+显著性主张。`preserved_strict`只表示首次因果响应类别唯一且被保留，不表示后续
+完整自回归序列逐项相同。
+
+从同一NPZ作未预注册的描述性像素复算，令`D_A=A-C`、`D_B=B-C`：十状态
+`cos(D_A,D_B)`中位数为Action+Spectral `0.9673`、Action-only `0.9622`，
+`||D_B||/||D_A||`中位数分别为`0.9694/0.9609`，而
+`||D_A-D_B||/||D_A||`中位数分别为`0.2543/0.2769`。因此真实bake并非总体没有
+生效；更准确的解释是两条路径像素响应整体方向接近，但约四分之一量级的相对
+差异足以在部分近决策边界state中丢失或改变离散动作响应。该补充不是新的Gate
+判据。
+
+Gate 6g由此完成。它直接支持“当前Renderer Delta Composition到MuJoCo Active
+Texture之间存在决策敏感的surrogate gap”，但train states静态单步证据不能证明
+该gap是source-development rollout仅2/10新增失败的唯一或主要原因，也不能替代
+闭环rollout。它同样不支持Spectral Guard改善部署保真。下一步先讨论并冻结一个
+针对A/B gap的单一机制假设和最小验证；在此之前不新训练、不调Support/K/lambda、
+不进入OFT。
+
 已冻结的第一项设计决定：谱方法在新候选中作为作用于最终 Surface Delta 的软
 自然性正则，只惩罚高频谱能量；它不再把扰动硬限制在前 K 个谱基中，也不是与
 顶点扰动相加的第二个可学习分量。
@@ -2153,8 +2204,8 @@ Gate 判断，但永远不能替代权威 30 行记录、NPZ 或逐 case 图。
 
 ## 当前禁止的捷径
 
-- Gate 6g完成前不启动新训练、不修改Support/Action objective/Spectral Guard，
-  也不进入OFT；
+- Gate 6g已完成；下一机制假设与最小验证冻结前，不启动新训练、不修改
+  Support/Action objective/Spectral Guard，也不进入OFT；
 - 不把 OFT 梯度用于 source-only loss、选基或超参数选择；
 - 不把旧预处理候选的成功率当成 BPDA 修正后的基线；
 - 不因 total/Feature loss 更优就声称任务攻击或迁移更强；
