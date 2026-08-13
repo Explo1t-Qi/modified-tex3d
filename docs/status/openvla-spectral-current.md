@@ -1,6 +1,6 @@
 # OpenVLA 谱纹理当前状态
 
-更新时间：2026-08-12
+更新时间：2026-08-13
 当前 Visibility/Coverage/Compositor 功能代码基线：
 `1884eb7500283eea9f3bcf8793a4410cd1396b87`
 服务器 Gate 2E 复核基线：
@@ -57,6 +57,8 @@ Gate 6g states 0--9 formal正式证据基线：
 `c1c4361d5c6a5949a192b346234bba04a270ba39`
 Gate 6h Scalar-Gain Counterfactual实现基线：
 `88bb2d6`
+Gate 6h Scalar-Gain Counterfactual正式证据基线：
+`3bf8895053753a040073f6763f7a744f221d6c2d`
 
 本文是 OpenVLA 谱纹理研究的**当前状态入口**。新一轮开发应先读本文，再按需
 进入专题文档；不要从长篇实验时间线推测当前优先级。历史实验索引见
@@ -91,6 +93,7 @@ Gate 6h Scalar-Gain Counterfactual实现基线：
 | BPDA 下源攻击基线 | 主候选与Action-only对照均未过门槛 | 两者paired states 10--19均为Clean 9/10、Adversarial 8/10和2/10新增失败；失败state不同，但都低于预注册3/10门槛 |
 | BPDA 下 OFT 迁移信号 | 未开始 | 新源候选未过门槛前不得进入 OFT |
 | Gate 6g Terminal Deployment Response | 已完成，20/20工程审计有效 | Action+Spectral有7/10训练响应，部署严格保留3/7；Action-only有6/10训练响应，部署严格保留4/6。两者均存在`lost/altered`，未观察到tie或invalid |
+| Gate 6h Scalar-Gain Counterfactual | 已完成，20/20工程审计有效 | 冻结6个主case为4 `gain_sufficient` / 1 `residual_necessary` / 1 `ambiguous`；只有Action+Spectral出现`residual_necessary`，按预注册解释树进入`endpoint_or_trajectory_specific` |
 | 无偏跨模型迁移与鲁棒性提升 | 未开始 | 需方法冻结后的新任务/第三模型与后续防御实验 |
 
 ## 当前已确认的科学结论
@@ -165,8 +168,12 @@ state 0 smoke与states 0--9 formal audit现均已通过工程审计；旧失败b
 Composition与真实MuJoCo Active Texture响应，不自动启动训练或调参。正式结果
 表明两种终态的训练路径响应都只有一部分在部署路径严格保留，且Spectral Guard
 没有显示更高保留率；这支持存在决策敏感的训练—部署surrogate gap，但不能证明
-它是2/10 rollout结果的唯一或主要原因。当前唯一下一行动是先讨论并冻结针对该
-gap的单一机制假设与最小验证；冻结前不启动新训练，OFT仍不得提前进入。
+它是2/10 rollout结果的唯一或主要原因。Gate 6h进一步表明，6个主case中
+4个只用全局scalar gain就能复现部署首次响应，但只有Action+Spectral的
+state 7需要non-scalar residual，Action-only state 7则为ambiguous。按预注册
+解释树，这是`endpoint_or_trajectory_specific`，不支持共同non-scalar
+surrogate fidelity主因。当前唯一下一行动是先讨论并冻结一个针对
+endpoint/优化轨迹差异的最小验证；冻结前不启动新训练，OFT仍不得提前进入。
 
 真实 Spatial checkpoint 的 CPU 差分记录为 fused pixel values MAE/L∞=`0/0`，
 输入梯度有限且非零；文档记录当时全量 CPU 回归为 `113 passed, 1 skipped`。
@@ -1515,7 +1522,7 @@ Texture之间存在决策敏感的surrogate gap”，但train states静态单步
 针对A/B gap的单一机制假设和最小验证；在此之前不新训练、不调Support/K/lambda、
 不进入OFT。
 
-### Gate 6h：Scalar-Gain Counterfactual Audit（合同冻结，实现待服务器运行）
+### Gate 6h：Scalar-Gain Counterfactual Audit（已完成）
 
 Gate 6h只回答一个更窄的问题：对于Gate 6g中A到B首次响应发生改变的case，单个
 全局标量gain能否复现B的首次响应；若不能，移除B中的非标量residual后是否恢复
@@ -1618,6 +1625,35 @@ CUDA_VISIBLE_DEVICES='' PYTHONDONTWRITEBYTECODE=1 \
 pass/fail比例门槛。失败时只同步新目录中的`audit_failed.json`与日志，不复用
 目录续跑。成功也需同步完整目录、日志和source Gate 6g bundle，由WSL通过显式
 本地`--source_gate6g_manifest_path`独立复核；不得仅根据服务器stdout登记结论。
+
+正式运行`gate6h-gain-3bf8895-20260812`绑定commit
+`3bf8895053753a040073f6763f7a744f221d6c2d`，成功manifest SHA-256为
+`9f9bb6fd0cd811c3e7679dde23946214430f2756b7a6f96509d127e9ea53efee`。
+WSL独立evaluator重算得到`audit_valid=true`、`case_count=20`、
+`primary_case_count=6`且无failure；20个C/A/B replay的token与完整
+generation/teacher logits、gain processor BF16 bits、source NPZ SHA、states
+0--9及双variant inventory均逐值通过。进程provenance确认没有加载
+legacy optimizer、LIBERO或renderer，也没有训练或反传。
+
+冻结6个主case的结果为：
+
+| Variant | State | Gate 6g分类 | Gate 6h机制分类 | `alpha_star` |
+|---|---:|---|---|---:|
+| Action+Spectral | 0 | `deployment_lost` | `gain_sufficient` | 0.926905 |
+| Action+Spectral | 4 | `deployment_response_altered` | `gain_sufficient` | 0.968170 |
+| Action+Spectral | 7 | `deployment_response_altered` | `residual_necessary_for_first_response` | 0.901780 |
+| Action-only | 7 | `deployment_response_altered` | `ambiguous` | 0.881867 |
+| Action+Spectral | 8 | `deployment_lost` | `gain_sufficient` | 0.919174 |
+| Action-only | 8 | `deployment_lost` | `gain_sufficient` | 0.933642 |
+
+因此总计为4 `gain_sufficient` / 1 `residual_necessary` / 1
+`ambiguous`。Action+Spectral为3/1/0，Action-only为1/0/1；只有前者出现
+`residual_necessary`，故严格按预注册解释树进入
+`endpoint_or_trajectory_specific`。这不支持把non-scalar residual称为
+两个variant的共同主因，也不允许事后扩展gamma、逐通道或局部
+photometric模型。4个`gain_sufficient`说明对多数已发生首次响应变化的
+case，全局强度缩放已足以复现B的离散响应；它不等于证明scalar
+gain是真实物理原因，也不能证明A/B gap是2/10 rollout的主因。
 
 已冻结的第一项设计决定：谱方法在新候选中作为作用于最终 Surface Delta 的软
 自然性正则，只惩罚高频谱能量；它不再把扰动硬限制在前 K 个谱基中，也不是与
@@ -2310,10 +2346,11 @@ Gate 判断，但永远不能替代权威 30 行记录、NPZ 或逐 case 图。
 
 ## 当前禁止的捷径
 
-- Gate 6h合同与实现已冻结；正式GPU结果及WSL独立复核完成前，不启动新训练、
-  不修改Support/Action objective/Spectral Guard，也不进入OFT；
-- 不根据Gate 6h结果事后扩展gamma、逐通道或局部photometric模型；只能进入
-  预注册解释树指定的分支；
+- Gate 6h已完成并进入预注册的`endpoint_or_trajectory_specific`分支；
+  下一验证冻结前不启动新训练、不修改Support/Action objective/
+  Spectral Guard，也不进入OFT；
+- 不根据Gate 6h结果事后扩展gamma、逐通道或局部photometric模型，也不得
+  把单一Action+Spectral case的`residual_necessary`包装为双variant共同主因；
 - 不把 OFT 梯度用于 source-only loss、选基或超参数选择；
 - 不把旧预处理候选的成功率当成 BPDA 修正后的基线；
 - 不因 total/Feature loss 更优就声称任务攻击或迁移更强；
