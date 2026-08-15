@@ -94,6 +94,7 @@ Gate 6h Scalar-Gain Counterfactual正式证据基线：
 | BPDA 下 OFT 迁移信号 | 未开始 | 新源候选未过门槛前不得进入 OFT |
 | Gate 6g Terminal Deployment Response | 已完成，20/20工程审计有效 | Action+Spectral有7/10训练响应，部署严格保留3/7；Action-only有6/10训练响应，部署严格保留4/6。两者均存在`lost/altered`，未观察到tie或invalid |
 | Gate 6h Scalar-Gain Counterfactual | 已完成，20/20工程审计有效 | 冻结6个主case为4 `gain_sufficient` / 1 `residual_necessary` / 1 `ambiguous`；只有Action+Spectral出现`residual_necessary`，按预注册解释树进入`endpoint_or_trajectory_specific` |
+| Gate 6i Terminal Endpoint Action-Gradient/Response | 数学范围已冻结；CPU case schema/派生核心已实现，bundle/GPU runner待实现 | 只读两个已有终态；比较terminal-vs-zero retention与Dense/Support matched-rule单步；不设科学pass/fail |
 | 无偏跨模型迁移与鲁棒性提升 | 未开始 | 需方法冻结后的新任务/第三模型与后续防御实验 |
 
 ## 当前已确认的科学结论
@@ -172,8 +173,10 @@ Composition与真实MuJoCo Active Texture响应，不自动启动训练或调参
 4个只用全局scalar gain就能复现部署首次响应，但只有Action+Spectral的
 state 7需要non-scalar residual，Action-only state 7则为ambiguous。按预注册
 解释树，这是`endpoint_or_trajectory_specific`，不支持共同non-scalar
-surrogate fidelity主因。当前唯一下一行动是先讨论并冻结一个针对
-endpoint/优化轨迹差异的最小验证；冻结前不启动新训练，OFT仍不得提前进入。
+surrogate fidelity主因。Gate 6i已将唯一下一诊断冻结为两个既有终态的
+Terminal Endpoint Action-Gradient/Response Audit；它只检查局部终点几何与
+Fixed Support的即时单步限制，不观测或归因完整训练轨迹。该审计完成前
+不启动新训练，OFT仍不得提前进入。
 
 真实 Spatial checkpoint 的 CPU 差分记录为 fused pixel values MAE/L∞=`0/0`，
 输入梯度有限且非零；文档记录当时全量 CPU 回归为 `113 passed, 1 skipped`。
@@ -1655,6 +1658,103 @@ photometric模型。4个`gain_sufficient`说明对多数已发生首次响应变
 case，全局强度缩放已足以复现B的离散响应；它不等于证明scalar
 gain是真实物理原因，也不能证明A/B gap是2/10 rollout的主因。
 
+### Gate 6i：Terminal Endpoint Action-Gradient/Response Audit（数学范围已冻结）
+
+Gate 6i不重跑零点Dense Seed Audit，也不把Gate 6h的
+`endpoint_or_trajectory_specific`分支误写为已证明的trajectory机制。它只读正式
+Action+Spectral和Action-only两个终态，回答：两个终态的source Action
+局部梯度几何是否不同；以及相对Support构造时的零点，当前Fixed
+Support是否丢失了更多可执行的Action方向。
+
+对endpoint `e`与state `s`，唯一dense梯度定义为实际进入renderer的
+geometry Surface Delta梯度：
+
+```text
+g_dense[e,s] = d L_action[e,s] / d Delta_surface
+shape = float32 [21263,3]
+```
+
+它由共享纹理全部body instance的render-domain梯度求和，再通过严格
+`render_to_geometry`映射scatter-add回原OBJ几何顶点；不用Fixed-Support
+参数梯度反推，也不使用Feature、Spectral、wrist或OFT梯度。梯度在对原始
+compact endpoint artifact执行一次现有functional projection后得到的唯一
+float32 `realized_endpoint [21263,3]`上计算；两个反事实arm必须从该
+tensor的逐值相同clone开始。
+
+Support retention严格沿用Production Support绑定的零点Dense artifact、相同
+geometry RGB flatten、相同Support mask和普通Euclidean gradient-energy定义：
+
+```text
+R[e,s] = ||M_S * g_dense[e,s]||_2^2 / ||g_dense[e,s]||_2^2
+Delta_R[e,s] = R_terminal[e,s] - R_zero[s]
+```
+
+同时报告逐state retention的mean/median/负值数，以及先对十state梯度作
+float32算术平均后再计算的aggregate retention；不得用逐state retention的
+平均替代后者。零点逐state基线为`0.376108--0.586116`，mean/median为
+`0.501823/0.516927`，零点aggregate梯度retention为`0.538463`。本Gate不新增
+mass、visible-only或RGB channel weighting。
+
+每个endpoint将十个梯度作与正式训练相同的float32算术平均`g_bar[e]`。
+Dense方向为`-g_bar[e]`，Support方向先乘`M_S`再独立归一化。两个arm
+不匹配L2 norm，而是在相同`surface_step=2/255`、Surface-Linf预算和
+正式surface-space规则下比较放开更多坐标后的可执行能力。唯一更新顺序为：
+
+```text
+realize endpoint -> aggregate -> mask -> normalize -> add
+-> global Surface-Linf projection -> post-projection step cap -> evaluate
+```
+
+`surface_step`是加入方向前的归一化目标；`step_cap_scale`是全局投影后若实际
+变化仍超过`2/255`，才从原终点向投影结果作凸插值的二次限制。必须保存
+unconstrained normalized step、projected step、executed step、projection residual、
+L2/Linf、梯度—实际步cosine、内积与完整`SurfaceStepStats`。
+
+功能主指标使用与训练一致的states 0--9 Action hinge算术平均：
+
+```text
+I_D[e] = L_0[e] - L_D[e]
+I_S[e] = L_0[e] - L_S[e]
+A[e] = I_D[e] - I_S[e] = L_S[e] - L_D[e]
+A[e,s] = L_S[e,s] - L_D[e,s]
+```
+
+Action hinge、逐token margin与logits是主响应；cached generation只作离散诊断。
+`exact_equal`只表示保存的float32 Action loss逐位相同，不自动意味logits、
+margin或generation相同。
+
+权威inventory固定为20个唯一gradient case key
+`(endpoint,state_id)`，以及60个唯一response key
+`(endpoint,state_id,arm)`，其中`arm in {baseline,dense,support}`。每个gradient case必须恰好
+对应三个response，不得缺失、重复、混用endpoint或改写原state ID。raw
+gradient、realized endpoint、三类步、logits/margins/tokens与projection evidence由GPU
+产生并作为authoritative raw evidence逐文件hash绑定。CPU evaluator不重跑OpenVLA
+forward/backward；它只从已保存原始数组独立复算retention、Delta_R、cosine、
+L2/Linf、projection residual、A[e]/A[e,s]、mean/median/sign counts、array
+shape/dtype/SHA和inventory完整性。
+
+Gate 6i只设工程`audit_valid/invalid`，不在evaluator输出
+`support_bottleneck=true/false`，也不事后增加“明显”或“科学相等”阈值。任一raw evidence、
+hash、shape/dtype、唯一键、基线绑定或派生量复算失败都使整bundle无效；成功
+manifest必须在全部CPU复核通过后最后原子发布。
+
+即使Dense单步更好，也只支持“放开当前Fixed Support后终态附近的一步
+Action能力增加”，不能区分Support位置选择与10%曲面面积预算，不能外推至重训或
+rollout。Dense/Support接近也只表示两个现有终态附近未观察到即时局部限制，
+不排除Fixed Support在早期训练阶段已限制轨迹。
+
+2026-08-15完成第一个TDD纵切：新增无pickle gradient/response case NPZ schema、
+完整256类Action logits与224×224 Effective View shape/dtype复核、20/60唯一
+inventory，以及只消费GPU raw evidence的纯CPU派生核心。它会独立复算Action
+hinge、逐state/aggregate retention、`Delta_R`、`A[e]`/`A[e,s]`、sign counts和
+双终态梯度cosine，并强制绑定state fingerprint、realized endpoint SHA、每个arm
+的Surface Delta SHA与clean Action target；任一失败不返回部分指标。新模块定向
+测试为8项，与既有OpenVLA response和Surface Step测试合并为24项通过。该纵切尚未
+实现endpoint step artifact、bundle/成功manifest或GPU采集runner，不能据此声称
+Gate 6i已经完成。显式排除本机因缺少`nvdiffrast`或完整`libero.libero`而无法
+收集的10个既有文件后，其余本地CPU回归为`342 passed`；默认全量命令在上述10个
+collection error处停止，未伪记为通过。
+
 已冻结的第一项设计决定：谱方法在新候选中作为作用于最终 Surface Delta 的软
 自然性正则，只惩罚高频谱能量；它不再把扰动硬限制在前 K 个谱基中，也不是与
 顶点扰动相加的第二个可学习分量。
@@ -2346,9 +2446,11 @@ Gate 判断，但永远不能替代权威 30 行记录、NPZ 或逐 case 图。
 
 ## 当前禁止的捷径
 
-- Gate 6h已完成并进入预注册的`endpoint_or_trajectory_specific`分支；
-  下一验证冻结前不启动新训练、不修改Support/Action objective/
-  Spectral Guard，也不进入OFT；
+- Gate 6i的Terminal Endpoint Action-Gradient/Response数学范围已冻结；
+  正式artifact/evaluator/GPU audit完成前不启动新训练、不修改Support/
+  Action objective/Spectral Guard，也不进入OFT；
+- Gate 6i不得增加mass/visible-only/Feature/Spectral/wrist/OFT梯度、Hessian、多步长
+  或多步优化，也不得将terminal local结果包装为完整trajectory或rollout因果；
 - 不根据Gate 6h结果事后扩展gamma、逐通道或局部photometric模型，也不得
   把单一Action+Spectral case的`residual_necessary`包装为双variant共同主因；
 - 不把 OFT 梯度用于 source-only loss、选基或超参数选择；
