@@ -94,7 +94,7 @@ Gate 6h Scalar-Gain Counterfactual正式证据基线：
 | BPDA 下 OFT 迁移信号 | 未开始 | 新源候选未过门槛前不得进入 OFT |
 | Gate 6g Terminal Deployment Response | 已完成，20/20工程审计有效 | Action+Spectral有7/10训练响应，部署严格保留3/7；Action-only有6/10训练响应，部署严格保留4/6。两者均存在`lost/altered`，未观察到tie或invalid |
 | Gate 6h Scalar-Gain Counterfactual | 已完成，20/20工程审计有效 | 冻结6个主case为4 `gain_sufficient` / 1 `residual_necessary` / 1 `ambiguous`；只有Action+Spectral出现`residual_necessary`，按预注册解释树进入`endpoint_or_trajectory_specific` |
-| Gate 6i Terminal Endpoint Action-Gradient/Response | 数学范围已冻结；CPU case schema/派生核心已实现，bundle/GPU runner待实现 | 只读两个已有终态；比较terminal-vs-zero retention与Dense/Support matched-rule单步；不设科学pass/fail |
+| Gate 6i Terminal Endpoint Action-Gradient/Response | CPU artifact/evaluator合同已实现，GPU runner待实现 | 只读两个已有终态；20/60/2 inventory、上游绑定与原子成功manifest已由CPU测试保护；不设科学pass/fail |
 | 无偏跨模型迁移与鲁棒性提升 | 未开始 | 需方法冻结后的新任务/第三模型与后续防御实验 |
 
 ## 当前已确认的科学结论
@@ -1754,6 +1754,27 @@ hinge、逐state/aggregate retention、`Delta_R`、`A[e]`/`A[e,s]`、sign counts
 Gate 6i已经完成。显式排除本机因缺少`nvdiffrast`或完整`libero.libero`而无法
 收集的10个既有文件后，其余本地CPU回归为`342 passed`；默认全量命令在上述10个
 collection error处停止，未伪记为通过。
+
+第二个TDD纵切随后补齐每个endpoint的完整step NPZ与bundle evaluator。step
+artifact同时保存Dense/Support的共同realized endpoint、masked gradient、
+unconstrained normalized step、projected/executed step、projection residual及完整
+`SurfaceStepStats`；CPU以`1e-6`纯数值容差复算冻结更新顺序，并从raw数组独立复算
+L2/Linf、raw gradient--step内积和descent alignment cosine。这里明确保留
+“全局投影可使actual step小于`2/255`”的正式语义，不错误要求两arm实际Linf相等。
+
+完整bundle固定为20 gradient、60 response和2 endpoint-step artifact。evaluator
+先独立复核原Dense Seed states 0--9与Production Support、共同mesh/mapping、state
+fingerprint和clean Action target，再验证两个正式终态manifest/compact parameter的
+bundle内逐字节副本及SHA、全部case文件SHA、realized endpoint/三arm Surface SHA和
+derived逐值一致性；冻结processor specification也必须hash绑定，最终BF16 fused
+input由每条224×224 Effective View在CPU逐位复算。终态的两个轻量输入必须复制到
+bundle内部并使用安全相对路径，
+以便rsync后在WSL复核；Dense Seed/Production Support允许通过evaluator参数覆盖路径，
+但内容SHA不得改变。publisher先验raw candidate，再加入CPU derived后二次验收，最后
+才原子发布`status=complete`的成功manifest；失败候选会删除且不能留下成功文件。
+新增bundle测试4项，相关Dense Seed/Production Support/endpoint定向测试共23项通过，
+全部本地可收集CPU回归更新为`346 passed`。至此CPU artifact/evaluator合同完成，
+尚未实现或运行GPU采集runner，Gate 6i仍没有实验结果。
 
 已冻结的第一项设计决定：谱方法在新候选中作为作用于最终 Surface Delta 的软
 自然性正则，只惩罚高频谱能量；它不再把扰动硬限制在前 K 个谱基中，也不是与
