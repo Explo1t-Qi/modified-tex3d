@@ -114,6 +114,7 @@ from openvla_attack.terminal_endpoint_action_audit import (  # noqa: E402
     SurfaceCounterfactualStepStats,
     aggregate_state_gradients,
     compute_action_hinge,
+    validate_response_teacher_binding,
     write_endpoint_gradient_npz,
     write_endpoint_response_npz,
 )
@@ -841,11 +842,10 @@ def _capture_response(
                 pad_token_id=processor.tokenizer.pad_token_id,
                 unnorm_key=cfg.unnorm_key,
             )
-        if not np.array_equal(
+        validate_response_teacher_binding(
             response.teacher_input_ids,
-            model_input.teacher_input_ids.cpu().numpy(),
-        ):
-            raise RuntimeError("response teacher IDs漂移")
+            model_input.teacher_input_ids.detach().cpu().numpy(),
+        )
         action = compute_action_hinge(response.teacher_logits, clean_target.classes)
         return EndpointResponseEvidence(
             endpoint=endpoint,

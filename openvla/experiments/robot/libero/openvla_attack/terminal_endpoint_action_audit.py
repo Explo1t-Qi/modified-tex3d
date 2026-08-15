@@ -283,6 +283,33 @@ def compute_action_hinge(
     return ActionHingeEvidence(loss, margins, hinges)
 
 
+def validate_response_teacher_binding(
+    response_teacher_input_ids: np.ndarray,
+    clean_teacher_input_ids: np.ndarray,
+) -> None:
+    """验证 response 的1D teacher序列绑定runner的单batch 2D输入。
+
+    :class:`OpenVLAActionResponse` 为便于NPZ保存会移除唯一batch维，而模型调用
+    边界保留 ``[1, sequence_length]``。这里显式规范两种schema，避免调用方把
+    合法的维度差异误报为token漂移，也拒绝通过flatten掩盖额外batch。
+    """
+
+    response_ids = np.asarray(response_teacher_input_ids)
+    clean_ids = np.asarray(clean_teacher_input_ids)
+    if (
+        response_ids.dtype != np.int64
+        or response_ids.ndim != 1
+        or response_ids.size <= 0
+        or clean_ids.dtype != np.int64
+        or clean_ids.shape != (1, response_ids.size)
+    ):
+        raise TerminalEndpointActionAuditError(
+            "response/clean teacher IDs shape/dtype无效"
+        )
+    if not np.array_equal(response_ids, clean_ids[0]):
+        raise TerminalEndpointActionAuditError("response teacher IDs漂移")
+
+
 def _project_surface(
     surface_delta: Float32Array,
     epsilon: float,

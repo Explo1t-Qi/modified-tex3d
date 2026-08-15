@@ -7,6 +7,7 @@ from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 
 LIBERO_EXPERIMENT_DIR = (
@@ -28,9 +29,27 @@ from openvla_attack.terminal_endpoint_action_audit import (  # noqa: E402
     execute_surface_counterfactual_step,
     load_endpoint_gradient_npz,
     load_endpoint_response_npz,
+    validate_response_teacher_binding,
     write_endpoint_gradient_npz,
     write_endpoint_response_npz,
 )
+
+
+def test_response_teacher_binding_normalizes_single_batch_dimension() -> None:
+    """response保存1D序列，runner输入保留单batch 2D；二者应按合同比较。"""
+
+    response_ids = np.asarray([11, 12, 31_744, 31_745], dtype=np.int64)
+    clean_teacher_ids = response_ids[None, :].copy()
+
+    validate_response_teacher_binding(response_ids, clean_teacher_ids)
+
+    changed = clean_teacher_ids.copy()
+    changed[0, -1] += 1
+    with pytest.raises(ValueError, match="teacher IDs漂移"):
+        validate_response_teacher_binding(response_ids, changed)
+
+    with pytest.raises(ValueError, match="shape/dtype"):
+        validate_response_teacher_binding(response_ids[None, :], clean_teacher_ids)
 
 
 def test_retention_and_float32_aggregate_match_frozen_definition() -> None:

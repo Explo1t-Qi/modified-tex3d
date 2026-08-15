@@ -74,5 +74,6 @@ def test_runner_publishes_complete_frozen_inventory_atomically() -> None:
     assert "write_endpoint_gradient_npz" in source
     assert "write_endpoint_step_npz" in source
     assert "write_endpoint_response_npz" in source
+    assert "validate_response_teacher_binding" in source
     assert "publish_terminal_endpoint_bundle" in source
     assert 'weights_only=True' in source
