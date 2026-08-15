@@ -59,6 +59,8 @@ Gate 6h Scalar-Gain Counterfactual实现基线：
 `88bb2d6`
 Gate 6h Scalar-Gain Counterfactual正式证据基线：
 `3bf8895053753a040073f6763f7a744f221d6c2d`
+Gate 6i Terminal Endpoint Action GPU runner实现基线：
+`953c21c22b00670e242e19f119b19037e833cf93`
 
 本文是 OpenVLA 谱纹理研究的**当前状态入口**。新一轮开发应先读本文，再按需
 进入专题文档；不要从长篇实验时间线推测当前优先级。历史实验索引见
@@ -94,7 +96,7 @@ Gate 6h Scalar-Gain Counterfactual正式证据基线：
 | BPDA 下 OFT 迁移信号 | 未开始 | 新源候选未过门槛前不得进入 OFT |
 | Gate 6g Terminal Deployment Response | 已完成，20/20工程审计有效 | Action+Spectral有7/10训练响应，部署严格保留3/7；Action-only有6/10训练响应，部署严格保留4/6。两者均存在`lost/altered`，未观察到tie或invalid |
 | Gate 6h Scalar-Gain Counterfactual | 已完成，20/20工程审计有效 | 冻结6个主case为4 `gain_sufficient` / 1 `residual_necessary` / 1 `ambiguous`；只有Action+Spectral出现`residual_necessary`，按预注册解释树进入`endpoint_or_trajectory_specific` |
-| Gate 6i Terminal Endpoint Action-Gradient/Response | CPU artifact/evaluator合同已实现，GPU runner待实现 | 只读两个已有终态；20/60/2 inventory、上游绑定与原子成功manifest已由CPU测试保护；不设科学pass/fail |
+| Gate 6i Terminal Endpoint Action-Gradient/Response | CPU合同与GPU runner已实现，正式audit待运行 | 只读两个已有终态；20/60/2 inventory、上游绑定与原子成功manifest已由CPU测试保护；不设科学pass/fail |
 | 无偏跨模型迁移与鲁棒性提升 | 未开始 | 需方法冻结后的新任务/第三模型与后续防御实验 |
 
 ## 当前已确认的科学结论
@@ -1773,8 +1775,22 @@ bundle内部并使用安全相对路径，
 但内容SHA不得改变。publisher先验raw candidate，再加入CPU derived后二次验收，最后
 才原子发布`status=complete`的成功manifest；失败候选会删除且不能留下成功文件。
 新增bundle测试4项，相关Dense Seed/Production Support/endpoint定向测试共23项通过，
-全部本地可收集CPU回归更新为`346 passed`。至此CPU artifact/evaluator合同完成，
-尚未实现或运行GPU采集runner，Gate 6i仍没有实验结果。
+全部本地可收集CPU回归更新为`346 passed`。至此CPU artifact/evaluator合同完成。
+
+commit `953c21c`进一步实现正式GPU采集runner与独立CPU CLI。runner先用既有formal
+evaluator和SHA复核两个终态，把3514个compact Support坐标scatter到全顶点
+Geometry参数化并固化唯一realized endpoint。raw梯度不读取终点参数`.grad`：它
+从每个共享纹理实例实际进入renderer的Surface Delta hook取VJP，按实例求和后通过
+严格seam mapping `index_add`回`[21263,3]`，从而避开Linf边界处functional
+projection Jacobian对参数梯度的改变。每个endpoint的十状态梯度完成后，Dense和
+Support分别从同一realized tensor复用正式`surface_normalized_step_`；runner保存
+完整step arrays/`SurfaceStepStats`，再采集三arm的60份exact Effective View、BF16
+bits、teacher logits和cached generation响应。正式checkout/commit、state
+fingerprint、clean Action target、共享实例数、processor exact forward和终态输入
+副本SHA均在运行时校验；Feature/wrist/OFT/legacy optimizer/rollout仍被显式排除。
+成功manifest仍只能在CPU evaluator复核全部20/60/2 inventory后最后原子发布。
+新增4项静态科学边界测试，与Gate 6i已有合同测试合计16项通过。GPU正式audit尚未
+运行，因此Gate 6i仍没有科学结果。
 
 已冻结的第一项设计决定：谱方法在新候选中作为作用于最终 Surface Delta 的软
 自然性正则，只惩罚高频谱能量；它不再把扰动硬限制在前 K 个谱基中，也不是与
