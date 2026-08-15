@@ -61,6 +61,8 @@ Gate 6h Scalar-Gain Counterfactual正式证据基线：
 `3bf8895053753a040073f6763f7a744f221d6c2d`
 Gate 6i Terminal Endpoint Action GPU runner实现基线：
 `953c21c22b00670e242e19f119b19037e833cf93`
+Gate 6i response teacher序列rank修复基线：
+`5183ee859c6361bcdc2a004a81de70bd6d28c027`
 
 本文是 OpenVLA 谱纹理研究的**当前状态入口**。新一轮开发应先读本文，再按需
 进入专题文档；不要从长篇实验时间线推测当前优先级。历史实验索引见
@@ -1791,6 +1793,16 @@ fingerprint、clean Action target、共享实例数、processor exact forward和
 成功manifest仍只能在CPU evaluator复核全部20/60/2 inventory后最后原子发布。
 新增4项静态科学边界测试，与Gate 6i已有合同测试合计16项通过。GPU正式audit尚未
 运行，因此Gate 6i仍没有科学结果。
+
+第一次正式GPU尝试在commit `3c5a467`完成20/20 gradient和2/2 endpoint step后，
+于第一条`action_spectral/state0/baseline` response的runner自检停止；没有写出任何
+response或成功manifest。根因不是teacher token改变，而是
+`OpenVLAActionResponse.teacher_input_ids`按合同保存为`int64 [L]`，runner却与模型
+边界的`int64 [1,L]`直接作shape-sensitive `array_equal`。commit `5183ee8`把该边界
+收敛为纯CPU校验函数：只允许单batch二维输入与一维response逐token相等，仍拒绝
+额外batch、dtype/长度错误和真实token漂移，并增加对应回归测试。修复后Gate 6i及
+OpenVLA response相关19项测试通过。第一次目录没有完整inventory，不得续跑、拼接
+或提取科学结论；正式audit必须在新commit和全新目录从头运行。
 
 已冻结的第一项设计决定：谱方法在新候选中作为作用于最终 Surface Delta 的软
 自然性正则，只惩罚高频谱能量；它不再把扰动硬限制在前 K 个谱基中，也不是与
