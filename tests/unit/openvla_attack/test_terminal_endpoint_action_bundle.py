@@ -490,9 +490,28 @@ def test_bundle_publish_recomputes_sources_inventory_steps_and_derived(
         tmp_path / "terminal_endpoint_manifest_raw_candidate.json"
     ).exists()
 
+    cross_platform = json.loads(json.dumps(manifest))
+    original_cosine = cross_platform["derived"]["evidence"][
+        "aggregate_endpoint_gradient_cosine"
+    ]
+    cross_platform["derived"]["evidence"][
+        "aggregate_endpoint_gradient_cosine"
+    ] = float(np.nextafter(original_cosine, np.inf))
+    cross_platform_path = tmp_path / "cross_platform_derived.json"
+    cross_platform_path.write_text(
+        json.dumps(cross_platform, sort_keys=True),
+        encoding="utf-8",
+    )
+    cross_platform_decision = evaluate_terminal_endpoint_bundle(
+        cross_platform_path
+    )
+    assert cross_platform_decision.audit_valid, (
+        cross_platform_decision.failures
+    )
+
     manifest["derived"]["evidence"][
         "aggregate_endpoint_gradient_cosine"
-    ] = 0.0
+    ] = original_cosine + 1e-9
     tampered_path = tmp_path / "tampered_derived.json"
     tampered_path.write_text(
         json.dumps(manifest, sort_keys=True),

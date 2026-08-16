@@ -55,6 +55,10 @@ FORMAL_SURFACE_EPSILON: Final[float] = 128.0 / 255.0
 FORMAL_SURFACE_STEP: Final[float] = 2.0 / 255.0
 STEP_ARMS: Final[tuple[str, ...]] = ("dense", "support")
 NUMERIC_TOLERANCE: Final[float] = 1e-6
+# ``derived``只缓存从权威raw arrays复算的便读float64归约值。不同BLAS/NumPy
+# 可能在dot/norm最后数个bit产生差异；该容差比raw step复核容差小六个数量级，
+# 不用于任何raw array、SHA、Action float32或离散字段。
+DERIVED_FLOAT_TOLERANCE: Final[float] = 1e-12
 _STEP_ARRAY_NAMES: Final[tuple[str, ...]] = (
     "realized_endpoint",
     "masked_gradient",
@@ -769,6 +773,35 @@ def terminal_endpoint_bundle_decision_record(
     }
 
 
+def _derived_records_equal(observed: object, expected: object) -> bool:
+    """严格比较derived结构，仅容忍有限float64跨平台归约末位差异。"""
+
+    if isinstance(observed, dict) and isinstance(expected, dict):
+        return observed.keys() == expected.keys() and all(
+            _derived_records_equal(observed[key], expected[key])
+            for key in observed
+        )
+    if isinstance(observed, list) and isinstance(expected, list):
+        return len(observed) == len(expected) and all(
+            _derived_records_equal(left, right)
+            for left, right in zip(observed, expected)
+        )
+    if isinstance(observed, float) and isinstance(expected, float):
+        return (
+            math.isfinite(observed)
+            and math.isfinite(expected)
+            and math.isclose(
+                observed,
+                expected,
+                rel_tol=DERIVED_FLOAT_TOLERANCE,
+                abs_tol=DERIVED_FLOAT_TOLERANCE,
+            )
+        )
+    # bool/int/string/None必须保持同一JSON类型并逐值相同；禁止利用
+    # ``True == 1`` 或 ``1 == 1.0`` 掩盖schema漂移。
+    return type(observed) is type(expected) and observed == expected
+
+
 def evaluate_terminal_endpoint_bundle(
     manifest_path: str | Path,
     *,
@@ -1071,7 +1104,10 @@ def evaluate_terminal_endpoint_bundle(
     )
     if not failures and require_derived:
         expected_derived = terminal_endpoint_bundle_decision_record(provisional)
-        if manifest.get("derived") != expected_derived:
+        if not _derived_records_equal(
+            manifest.get("derived"),
+            expected_derived,
+        ):
             failures.append("manifest derived不能由raw evidence独立复算")
     if failures:
         return TerminalEndpointBundleDecision(
