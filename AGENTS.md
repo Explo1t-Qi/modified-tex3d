@@ -34,7 +34,8 @@
   正回弹、8个部署翻转；现已冻结
   `κ=median(crossed positive drift)=4.375`，只作为一次预注册的局部
   source-strength干预，不声称最优，也不解决58个尚未越界token。当前唯一下一
-  门槛是commit `0e7d201`实现的Action-only+κ两步GPU工程smoke及WSL独立复核；
+  门槛是commits `0e7d201`/`8448567`实现的Action-only+κ两步GPU工程smoke及
+  WSL独立复核；
   通过前CLI明确禁止5000轮，且不得调Support/K/lambda/Feature/wrist或进入OFT。
 - states 10–19 已反复参与方法决策，必须称为 source development/validation
   states，不能再作为无偏 held-out test。方法冻结后的正式无偏结论仍需新任务或

@@ -81,6 +81,8 @@ Action-only κ feasibility/margin-drift只读分析器实现基线：
 `343d5c0aee285bd4003a79e0bc28b535d9479704`
 Action-only+κ objective与两步工程smoke实现基线：
 `0e7d201728441f7bdd84f582a98ec35d1dc5c045`
+Action-only+κ shallow-crossing梯度proof基线：
+`84485672df5fa491f8c2c595d777b2891dc029d3`
 
 本文是 OpenVLA 谱纹理研究的**当前状态入口**。新一轮开发应先读本文，再按需
 进入专题文档；不要从长篇实验时间线推测当前优先级。历史实验索引见
@@ -226,9 +228,10 @@ gradient，matched正预测的exact-forward一致率为12/15；radial不一致�
 形成双endpoint共同projection机制。`Mechanism diagnosis phase frozen`：这些
 候选没有被数学排除，但当前不再自动扩展新Gate。下一阶段已切换为source-strength
 intervention；现已冻结只由states 0--9既有Action-only Gate 6g证据得到的
-`κ=4.375`，第一轮只做Action-only+κ，不加入Spectral Guard。commit `0e7d201`
-已实现objective、κ=0回归、分段数学测试、两步runner与独立CPU evidence
-contract；当前唯一下一门槛是服务器2-step GPU工程smoke及rsync后WSL复核。
+`κ=4.375`，第一轮只做Action-only+κ，不加入Spectral Guard。commits
+`0e7d201`/`8448567`已实现objective、κ=0回归、分段数学测试、两步runner、
+bundle内shallow-crossing autograd proof与独立CPU evidence contract；当前唯一
+下一门槛是服务器2-step GPU工程smoke及rsync后WSL复核。
 工程验收前代码会拒绝5000轮，OFT仍不得提前进入。
 
 真实 Spatial checkpoint 的 CPU 差分记录为 fused pixel values MAE/L∞=`0/0`，
@@ -2066,14 +2069,17 @@ radial projection、Surface Step=`2/255`、Surface-L∞=`128/255`、states 0--9�
 混入旧lambda的相对权重变化。paired source-development rollout仍以相对历史
 Action-only基线的`>=3/10`新增失败作为promotion signal；这不是统计显著性。
 
-commit `0e7d201728441f7bdd84f582a98ec35d1dc5c045`完成实现：公共objective默认
+commits `0e7d201728441f7bdd84f582a98ec35d1dc5c045`与
+`84485672df5fa491f8c2c595d777b2891dc029d3`完成实现：公共objective默认
 `κ=0`并保留旧计算图；单测逐值比较loss、active-token mask和logits梯度，并覆盖
 `m>0`、`-κ<m<=0`、`m<=-κ`及精确`m=-κ`边界。正式provider把κ、逐token
 margin/hinge、active count和shallow-crossed active count写入证据；两步模式复用
 同一`FixedSupportTrainerCore`、surface-normalized update、radial projection、
 artifact store与bake路径，禁止Spectral Guard和paired rollout。独立CPU evaluator
 复算2行step、20行state evidence、SurfaceStepStats、预算、参数/loss/bake及全部
-SHA；manifest固定`scientific_gate=false`、`formal_training_allowed=false`。
+SHA；manifest还保存同一公共objective产生的确定性浅越界proof，要求旧hinge/
+clean-logit梯度为`0/0`，κ hinge/clean/best-other梯度为`2.375/1/-1`。manifest
+固定`scientific_gate=false`、`formal_training_allowed=false`。
 本地相关回归`51 passed`；完整默认suite仍只在此前相同的10个`nvdiffrast`/
 完整LIBERO依赖文件处停止收集。当前尚无GPU smoke结果，CLI在该结果验收前明确
 拒绝Action-only+κ的5000轮正式训练。
