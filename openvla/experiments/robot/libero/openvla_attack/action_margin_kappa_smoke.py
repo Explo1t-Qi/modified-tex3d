@@ -32,6 +32,7 @@ from .seed_score_audit import file_sha256
 
 EXPECTED_NUM_STEPS: Final[int] = 2
 NUMERIC_TOLERANCE: Final[float] = 1e-7
+FLOAT32_REDUCTION_MAX_ULPS: Final[int] = 4
 
 
 @dataclass(frozen=True)
@@ -45,6 +46,27 @@ class ActionMarginKappaSmokeDecision:
 
 def _finite(value: Any) -> bool:
     return isinstance(value, (int, float)) and math.isfinite(float(value))
+
+
+def _matches_float32_mean(
+    observed: Any,
+    values: np.ndarray,
+) -> bool:
+    """允许GPU/CPU float32 mean归约顺序造成的有限ULP差异。"""
+
+    if not _finite(observed) or values.dtype != np.float32:
+        return False
+    resolved_observed = float(observed)
+    # 真实provider的loss来自float32 tensor.item()；拒绝无法由float32表示的
+    # 任意JSON小数，避免ULP容差掩盖手工篡改。
+    if float(np.float32(resolved_observed)) != resolved_observed:
+        return False
+    expected = float(values.mean(dtype=np.float64))
+    reference = np.float32(max(abs(resolved_observed), abs(expected)))
+    ulp = abs(float(np.spacing(reference)))
+    return abs(resolved_observed - expected) <= (
+        FLOAT32_REDUCTION_MAX_ULPS * ulp
+    )
 
 
 def _jsonl_rows(path: Path) -> Iterator[tuple[int, dict[str, Any]]]:
@@ -292,16 +314,11 @@ def evaluate_action_margin_kappa_smoke_bundle(
                 or row.get("active_token_count") != active
                 or row.get("shallow_crossed_active_count") != shallow
                 or row.get("nonpositive_margin_count") != nonpositive
-                or not math.isclose(
-                    float(row.get("action_loss", float("nan"))),
-                    float(hinges.mean(dtype=np.float32)),
-                    rel_tol=0.0,
-                    abs_tol=1e-7,
-                )
+                or not _matches_float32_mean(row.get("action_loss"), hinges)
             ):
                 failures.append(f"step {step} state {state_id} κ统计错误")
             shallow_total += shallow
-            frame_losses[step].append(float(hinges.mean()))
+            frame_losses[step].append(float(row["action_loss"]))
     except (OSError, TypeError, ValueError, json.JSONDecodeError) as error:
         failures.append(f"κ工程smoke JSONL无法复核: {error}")
 

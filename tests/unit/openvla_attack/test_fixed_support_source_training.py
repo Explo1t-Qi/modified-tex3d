@@ -418,6 +418,49 @@ def test_action_only_kappa_engineering_smoke_is_explicitly_non_scientific(
     assert decision.failures == ()
     assert decision.shallow_crossed_active_tokens == 20
 
+    # 真实CUDA bundle中，GPU torch.mean与CPU重新归约同一组float32 hinge会
+    # 相差约1 ULP。保持hinge逐值不变，只模拟该跨后端归约差异；step loss仍
+    # 必须逐值等于十个运行时state loss的float64均值。
+    frame_rows = [
+        json.loads(line)
+        for line in result.action_frames_path.read_text().splitlines()
+    ]
+    frame_rows[0]["action_loss"] = float(
+        np.nextafter(
+            np.float32(frame_rows[0]["action_loss"]),
+            np.float32(np.inf),
+        )
+    )
+    with result.action_frames_path.open("w", encoding="utf-8") as handle:
+        for row in frame_rows:
+            handle.write(json.dumps(row, sort_keys=True) + "\n")
+    step_rows = [
+        json.loads(line) for line in result.steps_path.read_text().splitlines()
+    ]
+    step_rows[0]["action_loss"] = float(
+        np.mean(
+            [row["action_loss"] for row in frame_rows[:10]],
+            dtype=np.float64,
+        )
+    )
+    with result.steps_path.open("w", encoding="utf-8") as handle:
+        for row in step_rows:
+            handle.write(json.dumps(row, sort_keys=True) + "\n")
+    loss_history = np.load(result.loss_history_path, allow_pickle=False)
+    loss_history[0] = step_rows[0]["action_loss"]
+    np.save(result.loss_history_path, loss_history)
+    manifest["action_frames_sha256"] = file_sha256(result.action_frames_path)
+    manifest["steps_sha256"] = file_sha256(result.steps_path)
+    manifest["loss_history_sha256"] = file_sha256(result.loss_history_path)
+    result.manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    cross_backend = evaluate_action_margin_kappa_smoke_bundle(
+        result.manifest_path
+    )
+
+    assert cross_backend.gate_pass is True
+    assert cross_backend.failures == ()
+
 
 def test_formal_training_rejects_provider_kappa_mismatch(
     tmp_path,
