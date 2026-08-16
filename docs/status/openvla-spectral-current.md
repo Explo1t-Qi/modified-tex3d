@@ -73,6 +73,8 @@ Gate 6j独立CPU evaluator脚本入口修复基线：
 `c65c7d5a402e542b33a5cfe4ebc93f543d812d37`
 Gate 6j state 0 GPU smoke证据基线：
 `4752b1854ec5992d71c72c5ea646a4ea5cd74093`
+Gate 6j Radial-vs-Matched-Box正式证据基线：
+`35e8b7ecbeac46b5cb6fb58c2617175643f0cd73`
 
 本文是 OpenVLA 谱纹理研究的**当前状态入口**。新一轮开发应先读本文，再按需
 进入专题文档；不要从长篇实验时间线推测当前优先级。历史实验索引见
@@ -109,7 +111,7 @@ Gate 6j state 0 GPU smoke证据基线：
 | Gate 6g Terminal Deployment Response | 已完成，20/20工程审计有效 | Action+Spectral有7/10训练响应，部署严格保留3/7；Action-only有6/10训练响应，部署严格保留4/6。两者均存在`lost/altered`，未观察到tie或invalid |
 | Gate 6h Scalar-Gain Counterfactual | 已完成，20/20工程审计有效 | 冻结6个主case为4 `gain_sufficient` / 1 `residual_necessary` / 1 `ambiguous`；只有Action+Spectral出现`residual_necessary`，按预注册解释树进入`endpoint_or_trajectory_specific` |
 | Gate 6i Terminal Endpoint Action-Gradient/Response | 已完成，20/60/2工程审计有效 | 两终态聚合梯度cosine=`0.9068`；terminal逐state retention均值上升但aggregate retention降至`0.3574/0.3423`；Dense advantage一负一正，不支持共同的终态局部Support瓶颈 |
-| Gate 6j Radial-vs-Matched-Box Counterfactual | state 0 GPU smoke已通过，正式60-response待执行 | preflight 25项及WSL独立复核的parent/2 step/6 response均有效；只读Gate 6i证据，在相同actual Surface-L∞下比较radial与matched-box |
+| Gate 6j Radial-vs-Matched-Box Counterfactual | 已完成，2 step/60 response工程审计有效 | Action+Spectral `D=-0.00625`且4/2/4正零负；Action-only `D=+0.04732`且5/2/3；不支持共同radial projection harm，未触发换投影重训条件 |
 | 无偏跨模型迁移与鲁棒性提升 | 未开始 | 需方法冻结后的新任务/第三模型与后续防御实验 |
 
 ## 当前已确认的科学结论
@@ -133,6 +135,10 @@ Gate 6j state 0 GPU smoke证据基线：
    Action+Spectral则是Support一步更好。当前证据不支持把共同的终态局部Support
    瓶颈作为两者均只有2/10 source新增失败的解释，也不排除Support在训练早期
    轨迹或面积预算上的限制。
+8. Gate 6j在相同actual Surface-L∞下比较radial与matched-box：后者只对
+   Action-only显示平均优势，对Action+Spectral略差，逐state符号也混合。两个
+   endpoint相对baseline的平均Action hinge均降低，但这不足以支持共同的radial
+   projection harm，也未达到此前冻结的“两个endpoint均`D>0`且`I_M>0`”重训触发条件。
 
 ## 当前实现基线
 
@@ -201,7 +207,9 @@ Audit现也已完成：两个终态的局部梯度总体相似，但逐state与a
 L∞明显缩小且descent cosine为负；因此唯一下一门槛已冻结为Gate 6j
 Radial-vs-Matched-Box静态反事实。其artifact/evaluator、state 0 GPU smoke和正式
 states 0--9三臂runner已经实现；state 0 GPU smoke与WSL独立复核现已通过，正式
-60-response结果尚未产生。当前不自动启动新训练，OFT仍不得提前进入。
+60-response bundle现在也已完成并由WSL独立复核。结果仍为endpoint-specific，
+不支持共同projection机制。当前没有已冻结的新实验门槛，不自动启动新训练，
+OFT仍不得提前进入。
 
 真实 Spatial checkpoint 的 CPU 差分记录为 fused pixel values MAE/L∞=`0/0`，
 输入梯度有限且非零；文档记录当时全量 CPU 回归为 `113 passed, 1 skipped`。
@@ -1854,7 +1862,7 @@ descent-alignment cosine为`-0.701719/-0.234839`，说明边界投影显著改�
 实际步。故该结果是“正式相同更新规则下的可执行一步”证据，不能被改写成相同步长
 的无约束坐标消融，更不能外推为完整训练轨迹或rollout因果。
 
-### Gate 6j：Radial-vs-Matched-Box Counterfactual（smoke已通过，formal待执行）
+### Gate 6j：Radial-vs-Matched-Box Counterfactual（正式完成）
 
 Gate 6j只读Gate 6i已通过的两个正式终态、聚合Action gradient、Support radial
 step和states 0--9 clean target；不得重新backward、重训、rollout或读取
@@ -1911,7 +1919,31 @@ decision均为`audit_valid=true`且无failure，三个parent输入SHA与原Gate 
 `0.346504/0.464884`且都满足`0<s<=1`。state 0上Action+Spectral的
 `D/I_M=+0.160714/+0.196429`，Action-only为
 `-0.160714/-0.098214`；单state符号相反只证明smoke有响应分辨率，不形成机制结论。
-工程smoke已通过，下一步只允许在另一个全新目录运行正式states 0--9 audit。
+工程smoke据此放行另一个全新目录中的正式states 0--9 audit。
+
+正式run `gate6j-projection-formal-35e8b7e-20260816`在commit `35e8b7e`完成
+2个matched-step与60条response；成功manifest/log SHA-256分别为
+`a639e108b14e5dca5f932eb2b9ef0aa2945455d054ba5c58c1d432a478fa9f95`和
+`a0a0e753a37438ca67e22e4028b7a5e09af581b92239b347a76034628890a2fb`。
+WSL独立evaluator从自包含parent、raw step/response和全部SHA复算为
+`audit_valid=true`、2/60 inventory完整且无failure；smoke与formal的两个step及
+state 0六条response逐字节相同。
+
+逐endpoint结果如下，正/零/负计数均按原states 0--9报告：
+
+| Endpoint | `L_baseline` | `L_radial` | `L_matched` | `D` mean/median/sign | `I_M` mean/median/sign | `D>0且I_M>0` states |
+|---|---:|---:|---:|---|---|---|
+| Action+Spectral | 8.583929 | 8.491964 | 8.498214 | -0.006250 / 0 / 4/2/4 | +0.085714 / +0.089285 / 7/0/3 | 0、9 |
+| Action-only | 9.234821 | 9.210714 | 9.163393 | +0.047321 / +0.008929 / 5/2/3 | +0.071429 / +0.053572 / 9/0/1 | 1、2、5、7、8 |
+
+这里sign字段顺序为positive-zero-negative。Matched-box相对baseline的平均Action
+hinge在两个endpoint都下降，但相对radial只在Action-only有平均优势；
+Action+Spectral略差且逐state为4正/2零/4负。因此没有出现预注册的双endpoint
+共同`D>0且I_M>0`，不支持共同radial projection harm，也不触发替换正式trainer
+投影并重训。两个matched step的gradient几何都显示正predicted decrease和约
+`0.99` descent cosine，而exact forward的相对优势仍endpoint/state dependent；
+所以仅凭一阶几何改善不足以预测Action响应。Gate 6j至此完成，下一步必须先讨论
+并冻结新的机制问题，不能自动进入训练或OFT。
 
 已冻结的第一项设计决定：谱方法在新候选中作为作用于最终 Surface Delta 的软
 自然性正则，只惩罚高频谱能量；它不再把扰动硬限制在前 K 个谱基中，也不是与
@@ -2604,11 +2636,10 @@ Gate 判断，但永远不能替代权威 30 行记录、NPZ 或逐 case 图。
 
 ## 当前禁止的捷径
 
-- Gate 6j是当前唯一下一门槛；state 0 GPU smoke与严格parent replay已通过，
-  下一步只允许在全新目录运行正式states 0--9三臂audit，不得拼接smoke；
-- Gate 6j不得重新计算梯度、训练、rollout，或修改Support/K/lambda/Action
-  objective/Feature/wrist/OFT；不得把matched-box静态结果包装为完整trajectory、
-  2/10 rollout根因或纯方向消融；
+- Gate 6j已正式完成；不得跨endpoint平均后声称共同projection harm，也不得据此
+  替换正式trainer投影、重训或进入OFT；
+- 当前没有已冻结的新实验门槛。下一步必须先讨论并登记唯一机制问题，不得把
+  matched-box静态结果包装为完整trajectory、2/10 rollout根因或纯方向消融；
 - 不根据Gate 6h结果事后扩展gamma、逐通道或局部photometric模型，也不得
   把单一Action+Spectral case的`residual_necessary`包装为双variant共同主因；
 - 不把 OFT 梯度用于 source-only loss、选基或超参数选择；
