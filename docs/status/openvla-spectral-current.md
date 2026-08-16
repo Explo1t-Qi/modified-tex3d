@@ -83,6 +83,8 @@ Action-only+κ objective与两步工程smoke实现基线：
 `0e7d201728441f7bdd84f582a98ec35d1dc5c045`
 Action-only+κ shallow-crossing梯度proof基线：
 `84485672df5fa491f8c2c595d777b2891dc029d3`
+Action-only+κ两步GPU工程smoke独立复核基线：
+`6940700cefbbb8a9cb7d7b9d368502a065d1b922`
 
 本文是 OpenVLA 谱纹理研究的**当前状态入口**。新一轮开发应先读本文，再按需
 进入专题文档；不要从长篇实验时间线推测当前优先级。历史实验索引见
@@ -121,7 +123,7 @@ Action-only+κ shallow-crossing梯度proof基线：
 | Gate 6i Terminal Endpoint Action-Gradient/Response | 已完成，20/60/2工程审计有效 | 两终态聚合梯度cosine=`0.9068`；terminal逐state retention均值上升但aggregate retention降至`0.3574/0.3423`；Dense advantage一负一正，不支持共同的终态局部Support瓶颈 |
 | Gate 6j Radial-vs-Matched-Box Counterfactual | 已完成，2 step/60 response工程审计有效 | Action+Spectral `D=-0.00625`且4/2/4正零负；Action-only `D=+0.04732`且5/2/3；不支持共同radial projection harm，未触发换投影重训条件 |
 | Gate 6g--6j终止诊断P/I只读分析 | 已完成，40/40行有效；机制诊断已冻结 | matched两endpoint合计15个`P>0`中12个`I>0`；现有证据不支持BPDA/Action gradient普遍失效，radial不一致也不构成共同功能瓶颈 |
-| Action-only κ source-strength intervention | κ=4.375已冻结；objective/CPU回归/2-step runner已实现，GPU smoke待验收 | κ只来自states 0--9既有Action-only Gate 6g证据；κ=0逐值退化，三段数学梯度与独立smoke evidence contract已通过本地测试；5000轮CLI仍关闭 |
+| Action-only κ source-strength intervention | κ=4.375已冻结；2-step GPU工程smoke已通过 | 2/2 update、20/20 state evidence、Surface预算、参数/loss/bake/hash与资产恢复有效；原bundle在有界float32归约修复后经WSL独立复核通过；该smoke不是科学Gate，5000轮尚未实现/运行 |
 | 无偏跨模型迁移与鲁棒性提升 | 未开始 | 需方法冻结后的新任务/第三模型与后续防御实验 |
 
 ## 当前已确认的科学结论
@@ -230,9 +232,12 @@ gradient，matched正预测的exact-forward一致率为12/15；radial不一致�
 intervention；现已冻结只由states 0--9既有Action-only Gate 6g证据得到的
 `κ=4.375`，第一轮只做Action-only+κ，不加入Spectral Guard。commits
 `0e7d201`/`8448567`已实现objective、κ=0回归、分段数学测试、两步runner、
-bundle内shallow-crossing autograd proof与独立CPU evidence contract；当前唯一
-下一门槛是服务器2-step GPU工程smoke及rsync后WSL复核。
-工程验收前代码会拒绝5000轮，OFT仍不得提前进入。
+bundle内shallow-crossing autograd proof与独立CPU evidence contract。服务器
+smoke完成2/2次update与全部artifact；原运行只因GPU/CPU对float32 hinge求均值
+的归约顺序相差约1 ULP而被runtime evaluator误拒。commit `6940700`保留逐token
+严格校验，只对已验证float32值的标量mean允许最多4 ULP；原bundle已在WSL独立
+复核通过。当前唯一下一门槛是实现/放行一次Action-only+κ 5000轮正式训练，
+OFT仍不得提前进入。
 
 真实 Spatial checkpoint 的 CPU 差分记录为 fused pixel values MAE/L∞=`0/0`，
 输入梯度有限且非零；文档记录当时全量 CPU 回归为 `113 passed, 1 skipped`。
@@ -2081,8 +2086,18 @@ SHA；manifest还保存同一公共objective产生的确定性浅越界proof，�
 clean-logit梯度为`0/0`，κ hinge/clean/best-other梯度为`2.375/1/-1`。manifest
 固定`scientific_gate=false`、`formal_training_allowed=false`。
 本地相关回归`51 passed`；完整默认suite仍只在此前相同的10个`nvdiffrast`/
-完整LIBERO依赖文件处停止收集。当前尚无GPU smoke结果，CLI在该结果验收前明确
-拒绝Action-only+κ的5000轮正式训练。
+完整LIBERO依赖文件处停止收集。正式run
+`action-only-kappa-smoke-09bc7d1-EVAL-libero_spatial-2026_08_16-17_31_51`
+绑定commit `09bc7d156ebf45790e03b50d0fcd6c1b1b8899ae`，manifest SHA-256为
+`4b4985ac2b0e7a0b663fb8ad046d17ab1462f28eb689dbc0d627a30a908ab901`。它完成
+2/2 update、20/20个唯一`(step,state)`；两步actual Surface-L∞分别为
+`0.007843137718737125`/`0.01568627543747425`，Action gradient L2为
+`0.09830501675605774`/`0.09320293366909027`，最终参数与Geometry Delta L∞均为
+`0.01568627543747425`，且bake、hash与资产恢复均完整。step 0/state 9包含1个
+精确`m=0`的shallow active token，满足冻结定义`-κ<m<=0`。commit `6940700`
+对该原bundle独立复核得到`engineering_valid=true`、`failures=[]`、
+`shallow_crossed_active_tokens=1`。manifest仍固定`scientific_gate=false`；
+两步loss走势不作效果结论，也不允许调整κ。
 
 已冻结的第一项设计决定：谱方法在新候选中作为作用于最终 Surface Delta 的软
 自然性正则，只惩罚高频谱能量；它不再把扰动硬限制在前 K 个谱基中，也不是与
@@ -2782,7 +2797,8 @@ Gate 判断，但永远不能替代权威 30 行记录、NPZ 或逐 case 图。
   自动扩展新Gate；
 - Action-only κ规则已冻结为`median(crossed positive drift)=4.375`；不得用
   states 10--19、OFT或新训练结果反向调整κ，不得扫描其他κ。两步GPU工程smoke
-  及WSL独立复核通过前不得启动5000轮；第一轮不得加入Spectral Guard；
+  及WSL独立复核已通过；下一次正式训练仍必须只启用Action-only+κ，不得加入
+  Spectral Guard或改变其他冻结设置；
 - 不根据Gate 6h结果事后扩展gamma、逐通道或局部photometric模型，也不得
   把单一Action+Spectral case的`residual_necessary`包装为双variant共同主因；
 - 不把 OFT 梯度用于 source-only loss、选基或超参数选择；
