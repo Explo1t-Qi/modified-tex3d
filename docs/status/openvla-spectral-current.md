@@ -79,6 +79,8 @@ Gate 6g--6j终止诊断P/I只读分析器实现基线：
 `636da7655e6f2e1ec82d2bd57a6c9bf79011b307`
 Action-only κ feasibility/margin-drift只读分析器实现基线：
 `343d5c0aee285bd4003a79e0bc28b535d9479704`
+Action-only+κ objective与两步工程smoke实现基线：
+`0e7d201728441f7bdd84f582a98ec35d1dc5c045`
 
 本文是 OpenVLA 谱纹理研究的**当前状态入口**。新一轮开发应先读本文，再按需
 进入专题文档；不要从长篇实验时间线推测当前优先级。历史实验索引见
@@ -117,7 +119,7 @@ Action-only κ feasibility/margin-drift只读分析器实现基线：
 | Gate 6i Terminal Endpoint Action-Gradient/Response | 已完成，20/60/2工程审计有效 | 两终态聚合梯度cosine=`0.9068`；terminal逐state retention均值上升但aggregate retention降至`0.3574/0.3423`；Dense advantage一负一正，不支持共同的终态局部Support瓶颈 |
 | Gate 6j Radial-vs-Matched-Box Counterfactual | 已完成，2 step/60 response工程审计有效 | Action+Spectral `D=-0.00625`且4/2/4正零负；Action-only `D=+0.04732`且5/2/3；不支持共同radial projection harm，未触发换投影重训条件 |
 | Gate 6g--6j终止诊断P/I只读分析 | 已完成，40/40行有效；机制诊断已冻结 | matched两endpoint合计15个`P>0`中12个`I>0`；现有证据不支持BPDA/Action gradient普遍失效，radial不一致也不构成共同功能瓶颈 |
-| Action-only κ feasibility/margin-drift | 70/70 token只读报告已完成；κ尚未冻结 | A路径12个token已越界，其中11个有正deployment drift、8个翻回`m_B>0`；κ有明确但局部的作用空间，58个未越界token不会因κ改变当前梯度 |
+| Action-only κ source-strength intervention | κ=4.375已冻结；objective/CPU回归/2-step runner已实现，GPU smoke待验收 | κ只来自states 0--9既有Action-only Gate 6g证据；κ=0逐值退化，三段数学梯度与独立smoke evidence contract已通过本地测试；5000轮CLI仍关闭 |
 | 无偏跨模型迁移与鲁棒性提升 | 未开始 | 需方法冻结后的新任务/第三模型与后续防御实验 |
 
 ## 当前已确认的科学结论
@@ -223,9 +225,11 @@ L∞明显缩小且descent cosine为负；后续Gate 6j Radial-vs-Matched-Box静
 gradient，matched正预测的exact-forward一致率为12/15；radial不一致较大但仍未
 形成双endpoint共同projection机制。`Mechanism diagnosis phase frozen`：这些
 候选没有被数学排除，但当前不再自动扩展新Gate。下一阶段已切换为source-strength
-intervention设计；Gate 6g Action-only κ feasibility/margin-drift只读报告已经
-完成并显示有限但明确的作用空间。当前唯一下一决策是冻结一个确定性κ规则和
-数值；在该决策登记前不启动训练，OFT仍不得提前进入。
+intervention；现已冻结只由states 0--9既有Action-only Gate 6g证据得到的
+`κ=4.375`，第一轮只做Action-only+κ，不加入Spectral Guard。commit `0e7d201`
+已实现objective、κ=0回归、分段数学测试、两步runner与独立CPU evidence
+contract；当前唯一下一门槛是服务器2-step GPU工程smoke及rsync后WSL复核。
+工程验收前代码会拒绝5000轮，OFT仍不得提前进入。
 
 真实 Spatial checkpoint 的 CPU 差分记录为 fused pixel values MAE/L∞=`0/0`，
 输入梯度有限且非零；文档记录当时全量 CPU 回归为 `113 passed, 1 skipped`。
@@ -2006,7 +2010,7 @@ projection或BPDA/Action-gradient failure是两个endpoint的共同主因；这�
 即使后续只读分析出现异常，也不得自动创建新Gate；重新打开机制诊断必须另行
 讨论并明确冻结。
 
-### Action-only κ feasibility/margin-drift（正式完成，κ尚未冻结）
+### Action-only κ feasibility/margin-drift与干预冻结
 
 commit `343d5c0`实现纯CPU报告器，只读取Gate 6g正式Action-only states 0--9
 C/A/B artifact。Gate 6g完整20-case bundle必须先通过独立复核；随后固定Clean
@@ -2041,8 +2045,8 @@ feasibility科学布尔值，也不自动推荐κ。
   仅有连续margin变化而无决策边界后果。
 
 上述结果支持κ有一次受控pilot的作用空间，但只针对crossed token的局部边界
-脆弱性，不能解释58个uncrossed token或完整2/10 rollout。当前建议、尚未冻结的
-唯一规则是：
+脆弱性，不能解释58个uncrossed token或完整2/10 rollout。2026-08-16 已明确
+冻结唯一规则：
 
 ```text
 kappa = median({Delta_m | m_A <= 0 and Delta_m > 0}) = 4.375
@@ -2052,8 +2056,27 @@ kappa = median({Delta_m | m_A <= 0 and Delta_m > 0}) = 4.375
 存在`11.625`长尾；median比max或高quantile更稳健，也不通过states 10--19、OFT
 或新训练结果选择。`κ=4.375`在旧终态会重新激活6/12个crossed token，其中5个
 属于8个deployment reversal；更深的负margin仍会停止，因此它不是让所有Action
-gradient无条件增强。该规则和数值必须经下一次明确决策冻结后，才允许实现
-Action-only+κ objective、工程smoke和单次5000轮训练。
+gradient无条件增强。该值只是一轮预注册的source-development intervention，
+不声称是最优κ；states 10--19 rollout、OFT与后续训练结果均不得反向调整它。
+
+第一轮干预严格保持Production Support、surface-area budget、renderer/BPDA、
+radial projection、Surface Step=`2/255`、Surface-L∞=`128/255`、states 0--9、
+5000轮和其余训练配置不变，只把逐token目标从`relu(m_a)`改为
+`relu(m_a+4.375)`。本轮明确不计算Spectral Guard，避免κ改变active-token集合后
+混入旧lambda的相对权重变化。paired source-development rollout仍以相对历史
+Action-only基线的`>=3/10`新增失败作为promotion signal；这不是统计显著性。
+
+commit `0e7d201728441f7bdd84f582a98ec35d1dc5c045`完成实现：公共objective默认
+`κ=0`并保留旧计算图；单测逐值比较loss、active-token mask和logits梯度，并覆盖
+`m>0`、`-κ<m<=0`、`m<=-κ`及精确`m=-κ`边界。正式provider把κ、逐token
+margin/hinge、active count和shallow-crossed active count写入证据；两步模式复用
+同一`FixedSupportTrainerCore`、surface-normalized update、radial projection、
+artifact store与bake路径，禁止Spectral Guard和paired rollout。独立CPU evaluator
+复算2行step、20行state evidence、SurfaceStepStats、预算、参数/loss/bake及全部
+SHA；manifest固定`scientific_gate=false`、`formal_training_allowed=false`。
+本地相关回归`51 passed`；完整默认suite仍只在此前相同的10个`nvdiffrast`/
+完整LIBERO依赖文件处停止收集。当前尚无GPU smoke结果，CLI在该结果验收前明确
+拒绝Action-only+κ的5000轮正式训练。
 
 已冻结的第一项设计决定：谱方法在新候选中作为作用于最终 Surface Delta 的软
 自然性正则，只惩罚高频谱能量；它不再把扰动硬限制在前 K 个谱基中，也不是与
@@ -2751,10 +2774,9 @@ Gate 判断，但永远不能替代权威 30 行记录、NPZ 或逐 case 图。
 - Gate 6g--6j机制诊断已冻结；不得把matched-box或P/I静态结果包装为完整
   trajectory、2/10 rollout根因、纯方向消融或BPDA好坏的自动布尔判定，也不得
   自动扩展新Gate；
-- Gate 6g Action-only κ feasibility/margin-drift已只读完成；当前只允许讨论并
-  冻结或否决建议规则`κ=median(crossed positive drift)=4.375`。规则和数值冻结前
-  不得实现正式干预或启动5000轮训练，也不得用states 10--19、OFT或新训练结果
-  反向选择κ；
+- Action-only κ规则已冻结为`median(crossed positive drift)=4.375`；不得用
+  states 10--19、OFT或新训练结果反向调整κ，不得扫描其他κ。两步GPU工程smoke
+  及WSL独立复核通过前不得启动5000轮；第一轮不得加入Spectral Guard；
 - 不根据Gate 6h结果事后扩展gamma、逐通道或局部photometric模型，也不得
   把单一Action+Spectral case的`residual_necessary`包装为双variant共同主因；
 - 不把 OFT 梯度用于 source-only loss、选基或超参数选择；
