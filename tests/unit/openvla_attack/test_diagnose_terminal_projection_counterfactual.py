@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import ast
+import subprocess
+import sys
 from pathlib import Path
 
 
@@ -11,6 +13,7 @@ RUNNER = (
     / "openvla/experiments/robot/libero/openvla_attack"
     / "diagnose_terminal_projection_counterfactual.py"
 )
+EVALUATOR = RUNNER.with_name("evaluate_terminal_projection_counterfactual.py")
 
 
 def test_runner_is_response_only_and_publishes_frozen_three_arm_bundle() -> None:
@@ -49,3 +52,17 @@ def test_runner_copies_parent_bundle_before_collecting_child_evidence() -> None:
     assert "copied_parent_sha" in source
     assert "original_parent_sha" in source
     assert "strict parent copy SHA漂移" in source
+
+
+def test_cpu_evaluator_supports_repository_script_invocation() -> None:
+    """交给服务器/WSL的脚本路径命令必须能直接解析CLI。"""
+
+    result = subprocess.run(
+        [sys.executable, str(EVALUATOR), "--help"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "--manifest_path" in result.stdout

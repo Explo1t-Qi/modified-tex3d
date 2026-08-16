@@ -4,11 +4,16 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from dataclasses import asdict
 from pathlib import Path
 from typing import Optional, Sequence
 
-from .terminal_projection_counterfactual import (
+LIBERO_EXPERIMENT_DIR = Path(__file__).resolve().parent.parent
+if str(LIBERO_EXPERIMENT_DIR) not in sys.path:
+    sys.path.insert(0, str(LIBERO_EXPERIMENT_DIR))
+
+from openvla_attack.terminal_projection_counterfactual import (  # noqa: E402
     evaluate_terminal_projection_bundle,
 )
 
