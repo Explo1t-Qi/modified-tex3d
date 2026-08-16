@@ -69,6 +69,8 @@ Gate 6i跨环境derived归约复核修复基线：
 `4fb2b6dbfe52232cbbf23649b7e022db726f47a1`
 Gate 6j Radial-vs-Matched-Box实现与smoke基线：
 `8cfa791a0b3d2e1f8ec9e270e78045e5ce729617`
+Gate 6j独立CPU evaluator脚本入口修复基线：
+`c65c7d5a402e542b33a5cfe4ebc93f543d812d37`
 
 本文是 OpenVLA 谱纹理研究的**当前状态入口**。新一轮开发应先读本文，再按需
 进入专题文档；不要从长篇实验时间线推测当前优先级。历史实验索引见
@@ -1892,7 +1894,8 @@ I_M[e,s] = L_baseline[e,s] - L_matched[e,s]
 commit `057a897`实现无pickle matched-step/三臂response artifact、严格parent replay、
 自包含child bundle、CPU evaluator与正式60-response GPU runner；commit `8cfa791`
 增加`--smoke_only`，固定只采双endpoint的state 0共6条response并标记
-`formal_bundle=false`，不得当作正式结果。Gate 6i/6j相关定向测试为`24 passed`；
+`formal_bundle=false`，不得当作正式结果。commit `c65c7d5`补齐独立CPU evaluator
+的仓库脚本路径入口与回归测试。Gate 6i/6j相关定向测试为`25 passed`；
 默认全量本地命令仍在10个既有文件的collection阶段因缺少`nvdiffrast`或完整
 `libero.libero`停止。下一步必须先在绑定commit的服务器新目录运行state 0 smoke，
 通过严格parent replay后才在另一个全新目录运行正式states 0--9 audit。
