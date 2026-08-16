@@ -148,8 +148,11 @@ class GenerateConfig:
     # 保持0，避免旧实验语义被CLI默认值静默改写。
     action_margin_kappa: float = 0.0
     # 仅放行Action-only+κ的两步工程验收；该模式不运行paired rollout，也不
-    # 发布科学Gate。正式5000轮入口在smoke经独立复核前保持关闭。
+    # 发布科学Gate。
     fixed_support_kappa_smoke_enabled: bool = False
+    # 正式Action-only+κ训练必须显式绑定已经独立复核通过的两步工程smoke；
+    # 两步smoke自身及其他训练变体不得填写，避免布尔开关替代artifact证据。
+    action_margin_kappa_smoke_manifest_path: Optional[str] = None
     # 仅用于5000轮训练已完成但后置evaluator/rollout中止的恢复流程。提供后主
     # 入口必须独立复核该正式manifest并直接使用其原bake，禁止再次训练。
     fixed_support_formal_training_manifest_path: Optional[str] = None
@@ -280,6 +283,9 @@ def validate_fixed_support_config(
         "fixed_support_kappa_smoke_enabled": (
             True if cfg.fixed_support_kappa_smoke_enabled else None
         ),
+        "action_margin_kappa_smoke_manifest_path": (
+            cfg.action_margin_kappa_smoke_manifest_path
+        ),
         "code_commit": cfg.code_commit,
     }
     configured = [
@@ -328,12 +334,20 @@ def validate_formal_fixed_support_experiment(
             f"action_margin_kappa={expected_kappa}"
         )
     if training_variant == "action_only_kappa":
-        if not cfg.fixed_support_kappa_smoke_enabled:
+        if cfg.fixed_support_kappa_smoke_enabled:
+            if cfg.action_margin_kappa_smoke_manifest_path is not None:
+                raise ValueError("κ工程smoke不得绑定自身manifest")
+        elif cfg.action_margin_kappa_smoke_manifest_path is None:
             raise ValueError(
-                "Action-only+κ正式5000轮在2-step工程smoke验收前保持关闭"
+                "Action-only+κ正式5000轮必须提供已验收的κ smoke manifest"
             )
-    elif cfg.fixed_support_kappa_smoke_enabled:
-        raise ValueError("κ工程smoke只允许action_only_kappa变体")
+    elif (
+        cfg.fixed_support_kappa_smoke_enabled
+        or cfg.action_margin_kappa_smoke_manifest_path is not None
+    ):
+        raise ValueError(
+            "κ工程smoke及其manifest只允许action_only_kappa变体"
+        )
     if not cfg.enable_attack:
         raise ValueError("正式Fixed-Support source训练要求enable_attack=True")
     frozen_values = {

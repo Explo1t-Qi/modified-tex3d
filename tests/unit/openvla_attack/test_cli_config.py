@@ -93,7 +93,7 @@ def test_action_only_kappa_variant_freezes_preregistered_margin() -> None:
         )
 
 
-def test_action_only_kappa_cli_only_allows_two_step_engineering_smoke() -> None:
+def test_action_only_kappa_cli_requires_accepted_smoke_for_formal_training() -> None:
     config = GenerateConfig(
         texture_parameterization="fixed_support",
         fixed_support_path="/tmp/support.npz",
@@ -122,7 +122,21 @@ def test_action_only_kappa_cli_only_allows_two_step_engineering_smoke() -> None:
 
     config.fixed_support_kappa_smoke_enabled = False
     config.attack_iters = 5000
-    with pytest.raises(ValueError, match="工程smoke验收前"):
+    with pytest.raises(ValueError, match="κ smoke manifest"):
+        validate_formal_fixed_support_experiment(
+            config,
+            texture_parameterization="fixed_support",
+        )
+
+    config.action_margin_kappa_smoke_manifest_path = "/tmp/kappa-smoke.json"
+    validate_formal_fixed_support_experiment(
+        config,
+        texture_parameterization="fixed_support",
+    )
+
+    config.fixed_support_formal_training_variant = "action_only_control"
+    config.action_margin_kappa = 0.0
+    with pytest.raises(ValueError, match="只允许action_only_kappa"):
         validate_formal_fixed_support_experiment(
             config,
             texture_parameterization="fixed_support",

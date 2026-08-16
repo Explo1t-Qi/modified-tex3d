@@ -95,6 +95,7 @@ class FormalTrainingInputs:
     lambda_spec: float
     rho_nat: float
     smoke_config: Mapping[str, Any]
+    action_margin_kappa_smoke_manifest_path: Optional[Path] = None
 
 
 @dataclass(frozen=True)
@@ -222,8 +223,9 @@ def load_formal_training_inputs(
     spectral_basis_path: str | Path,
     spectral_guard_manifest_path: str | Path,
     training_smoke_manifest_path: str | Path,
+    action_margin_kappa_smoke_manifest_path: Optional[str | Path] = None,
 ) -> FormalTrainingInputs:
-    """复核两步 smoke，并要求它绑定本轮提供的四个上游 artifact。"""
+    """复核基础训练smoke及可选κ smoke，绑定全部上游artifact。"""
 
     paths = {
         "production_support": Path(production_support_path).resolve(),
@@ -259,6 +261,27 @@ def load_formal_training_inputs(
     rho_nat = float(manifest.get("rho_nat", float("nan")))
     if not math.isfinite(rho_nat) or not 0.0 <= rho_nat <= 1.0:
         raise FormalSourceTrainingError("smoke中的rho_nat无效")
+    kappa_smoke_path: Optional[Path] = None
+    kappa_smoke_sha256: Optional[str] = None
+    if action_margin_kappa_smoke_manifest_path is not None:
+        from .action_margin_kappa_smoke import (
+            evaluate_action_margin_kappa_smoke_bundle,
+        )
+
+        kappa_smoke_path = Path(
+            action_margin_kappa_smoke_manifest_path
+        ).resolve()
+        if not kappa_smoke_path.is_file():
+            raise FileNotFoundError(kappa_smoke_path)
+        kappa_decision = evaluate_action_margin_kappa_smoke_bundle(
+            kappa_smoke_path
+        )
+        if not kappa_decision.gate_pass:
+            raise FormalSourceTrainingError(
+                "Action-only+κ两步smoke未通过独立复核: "
+                + "; ".join(kappa_decision.failures)
+            )
+        kappa_smoke_sha256 = file_sha256(kappa_smoke_path)
     return FormalTrainingInputs(
         production_support_path=paths["production_support"],
         rho_nat_calibration_path=paths["rho_nat_calibration"],
@@ -268,10 +291,20 @@ def load_formal_training_inputs(
         input_sha256={
             **actual_hashes,
             "fixed_support_training_smoke_manifest": file_sha256(smoke_path),
+            **(
+                {
+                    "action_margin_kappa_smoke_manifest": (
+                        kappa_smoke_sha256
+                    )
+                }
+                if kappa_smoke_sha256 is not None
+                else {}
+            ),
         },
         lambda_spec=lambda_spec,
         rho_nat=rho_nat,
         smoke_config=dict(manifest.get("config", {})),
+        action_margin_kappa_smoke_manifest_path=kappa_smoke_path,
     )
 
 
@@ -503,6 +536,21 @@ def run_formal_source_training(
         raise FormalSourceTrainingError(
             "κ工程smoke必须是action_only_kappa且恰好执行2轮"
         )
+    if (
+        resolved_variant == "action_only_kappa"
+        and not engineering_smoke
+        and inputs.action_margin_kappa_smoke_manifest_path is None
+    ):
+        raise FormalSourceTrainingError(
+            "Action-only+κ正式训练缺少已验收的κ smoke manifest"
+        )
+    if (
+        resolved_variant != "action_only_kappa"
+        and inputs.action_margin_kappa_smoke_manifest_path is not None
+    ):
+        raise FormalSourceTrainingError(
+            "κ smoke manifest只能绑定Action-only+κ正式训练"
+        )
     provider_kappa = float(action_provider.action_margin_kappa)
     if provider_kappa != resolved_kappa:
         raise FormalSourceTrainingError(
@@ -725,6 +773,15 @@ def run_formal_source_training(
             "fixed_support_training_smoke_manifest": str(
                 inputs.training_smoke_manifest_path
             ),
+            **(
+                {
+                    "action_margin_kappa_smoke_manifest": str(
+                        inputs.action_margin_kappa_smoke_manifest_path
+                    )
+                }
+                if inputs.action_margin_kappa_smoke_manifest_path is not None
+                else {}
+            ),
         },
         "input_sha256": dict(inputs.input_sha256),
         "steps_relative_path": steps_path.name,
@@ -846,6 +903,9 @@ def run_formal_source_training_for_task(
         training_smoke_manifest_path=(
             cfg.fixed_support_training_smoke_manifest_path
         ),
+        action_margin_kappa_smoke_manifest_path=(
+            cfg.action_margin_kappa_smoke_manifest_path
+        ),
     )
     validate_formal_config_against_smoke(cfg, inputs)
     image_preprocessor = DifferentiableOpenVLAImageProcessor.from_checkpoint(
@@ -957,6 +1017,9 @@ def prepare_completed_formal_training_for_evaluation(
         spectral_guard_manifest_path=cfg.spectral_guard_manifest_path,
         training_smoke_manifest_path=(
             cfg.fixed_support_training_smoke_manifest_path
+        ),
+        action_margin_kappa_smoke_manifest_path=(
+            cfg.action_margin_kappa_smoke_manifest_path
         ),
     )
     validate_formal_config_against_smoke(cfg, inputs)

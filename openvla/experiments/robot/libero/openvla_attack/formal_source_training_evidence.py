@@ -1,4 +1,4 @@
-"""正式 Fixed-Support source training及Action-only control的独立CPU验收。
+"""正式 Fixed-Support source training及Action-only变体的独立CPU验收。
 
 该 evaluator 不导入模型、LIBERO、renderer 或 CUDA。它重新验证上游两步 smoke、
 全部文件 SHA-256、5000轮/50000行状态覆盖、逐轮 SurfaceStepStats、最终紧凑参数
@@ -18,8 +18,14 @@ from typing import Any, Final, Iterator, Mapping
 import numpy as np
 import torch
 
+from .action_margin_kappa_smoke import (
+    evaluate_action_margin_kappa_smoke_bundle,
+    matches_float32_mean,
+)
+from .configuration import FROZEN_ACTION_MARGIN_KAPPA
 from .fixed_support_source_training import (
     ACTION_ONLY_CONTROL_SCHEMA_VERSION,
+    ACTION_ONLY_KAPPA_SCHEMA_VERSION,
     EXPECTED_TRAIN_STATE_IDS,
     FORMAL_SOURCE_TRAINING_SCHEMA_VERSION,
 )
@@ -145,6 +151,16 @@ def evaluate_formal_source_training_bundle(
                 "fixed_support_training_smoke_manifest",
             )
         }
+        if "action_margin_kappa_smoke_manifest" in input_paths:
+            resolved_inputs["action_margin_kappa_smoke_manifest"] = (
+                _resolve_by_hash(
+                    input_paths["action_margin_kappa_smoke_manifest"],
+                    expected_sha256=input_hashes.get(
+                        "action_margin_kappa_smoke_manifest"
+                    ),
+                    manifest_root=root,
+                )
+            )
         smoke_decision = evaluate_fixed_support_training_smoke_bundle(
             resolved_inputs["fixed_support_training_smoke_manifest"]
         )
@@ -155,6 +171,14 @@ def evaluate_formal_source_training_bundle(
         )
         if not smoke_decision.gate_pass:
             failures.append("上游两步training smoke未通过独立复核")
+        if "action_margin_kappa_smoke_manifest" in resolved_inputs:
+            kappa_smoke_decision = (
+                evaluate_action_margin_kappa_smoke_bundle(
+                    resolved_inputs["action_margin_kappa_smoke_manifest"]
+                )
+            )
+            if not kappa_smoke_decision.gate_pass:
+                failures.append("上游Action-only+κ两步smoke未通过独立复核")
         support = load_production_support_artifact(
             resolved_inputs["production_support"]
         )
@@ -170,29 +194,53 @@ def evaluate_formal_source_training_bundle(
             (f"正式source training bundle无法加载: {error}",),
         )
 
-    if manifest.get("schema_version") != FORMAL_SOURCE_TRAINING_SCHEMA_VERSION:
-        if manifest.get("schema_version") != ACTION_ONLY_CONTROL_SCHEMA_VERSION:
-            failures.append("正式训练schema不匹配")
+    supported_schemas = {
+        FORMAL_SOURCE_TRAINING_SCHEMA_VERSION,
+        ACTION_ONLY_CONTROL_SCHEMA_VERSION,
+        ACTION_ONLY_KAPPA_SCHEMA_VERSION,
+    }
+    if manifest.get("schema_version") not in supported_schemas:
+        failures.append("正式训练schema不匹配")
     raw_variant = manifest.get("training_variant")
     if raw_variant is None and manifest.get("schema_version") == (
         FORMAL_SOURCE_TRAINING_SCHEMA_VERSION
     ):
         # 兼容已经完成并冻结的0aca525主候选bundle。
         training_variant = "action_spectral"
-    elif raw_variant in ("action_spectral", "action_only_control"):
+    elif raw_variant in (
+        "action_spectral",
+        "action_only_control",
+        "action_only_kappa",
+    ):
         training_variant = str(raw_variant)
     else:
         training_variant = "invalid"
         failures.append("正式训练variant缺失或无效")
-    expected_schema = (
-        FORMAL_SOURCE_TRAINING_SCHEMA_VERSION
-        if training_variant == "action_spectral"
-        else ACTION_ONLY_CONTROL_SCHEMA_VERSION
-    )
+    expected_schemas = {
+        "action_spectral": FORMAL_SOURCE_TRAINING_SCHEMA_VERSION,
+        "action_only_control": ACTION_ONLY_CONTROL_SCHEMA_VERSION,
+        "action_only_kappa": ACTION_ONLY_KAPPA_SCHEMA_VERSION,
+    }
+    expected_schema = expected_schemas.get(training_variant)
     if training_variant != "invalid" and manifest.get(
         "schema_version"
     ) != expected_schema:
         failures.append("正式训练variant与schema不一致")
+    has_kappa_smoke_input = (
+        "action_margin_kappa_smoke_manifest" in resolved_inputs
+    )
+    if training_variant == "action_only_kappa":
+        if not has_kappa_smoke_input:
+            failures.append("Action-only+κ正式训练未绑定已验收κ smoke")
+    elif has_kappa_smoke_input:
+        failures.append("非κ正式训练不得绑定κ smoke")
+    expected_kappa = (
+        FROZEN_ACTION_MARGIN_KAPPA
+        if training_variant == "action_only_kappa"
+        else 0.0
+    )
+    if manifest.get("action_margin_kappa") != expected_kappa:
+        failures.append("正式训练action_margin_kappa错误")
     code_commit = manifest.get("code_commit")
     if not isinstance(code_commit, str) or len(code_commit) != 40 or any(
         character not in "0123456789abcdef" for character in code_commit
@@ -278,9 +326,15 @@ def evaluate_formal_source_training_bundle(
                 if row.get("spectral_guard_computed") not in (None, True):
                     failures.append(f"step {iteration}谱Guard计算标记错误")
                     break
-            elif training_variant == "action_only_control":
-                if row.get("training_variant") != "action_only_control":
+            elif training_variant in (
+                "action_only_control",
+                "action_only_kappa",
+            ):
+                if row.get("training_variant") != training_variant:
                     failures.append(f"step {iteration}训练variant错误")
+                    break
+                if row.get("action_margin_kappa") != expected_kappa:
+                    failures.append(f"step {iteration} κ错误")
                     break
                 if row.get("spectral_guard_computed") is not False:
                     failures.append(f"step {iteration}不得计算Spectral Guard")
@@ -359,6 +413,11 @@ def evaluate_formal_source_training_bundle(
     if _line_count(output_paths["steps"]) != FORMAL_NUM_ITERATIONS:
         failures.append(f"step JSONL行数不是{FORMAL_NUM_ITERATIONS}")
 
+    kappa_frame_losses: list[list[float]] = (
+        [[] for _ in range(FORMAL_NUM_ITERATIONS)]
+        if training_variant == "action_only_kappa"
+        else []
+    )
     try:
         for line_number, row in _jsonl_rows(output_paths["action_frames"]):
             iteration, state_id = divmod(line_number - 1, 10)
@@ -370,10 +429,68 @@ def evaluate_formal_source_training_bundle(
             ]:
                 failures.append("逐state Action fingerprint漂移")
                 break
+            if training_variant == "action_only_kappa":
+                margins = np.asarray(row.get("margins"), dtype=np.float32)
+                hinges = np.asarray(
+                    row.get("hinge_values"),
+                    dtype=np.float32,
+                )
+                expected_hinges = np.maximum(
+                    np.float32(0.0),
+                    margins + np.float32(FROZEN_ACTION_MARGIN_KAPPA),
+                )
+                if (
+                    margins.ndim != 1
+                    or margins.size == 0
+                    or margins.shape != hinges.shape
+                    or not np.isfinite(margins).all()
+                    or not np.array_equal(hinges, expected_hinges)
+                ):
+                    failures.append(
+                        f"step {iteration} state {state_id} κ hinge不可复算"
+                    )
+                    break
+                active = int(np.count_nonzero(hinges > 0.0))
+                shallow = int(
+                    np.count_nonzero((margins <= 0.0) & (hinges > 0.0))
+                )
+                nonpositive = int(np.count_nonzero(margins <= 0.0))
+                if (
+                    row.get("action_margin_kappa")
+                    != FROZEN_ACTION_MARGIN_KAPPA
+                    or row.get("active_token_count") != active
+                    or row.get("shallow_crossed_active_count") != shallow
+                    or row.get("nonpositive_margin_count") != nonpositive
+                    or not matches_float32_mean(
+                        row.get("action_loss"),
+                        hinges,
+                    )
+                ):
+                    failures.append(
+                        f"step {iteration} state {state_id} κ统计错误"
+                    )
+                    break
+                kappa_frame_losses[iteration].append(
+                    float(row["action_loss"])
+                )
     except (OSError, TypeError, ValueError, json.JSONDecodeError) as error:
         failures.append(f"Action frame JSONL无法复核: {error}")
     if _line_count(output_paths["action_frames"]) != FORMAL_NUM_ITERATIONS * 10:
         failures.append("逐state Action证据行数不是50000")
+    if training_variant == "action_only_kappa" and len(
+        step_losses
+    ) == FORMAL_NUM_ITERATIONS:
+        for iteration, frame_losses in enumerate(kappa_frame_losses):
+            if len(frame_losses) != 10 or not math.isclose(
+                step_losses[iteration],
+                float(np.mean(frame_losses, dtype=np.float64)),
+                rel_tol=0.0,
+                abs_tol=NUMERIC_TOLERANCE,
+            ):
+                failures.append(
+                    f"step {iteration} loss不是10-state算术均值"
+                )
+                break
 
     try:
         parameter = torch.load(
@@ -414,31 +531,35 @@ def evaluate_formal_source_training_bundle(
     except (OSError, RuntimeError, TypeError, ValueError) as error:
         failures.append(f"最终参数/loss history无法复核: {error}")
 
-    expected_objectives = (
-        [
+    expected_objectives = {
+        "action_spectral": [
             "untargeted_clean_action_margin_hinge",
             "spectral_naturalness_hinge_squared",
-        ]
-        if training_variant == "action_spectral"
-        else ["untargeted_clean_action_margin_hinge"]
-    )
+        ],
+        "action_only_control": [
+            "untargeted_clean_action_margin_hinge"
+        ],
+        "action_only_kappa": [
+            "untargeted_clean_action_margin_hinge_kappa"
+        ],
+    }.get(training_variant)
     if manifest.get("objective_components") != expected_objectives:
         failures.append("正式训练objective组成错误")
     if training_variant == "action_spectral":
         if manifest.get("spectral_guard_computed") not in (None, True):
             failures.append("主候选必须计算Spectral Guard")
-    elif training_variant == "action_only_control":
+    elif training_variant in ("action_only_control", "action_only_kappa"):
         if manifest.get("spectral_guard_computed") is not False:
-            failures.append("Action-only control不得计算Spectral Guard")
+            failures.append("Action-only变体不得计算Spectral Guard")
         if manifest.get("applied_lambda_spec") != 0.0 or manifest.get(
             "lambda_spec"
         ) != 0.0:
-            failures.append("Action-only control实际lambda必须为零")
+            failures.append("Action-only变体实际lambda必须为零")
         calibrated_lambda = manifest.get("calibrated_lambda_spec")
         if not _finite(calibrated_lambda) or not (
             0.0 < float(calibrated_lambda) <= 1.0
         ):
-            failures.append("Action-only control未绑定有效的已校准lambda")
+            failures.append("Action-only变体未绑定有效的已校准lambda")
     if not _finite(manifest.get("rho_nat")) or not math.isclose(
         float(manifest.get("rho_nat", float("nan"))),
         float(smoke_manifest.get("rho_nat", float("nan"))),

@@ -16,8 +16,10 @@ from openvla.experiments.robot.libero.openvla_attack.artifacts import (
 )
 from openvla.experiments.robot.libero.openvla_attack.fixed_support_source_training import (
     ACTION_ONLY_CONTROL_SCHEMA_VERSION,
+    ACTION_ONLY_KAPPA_SCHEMA_VERSION,
     FormalTrainingInputs,
     FormalSourceTrainingError,
+    load_formal_training_inputs,
     load_completed_formal_source_training,
     run_formal_source_training,
 )
@@ -157,7 +159,11 @@ class _Regularizer:
         )
 
 
-def _inputs(tmp_path: Path) -> FormalTrainingInputs:
+def _inputs(
+    tmp_path: Path,
+    *,
+    include_kappa_smoke: bool = False,
+) -> FormalTrainingInputs:
     paths = [tmp_path / f"input-{index}" for index in range(5)]
     for path in paths:
         path.write_text("fixture", encoding="utf-8")
@@ -165,6 +171,9 @@ def _inputs(tmp_path: Path) -> FormalTrainingInputs:
         json.dumps({"lambda_spec": 0.1, "rho_nat": 0.1}),
         encoding="utf-8",
     )
+    kappa_smoke_path = tmp_path / "kappa-smoke-manifest.json"
+    if include_kappa_smoke:
+        kappa_smoke_path.write_text('{"fixture": true}', encoding="utf-8")
     return FormalTrainingInputs(
         production_support_path=paths[0],
         rho_nat_calibration_path=paths[1],
@@ -172,22 +181,118 @@ def _inputs(tmp_path: Path) -> FormalTrainingInputs:
         spectral_guard_manifest_path=paths[3],
         training_smoke_manifest_path=paths[4],
         input_sha256={
-            name: file_sha256(path)
-            for name, path in zip(
-                (
-                    "production_support",
-                    "rho_nat_calibration",
-                    "spectral_basis",
-                    "spectral_guard_manifest",
-                    "fixed_support_training_smoke_manifest",
-                ),
-                paths,
-            )
+            **{
+                name: file_sha256(path)
+                for name, path in zip(
+                    (
+                        "production_support",
+                        "rho_nat_calibration",
+                        "spectral_basis",
+                        "spectral_guard_manifest",
+                        "fixed_support_training_smoke_manifest",
+                    ),
+                    paths,
+                )
+            },
+            **(
+                {
+                    "action_margin_kappa_smoke_manifest": file_sha256(
+                        kappa_smoke_path
+                    )
+                }
+                if include_kappa_smoke
+                else {}
+            ),
         },
         lambda_spec=0.1,
         rho_nat=0.1,
         smoke_config={},
+        action_margin_kappa_smoke_manifest_path=(
+            kappa_smoke_path if include_kappa_smoke else None
+        ),
     )
+
+
+def test_formal_kappa_inputs_require_independently_valid_smoke(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    upstream_paths = {
+        name: tmp_path / f"{name}.artifact"
+        for name in (
+            "production_support",
+            "rho_nat_calibration",
+            "spectral_basis",
+            "spectral_guard_manifest",
+        )
+    }
+    for path in upstream_paths.values():
+        path.write_text("upstream", encoding="utf-8")
+    base_smoke_path = tmp_path / "training-smoke.json"
+    base_smoke_path.write_text(
+        json.dumps(
+            {
+                "input_sha256": {
+                    name: file_sha256(path)
+                    for name, path in upstream_paths.items()
+                },
+                "lambda_spec": 0.1,
+                "rho_nat": 0.1,
+                "config": {},
+            }
+        ),
+        encoding="utf-8",
+    )
+    kappa_smoke_path = tmp_path / "kappa-smoke.json"
+    kappa_smoke_path.write_text('{"engineering": true}', encoding="utf-8")
+    source_module = (
+        "openvla.experiments.robot.libero.openvla_attack."
+        "fixed_support_source_training"
+    )
+    kappa_module = (
+        "openvla.experiments.robot.libero.openvla_attack."
+        "action_margin_kappa_smoke"
+    )
+    monkeypatch.setattr(
+        f"{source_module}.evaluate_fixed_support_training_smoke_bundle",
+        lambda path: SimpleNamespace(gate_pass=True, failures=()),
+    )
+    monkeypatch.setattr(
+        f"{kappa_module}.evaluate_action_margin_kappa_smoke_bundle",
+        lambda path: SimpleNamespace(gate_pass=True, failures=()),
+    )
+
+    inputs = load_formal_training_inputs(
+        production_support_path=upstream_paths["production_support"],
+        rho_nat_calibration_path=upstream_paths["rho_nat_calibration"],
+        spectral_basis_path=upstream_paths["spectral_basis"],
+        spectral_guard_manifest_path=upstream_paths[
+            "spectral_guard_manifest"
+        ],
+        training_smoke_manifest_path=base_smoke_path,
+        action_margin_kappa_smoke_manifest_path=kappa_smoke_path,
+    )
+
+    assert inputs.action_margin_kappa_smoke_manifest_path == kappa_smoke_path
+    assert inputs.input_sha256[
+        "action_margin_kappa_smoke_manifest"
+    ] == file_sha256(kappa_smoke_path)
+
+    monkeypatch.setattr(
+        f"{kappa_module}.evaluate_action_margin_kappa_smoke_bundle",
+        lambda path: SimpleNamespace(gate_pass=False, failures=("bad",)),
+    )
+    with pytest.raises(FormalSourceTrainingError, match="bad"):
+        load_formal_training_inputs(
+            production_support_path=upstream_paths["production_support"],
+            rho_nat_calibration_path=upstream_paths["rho_nat_calibration"],
+            spectral_basis_path=upstream_paths["spectral_basis"],
+            spectral_guard_manifest_path=upstream_paths[
+                "spectral_guard_manifest"
+            ],
+            training_smoke_manifest_path=base_smoke_path,
+            action_margin_kappa_smoke_manifest_path=kappa_smoke_path,
+        )
 
 
 def test_formal_training_writes_incremental_evidence_and_final_artifacts(
@@ -318,7 +423,7 @@ def test_action_only_kappa_binds_objective_without_spectral_guard(
         action_provider=provider,
         regularizer=None,
         artifact_store=store,
-        inputs=_inputs(tmp_path),
+        inputs=_inputs(tmp_path, include_kappa_smoke=True),
         state_fingerprints=fingerprints,
         surface_step=0.1,
         training_variant="action_only_kappa",
@@ -491,7 +596,7 @@ def test_formal_training_rejects_provider_kappa_mismatch(
             action_provider=_Provider(renderer, fingerprints),
             regularizer=None,
             artifact_store=store,
-            inputs=_inputs(tmp_path),
+            inputs=_inputs(tmp_path, include_kappa_smoke=True),
             state_fingerprints=fingerprints,
             surface_step=0.1,
             training_variant="action_only_kappa",
@@ -543,7 +648,7 @@ def test_completed_training_recovery_only_returns_existing_artifact_paths(
 
 @pytest.mark.parametrize(
     "training_variant",
-    ["action_spectral", "action_only_control"],
+    ["action_spectral", "action_only_control", "action_only_kappa"],
 )
 def test_cpu_evaluator_rejects_no_evidence_and_accepts_complete_sequence(
     tmp_path,
@@ -565,21 +670,39 @@ def test_cpu_evaluator_rejects_no_evidence_and_accepts_complete_sequence(
         run_id="evaluator-test",
         create_attack_directory=True,
     )
+    action_margin_kappa = (
+        4.375 if training_variant == "action_only_kappa" else 0.0
+    )
     result = run_formal_source_training(
         code_commit="c" * 40,
         task_id=0,
         num_iterations=2,
         renderer=renderer,
-        action_provider=_Provider(renderer, fingerprints),
+        action_provider=_Provider(
+            renderer,
+            fingerprints,
+            action_margin_kappa=action_margin_kappa,
+        ),
         regularizer=(
             _Regularizer() if training_variant == "action_spectral" else None
         ),
         artifact_store=store,
-        inputs=_inputs(tmp_path),
+        inputs=_inputs(
+            tmp_path,
+            include_kappa_smoke=training_variant == "action_only_kappa",
+        ),
         state_fingerprints=fingerprints,
         surface_step=0.1,
         training_variant=training_variant,
+        action_margin_kappa=action_margin_kappa,
     )
+    manifest = json.loads(result.manifest_path.read_text(encoding="utf-8"))
+    if training_variant == "action_only_kappa":
+        assert manifest["schema_version"] == ACTION_ONLY_KAPPA_SCHEMA_VERSION
+        assert (
+            manifest["input_paths"]["action_margin_kappa_smoke_manifest"]
+            == str(tmp_path / "kappa-smoke-manifest.json")
+        )
 
     evidence_module = (
         "openvla.experiments.robot.libero.openvla_attack."
@@ -594,6 +717,10 @@ def test_cpu_evaluator_rejects_no_evidence_and_accepts_complete_sequence(
         lambda path: SimpleNamespace(
             support_vertex_indices=np.asarray([1, 3], dtype=np.int64)
         ),
+    )
+    monkeypatch.setattr(
+        f"{evidence_module}.evaluate_action_margin_kappa_smoke_bundle",
+        lambda path: SimpleNamespace(gate_pass=True, failures=()),
     )
 
     incomplete = evaluate_formal_source_training_bundle(result.manifest_path)
@@ -627,6 +754,44 @@ def test_cpu_evaluator_rejects_no_evidence_and_accepts_complete_sequence(
 
     assert complete.gate_pass is True
     assert complete.failures == ()
+
+    if training_variant == "action_only_kappa":
+        frame_rows = [
+            json.loads(line)
+            for line in result.action_frames_path.read_text().splitlines()
+        ]
+        frame_rows[0]["action_margin_kappa"] = 4.0
+        with result.action_frames_path.open("w", encoding="utf-8") as handle:
+            for row in frame_rows:
+                handle.write(json.dumps(row, sort_keys=True) + "\n")
+        manifest = json.loads(
+            result.manifest_path.read_text(encoding="utf-8")
+        )
+        manifest["action_frames_sha256"] = file_sha256(
+            result.action_frames_path
+        )
+        result.manifest_path.write_text(
+            json.dumps(manifest),
+            encoding="utf-8",
+        )
+
+        invalid_kappa = evaluate_formal_source_training_bundle(
+            result.manifest_path
+        )
+
+        assert invalid_kappa.gate_pass is False
+        assert any("κ统计错误" in value for value in invalid_kappa.failures)
+        frame_rows[0]["action_margin_kappa"] = 4.375
+        with result.action_frames_path.open("w", encoding="utf-8") as handle:
+            for row in frame_rows:
+                handle.write(json.dumps(row, sort_keys=True) + "\n")
+        manifest["action_frames_sha256"] = file_sha256(
+            result.action_frames_path
+        )
+        result.manifest_path.write_text(
+            json.dumps(manifest),
+            encoding="utf-8",
+        )
 
     # 单行真实证据失败不能级联伪装成文件行数或loss history失败。
     rows = [json.loads(line) for line in result.steps_path.read_text().splitlines()]

@@ -48,7 +48,7 @@ def _finite(value: Any) -> bool:
     return isinstance(value, (int, float)) and math.isfinite(float(value))
 
 
-def _matches_float32_mean(
+def matches_float32_mean(
     observed: Any,
     values: np.ndarray,
 ) -> bool:
@@ -314,7 +314,7 @@ def evaluate_action_margin_kappa_smoke_bundle(
                 or row.get("active_token_count") != active
                 or row.get("shallow_crossed_active_count") != shallow
                 or row.get("nonpositive_margin_count") != nonpositive
-                or not _matches_float32_mean(row.get("action_loss"), hinges)
+                or not matches_float32_mean(row.get("action_loss"), hinges)
             ):
                 failures.append(f"step {step} state {state_id} κ统计错误")
             shallow_total += shallow
