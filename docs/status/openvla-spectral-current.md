@@ -75,6 +75,10 @@ Gate 6j state 0 GPU smoke证据基线：
 `4752b1854ec5992d71c72c5ea646a4ea5cd74093`
 Gate 6j Radial-vs-Matched-Box正式证据基线：
 `35e8b7ecbeac46b5cb6fb58c2617175643f0cd73`
+Gate 6g--6j终止诊断P/I只读分析器实现基线：
+`636da7655e6f2e1ec82d2bd57a6c9bf79011b307`
+Action-only κ feasibility/margin-drift只读分析器实现基线：
+`343d5c0aee285bd4003a79e0bc28b535d9479704`
 
 本文是 OpenVLA 谱纹理研究的**当前状态入口**。新一轮开发应先读本文，再按需
 进入专题文档；不要从长篇实验时间线推测当前优先级。历史实验索引见
@@ -112,6 +116,8 @@ Gate 6j Radial-vs-Matched-Box正式证据基线：
 | Gate 6h Scalar-Gain Counterfactual | 已完成，20/20工程审计有效 | 冻结6个主case为4 `gain_sufficient` / 1 `residual_necessary` / 1 `ambiguous`；只有Action+Spectral出现`residual_necessary`，按预注册解释树进入`endpoint_or_trajectory_specific` |
 | Gate 6i Terminal Endpoint Action-Gradient/Response | 已完成，20/60/2工程审计有效 | 两终态聚合梯度cosine=`0.9068`；terminal逐state retention均值上升但aggregate retention降至`0.3574/0.3423`；Dense advantage一负一正，不支持共同的终态局部Support瓶颈 |
 | Gate 6j Radial-vs-Matched-Box Counterfactual | 已完成，2 step/60 response工程审计有效 | Action+Spectral `D=-0.00625`且4/2/4正零负；Action-only `D=+0.04732`且5/2/3；不支持共同radial projection harm，未触发换投影重训条件 |
+| Gate 6g--6j终止诊断P/I只读分析 | 已完成，40/40行有效；机制诊断已冻结 | matched两endpoint合计15个`P>0`中12个`I>0`；现有证据不支持BPDA/Action gradient普遍失效，radial不一致也不构成共同功能瓶颈 |
+| Action-only κ feasibility/margin-drift | 70/70 token只读报告已完成；κ尚未冻结 | A路径12个token已越界，其中11个有正deployment drift、8个翻回`m_B>0`；κ有明确但局部的作用空间，58个未越界token不会因κ改变当前梯度 |
 | 无偏跨模型迁移与鲁棒性提升 | 未开始 | 需方法冻结后的新任务/第三模型与后续防御实验 |
 
 ## 当前已确认的科学结论
@@ -139,6 +145,14 @@ Gate 6j Radial-vs-Matched-Box正式证据基线：
    Action-only显示平均优势，对Action+Spectral略差，逐state符号也混合。两个
    endpoint相对baseline的平均Action hinge均降低，但这不足以支持共同的radial
    projection harm，也未达到此前冻结的“两个endpoint均`D>0`且`I_M>0`”重训触发条件。
+9. 最终P/I只读分析使用每个endpoint、state自己的raw Action gradient。matched
+   两endpoint合计15个正一阶预测中12个得到正exact-forward improvement，反驳
+   “BPDA/Action gradient普遍失效”；radial的符号不一致更大，但Gate 6j已不支持
+   它是共同功能瓶颈。以上候选均未被数学排除，只是不再继续扩展机制Gate。
+10. Gate 6g Action-only终态中只有12/70 token在A路径达到`m_A<=0`，但其中
+    11/12发生正向deployment drift、8/12实际翻回`m_B>0`。因此负margin buffer
+    针对的是证据明确的局部脆弱性，值得一次受控source-development intervention；
+    它不会增强58/70个仍未越界token的当前梯度，也不能被包装为共同根因。
 
 ## 当前实现基线
 
@@ -204,12 +218,14 @@ Audit现也已完成：两个终态的局部梯度总体相似，但逐state与a
 方向相反，Dense advantage一负一正，因此没有共同terminal local Support瓶颈
 证据。它只检查局部终点几何与Fixed Support的即时单步限制，不观测或归因完整
 训练轨迹。Gate 6i同时暴露出两个Support radial step在边界全局投影后actual
-L∞明显缩小且descent cosine为负；因此唯一下一门槛已冻结为Gate 6j
-Radial-vs-Matched-Box静态反事实。其artifact/evaluator、state 0 GPU smoke和正式
-states 0--9三臂runner已经实现；state 0 GPU smoke与WSL独立复核现已通过，正式
-60-response bundle现在也已完成并由WSL独立复核。结果仍为endpoint-specific，
-不支持共同projection机制。当前没有已冻结的新实验门槛，不自动启动新训练，
-OFT仍不得提前进入。
+L∞明显缩小且descent cosine为负；后续Gate 6j Radial-vs-Matched-Box静态反事实
+及最终P/I只读分析现均已完成。40行正式报告使用逐state梯度而非aggregate
+gradient，matched正预测的exact-forward一致率为12/15；radial不一致较大但仍未
+形成双endpoint共同projection机制。`Mechanism diagnosis phase frozen`：这些
+候选没有被数学排除，但当前不再自动扩展新Gate。下一阶段已切换为source-strength
+intervention设计；Gate 6g Action-only κ feasibility/margin-drift只读报告已经
+完成并显示有限但明确的作用空间。当前唯一下一决策是冻结一个确定性κ规则和
+数值；在该决策登记前不启动训练，OFT仍不得提前进入。
 
 真实 Spatial checkpoint 的 CPU 差分记录为 fused pixel values MAE/L∞=`0/0`，
 输入梯度有限且非零；文档记录当时全量 CPU 回归为 `113 passed, 1 skipped`。
@@ -1942,8 +1958,102 @@ Action+Spectral略差且逐state为4正/2零/4负。因此没有出现预注册�
 共同`D>0且I_M>0`，不支持共同radial projection harm，也不触发替换正式trainer
 投影并重训。两个matched step的gradient几何都显示正predicted decrease和约
 `0.99` descent cosine，而exact forward的相对优势仍endpoint/state dependent；
-所以仅凭一阶几何改善不足以预测Action响应。Gate 6j至此完成，下一步必须先讨论
-并冻结新的机制问题，不能自动进入训练或OFT。
+所以仅凭一阶几何改善不足以预测Action响应。Gate 6j至此完成；随后讨论冻结为
+下述最后一个P/I只读分析，不自动进入训练或OFT。
+
+### Gate 6g--6j终止诊断P/I只读分析（正式完成，不编号为新Gate）
+
+commit `636da76`实现纯CPU analyzer，只消费Gate 6j自包含bundle并先完整重放
+parent Gate 6i、20个逐state gradient、双endpoint step和60条response。正式报告
+固定分析40个非平凡`endpoint × state × {radial,matched}` case；baseline只作为
+Action loss与generation共同参考，不向contingency人为加入20个平凡零步。每行按
+该state自己的raw `g[e,s]`，用float64乘法/归约计算：
+
+```text
+P[e,s,a] = -<g[e,s], Delta[e,a]>
+I[e,s,a] = L_baseline[e,s] - L_arm[e,s,a]
+```
+
+正/零/负使用精确比较、不设容差；generation只报告相对baseline变化的token数量
+和首次位置，不参与valid/fail。每行绑定Gate 6i/6j manifest SHA、endpoint、state
+fingerprint、gradient/step/baseline/arm artifact SHA及step-array SHA。analyzer不输出
+`bpda_bad`、`common_bottleneck`或其他科学布尔值。
+
+正式输入是run `gate6j-projection-formal-35e8b7e-20260816`的manifest，输出位于
+同一忽略目录下的`analysis/terminal_prediction_alignment_report.json`，报告
+SHA-256为
+`ac42e654c5f67426c3cef0d62d10ccb6ea2d61a17368bdf03c92191427f386a8`。
+40/40行复核有效且无failure。下表的contingency按`P`的positive/zero/negative为
+行、`I`的positive/zero/negative为列，每行用`I+/I0/I-`表示：
+
+| Endpoint/arm | `P` mean/median | `I` mean/median | 3×3 contingency | generation changed states/tokens |
+|---|---:|---:|---|---:|
+| Action+Spectral radial | -0.011018 / -0.010403 | +0.091964 / +0.089286 | `2/0/0; 0/0/0; 6/0/2` | 2/9 |
+| Action+Spectral matched | +0.031961 / +0.030380 | +0.085714 / +0.089285 | `6/0/2; 0/0/0; 1/0/1` | 3/10 |
+| Action-only radial | -0.004410 / -0.003051 | +0.024107 / +0.017858 | `3/0/0; 0/0/0; 2/3/2` | 0/0 |
+| Action-only matched | +0.034684 / +0.041808 | +0.071429 / +0.053572 | `6/0/1; 0/0/0; 3/0/0` | 2/6 |
+
+matched两endpoint共有15个`P>0` case，其中12个`I>0`；这为“Action gradient
+具有有限步exact-forward预测价值”提供正式证据，并反驳其普遍失效。radial中
+15个`P<0` case仍有8个`I>0`、3个`I=0`、4个`I<0`，说明边界投影、有限步和
+非线性会造成较强一阶失配；但Gate 6j已不支持radial是双endpoint共同功能瓶颈。
+hinge变化而generation不变也不构成fidelity失败，因为连续margin可以在不跨过
+离散argmax边界时改变。
+
+统一结论是：Gate 6g--6j未支持renderer residual、Fixed Support、radial
+projection或BPDA/Action-gradient failure是两个endpoint的共同主因；这些因素
+没有被数学排除，但当前不再继续追查。`Mechanism diagnosis phase frozen`。
+即使后续只读分析出现异常，也不得自动创建新Gate；重新打开机制诊断必须另行
+讨论并明确冻结。
+
+### Action-only κ feasibility/margin-drift（正式完成，κ尚未冻结）
+
+commit `343d5c0`实现纯CPU报告器，只读取Gate 6g正式Action-only states 0--9
+C/A/B artifact。Gate 6g完整20-case bundle必须先通过独立复核；随后固定Clean
+cached generation class为`y`，A/B共用同一个clean teacher-forced prefix，模型
+输入只改变Effective RGB。正式逐token定义为：
+
+```text
+m_A = z_A[y] - max_{j != y} z_A[j]
+m_B = z_B[y] - max_{j != y} z_B[j]
+Delta_m = m_B - m_A
+```
+
+margin及drift先按正式Action objective的float32语义复算，分布归约提升到
+float64；`m_A<=0`精确定义为crossed，`Delta_m>0`精确定义为deployment向clean
+重新占优方向回弹，不使用near-boundary阈值。报告绑定Gate 6g manifest、state
+fingerprint、case NPZ、共享teacher prefix及A/B Effective RGB SHA，不输出
+feasibility科学布尔值，也不自动推荐κ。
+
+正式输入run `gate6g-formal-c1c4361-20260812`的manifest SHA-256为
+`323c37fa492a433f47b71f8469a8f5a9ee50fccdd50527289cd0d641b79d2fca`；输出位于
+同一忽略目录的`analysis/action_only_margin_drift_report.json`，报告SHA-256为
+`30a2888a2e8a09ea3f876ea9845777fd4683c491506597eaff68de35ed1730cf`。
+70/70 token复算有效且无failure：
+
+- 58/70满足`m_A>0`，即终态训练路径仍未推下clean token；κ不会改变这些token
+  当前处于active hinge内的梯度；
+- 12/70满足`m_A<=0`；其negative buffer median=`3.03125`，范围
+  `0.125--8.40625`；
+- 11/12 crossed token满足`Delta_m>0`，其positive drift median=`4.375`、
+  Q1/Q3=`2.71875/5.84375`、MAD=`1.8125`、范围`0.375--11.625`；
+- 8/12 crossed token在B路径实际翻回`m_B>0`，说明deployment rebound不是
+  仅有连续margin变化而无决策边界后果。
+
+上述结果支持κ有一次受控pilot的作用空间，但只针对crossed token的局部边界
+脆弱性，不能解释58个uncrossed token或完整2/10 rollout。当前建议、尚未冻结的
+唯一规则是：
+
+```text
+kappa = median({Delta_m | m_A <= 0 and Delta_m > 0}) = 4.375
+```
+
+选择median是因为目标总体恰好是κ希望抵抗的crossed positive rebound，且11个样本
+存在`11.625`长尾；median比max或高quantile更稳健，也不通过states 10--19、OFT
+或新训练结果选择。`κ=4.375`在旧终态会重新激活6/12个crossed token，其中5个
+属于8个deployment reversal；更深的负margin仍会停止，因此它不是让所有Action
+gradient无条件增强。该规则和数值必须经下一次明确决策冻结后，才允许实现
+Action-only+κ objective、工程smoke和单次5000轮训练。
 
 已冻结的第一项设计决定：谱方法在新候选中作为作用于最终 Surface Delta 的软
 自然性正则，只惩罚高频谱能量；它不再把扰动硬限制在前 K 个谱基中，也不是与
@@ -2638,8 +2748,13 @@ Gate 判断，但永远不能替代权威 30 行记录、NPZ 或逐 case 图。
 
 - Gate 6j已正式完成；不得跨endpoint平均后声称共同projection harm，也不得据此
   替换正式trainer投影、重训或进入OFT；
-- 当前没有已冻结的新实验门槛。下一步必须先讨论并登记唯一机制问题，不得把
-  matched-box静态结果包装为完整trajectory、2/10 rollout根因或纯方向消融；
+- Gate 6g--6j机制诊断已冻结；不得把matched-box或P/I静态结果包装为完整
+  trajectory、2/10 rollout根因、纯方向消融或BPDA好坏的自动布尔判定，也不得
+  自动扩展新Gate；
+- Gate 6g Action-only κ feasibility/margin-drift已只读完成；当前只允许讨论并
+  冻结或否决建议规则`κ=median(crossed positive drift)=4.375`。规则和数值冻结前
+  不得实现正式干预或启动5000轮训练，也不得用states 10--19、OFT或新训练结果
+  反向选择κ；
 - 不根据Gate 6h结果事后扩展gamma、逐通道或局部photometric模型，也不得
   把单一Action+Spectral case的`residual_necessary`包装为双variant共同主因；
 - 不把 OFT 梯度用于 source-only loss、选基或超参数选择；

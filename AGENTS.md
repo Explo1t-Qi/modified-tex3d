@@ -27,10 +27,13 @@
   uint8+PIL 路径，backward 为连续 tensor bicubic surrogate。旧候选只作历史
   工程证据，不能代表修正后的科学基线。
 - Fixed-Support Action+Spectral 与严格匹配的 Action-only 对照均只在 source
-  development states 10–19 造成2/10 paired新增失败。当前唯一下一门槛是
-  Gate 6g Terminal Deployment Response Audit：只读比较两个已有终态在训练
-  Renderer Delta Composition 与真实 MuJoCo Active Texture 中的静态动作响应，
-  不重新训练、不调 Support、K、lambda、Feature、wrist 或 OFT。
+  development states 10–19 造成2/10 paired新增失败。Gate 6g--6j与最终P/I只读
+  分析现已完成；未支持renderer residual、Fixed Support、radial projection或
+  BPDA/Action-gradient failure是双终态共同主因，机制诊断阶段已冻结，不自动
+  扩展新Gate。Action-only κ margin/drift只读校准显示12个crossed token中11个
+  正回弹、8个部署翻转；当前唯一下一决策是冻结或否决建议规则
+  `κ=median(crossed positive drift)=4.375`。冻结前不得实现正式干预、重训、
+  调Support/K/lambda/Feature/wrist或进入OFT。
 - states 10–19 已反复参与方法决策，必须称为 source development/validation
   states，不能再作为无偏 held-out test。方法冻结后的正式无偏结论仍需新任务或
   第三个 VLA 模型；states 20–49 在审计历史使用前也不得自动宣称为 untouched。
