@@ -170,6 +170,17 @@ def evaluate_action_margin_kappa_smoke_bundle(
         "untargeted_clean_action_margin_hinge_kappa"
     ]:
         failures.append("κ工程smoke objective组成错误")
+    expected_gradient_proof = {
+        "margin": -2.0,
+        "zero_kappa_hinge": 0.0,
+        "zero_kappa_clean_logit_gradient": 0.0,
+        "action_margin_kappa": FROZEN_ACTION_MARGIN_KAPPA,
+        "kappa_hinge": 2.375,
+        "kappa_clean_logit_gradient": 1.0,
+        "kappa_best_other_logit_gradient": -1.0,
+    }
+    if manifest.get("shallow_crossing_gradient_proof") != expected_gradient_proof:
+        failures.append("浅越界token的κ梯度证明无效")
     fingerprints = manifest.get("train_state_fingerprints")
     if (
         manifest.get("train_state_ids") != list(EXPECTED_TRAIN_STATE_IDS)

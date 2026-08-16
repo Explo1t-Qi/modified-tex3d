@@ -384,6 +384,16 @@ def test_action_only_kappa_engineering_smoke_is_explicitly_non_scientific(
     assert manifest["scientific_gate"] is False
     assert manifest["formal_training_allowed"] is False
     assert manifest["paired_source_rollout_required"] is False
+    proof = manifest["shallow_crossing_gradient_proof"]
+    assert proof == {
+        "margin": -2.0,
+        "zero_kappa_hinge": 0.0,
+        "zero_kappa_clean_logit_gradient": 0.0,
+        "action_margin_kappa": 4.375,
+        "kappa_hinge": 2.375,
+        "kappa_clean_logit_gradient": 1.0,
+        "kappa_best_other_logit_gradient": -1.0,
+    }
 
     smoke_module = (
         "openvla.experiments.robot.libero.openvla_attack."

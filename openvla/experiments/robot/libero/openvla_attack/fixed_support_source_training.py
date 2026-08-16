@@ -405,6 +405,68 @@ def _write_json_line(handle: Any, row: Mapping[str, Any]) -> None:
     handle.write(json.dumps(row, sort_keys=True) + "\n")
 
 
+def _build_shallow_crossing_gradient_proof(
+    action_margin_kappa: float,
+) -> dict[str, float]:
+    """用公共objective证明浅越界token只在κ hinge中保持梯度。"""
+
+    from .objective import (
+        ACTION_TOKEN_END,
+        ACTION_TOKEN_START,
+        untargeted_clean_action_margin_hinge,
+    )
+
+    base_logits = torch.full(
+        (1, 2, ACTION_TOKEN_END),
+        -10.0,
+        dtype=torch.float32,
+    )
+    clean_class_index = ACTION_TOKEN_START
+    best_other_index = ACTION_TOKEN_START + 1
+    base_logits[0, 0, clean_class_index] = -1.0
+    base_logits[0, 0, best_other_index] = 1.0
+    clean_ids = torch.tensor(
+        [[0, ACTION_TOKEN_START]],
+        dtype=torch.int64,
+    )
+    zero_logits = base_logits.clone().requires_grad_(True)
+    kappa_logits = base_logits.clone().requires_grad_(True)
+    zero_objective = untargeted_clean_action_margin_hinge(
+        zero_logits,
+        clean_ids,
+        action_margin_kappa=0.0,
+    )
+    kappa_objective = untargeted_clean_action_margin_hinge(
+        kappa_logits,
+        clean_ids,
+        action_margin_kappa=action_margin_kappa,
+    )
+    zero_gradient = torch.autograd.grad(zero_objective.loss, zero_logits)[0]
+    kappa_gradient = torch.autograd.grad(
+        kappa_objective.loss,
+        kappa_logits,
+    )[0]
+    return {
+        "margin": float(kappa_objective.margins[0].detach().item()),
+        "zero_kappa_hinge": float(
+            zero_objective.hinge_values[0].detach().item()
+        ),
+        "zero_kappa_clean_logit_gradient": float(
+            zero_gradient[0, 0, clean_class_index].item()
+        ),
+        "action_margin_kappa": action_margin_kappa,
+        "kappa_hinge": float(
+            kappa_objective.hinge_values[0].detach().item()
+        ),
+        "kappa_clean_logit_gradient": float(
+            kappa_gradient[0, 0, clean_class_index].item()
+        ),
+        "kappa_best_other_logit_gradient": float(
+            kappa_gradient[0, 0, best_other_index].item()
+        ),
+    }
+
+
 def run_formal_source_training(
     *,
     code_commit: str,
@@ -695,6 +757,11 @@ def run_formal_source_training(
         "engineering_smoke": engineering_smoke,
         "scientific_gate": False if engineering_smoke else None,
         "formal_training_allowed": False if engineering_smoke else None,
+        "shallow_crossing_gradient_proof": (
+            _build_shallow_crossing_gradient_proof(resolved_kappa)
+            if engineering_smoke
+            else None
+        ),
         "paired_source_rollout_required": not engineering_smoke,
         "source_gate_evaluated": False,
     }
