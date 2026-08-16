@@ -380,6 +380,7 @@ class AllStateActionGradientProvider:
         model: Any,
         image_preprocessor: DifferentiableOpenVLAImageProcessor,
         policy_view_transform: DifferentiablePolicyViewTransform,
+        action_margin_kappa: float = 0.0,
     ) -> None:
         self.frames = tuple(frames)
         if tuple(frame.state_id for frame in self.frames) != tuple(range(10)):
@@ -390,6 +391,11 @@ class AllStateActionGradientProvider:
         self.model = model
         self.image_preprocessor = image_preprocessor
         self.policy_view_transform = policy_view_transform
+        self.action_margin_kappa = float(action_margin_kappa)
+        if not math.isfinite(self.action_margin_kappa) or (
+            self.action_margin_kappa < 0.0
+        ):
+            raise ValueError("action_margin_kappa必须为非负有限标量")
         self.call_count = 0
         self.frame_evidence_history: list[dict[str, Any]] = []
 
@@ -444,6 +450,7 @@ class AllStateActionGradientProvider:
                 objective = untargeted_clean_action_margin_hinge(
                     outputs.logits,
                     frame.clean_output_ids,
+                    action_margin_kappa=self.action_margin_kappa,
                 )
             gradient = torch.autograd.grad(objective.loss, parameter)[0]
             if not bool(torch.isfinite(gradient).all()):
@@ -465,6 +472,11 @@ class AllStateActionGradientProvider:
                     "clean_action_token_ids": list(frame.clean_action_token_ids),
                     "margins": margins.tolist(),
                     "hinge_values": hinges.tolist(),
+                    "action_margin_kappa": self.action_margin_kappa,
+                    "active_token_count": int((hinges > 0.0).sum()),
+                    "shallow_crossed_active_count": int(
+                        ((margins <= 0.0) & (hinges > 0.0)).sum()
+                    ),
                     "nonpositive_margin_count": int((margins <= 0.0).sum()),
                     "action_loss": loss_value,
                     "action_gradient_l2": float(

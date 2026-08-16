@@ -7,7 +7,7 @@
 import math
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal, Optional, TypeAlias, Union, cast
+from typing import Final, Literal, Optional, TypeAlias, Union, cast
 
 
 TextureParameterizationKind: TypeAlias = Literal[
@@ -27,6 +27,7 @@ FeatureViewModeKind: TypeAlias = Literal[
 FormalTrainingVariantKind: TypeAlias = Literal[
     "action_spectral",
     "action_only_control",
+    "action_only_kappa",
 ]
 SUPPORTED_TEXTURE_PARAMETERIZATIONS: frozenset[str] = frozenset(
     {"legacy_vertex", "geometry_vertex", "fixed_support", "spectral"}
@@ -38,8 +39,9 @@ SUPPORTED_FEATURE_VIEW_MODES: frozenset[str] = frozenset(
     {"primary", "primary_wrist"}
 )
 SUPPORTED_FORMAL_TRAINING_VARIANTS: frozenset[str] = frozenset(
-    {"action_spectral", "action_only_control"}
+    {"action_spectral", "action_only_control", "action_only_kappa"}
 )
+FROZEN_ACTION_MARGIN_KAPPA: Final[float] = 4.375
 
 
 def resolve_texture_parameterization(
@@ -138,10 +140,16 @@ class GenerateConfig:
     rho_nat_calibration_path: Optional[str] = None
     spectral_guard_manifest_path: Optional[str] = None
     fixed_support_training_smoke_manifest_path: Optional[str] = None
-    # ``action_spectral``是正式主候选；``action_only_control``只用于冻结的
-    # Gate 6f单变量对照。两者共享Fixed Support、Action objective、训练states、
-    # Surface step/L∞预算和轮数，后者明确不计算Spectral Guard。
+    # ``action_spectral``是已完成主候选；``action_only_control``是冻结的Gate 6f
+    # 单变量对照；``action_only_kappa``是当前source-strength干预。三者共享
+    # Fixed Support、训练states和Surface语义；两个Action-only变体不计算Guard。
     fixed_support_formal_training_variant: str = "action_spectral"
+    # ``action_only_kappa``唯一允许使用的预注册置信度边界。其他正式变体必须
+    # 保持0，避免旧实验语义被CLI默认值静默改写。
+    action_margin_kappa: float = 0.0
+    # 仅放行Action-only+κ的两步工程验收；该模式不运行paired rollout，也不
+    # 发布科学Gate。正式5000轮入口在smoke经独立复核前保持关闭。
+    fixed_support_kappa_smoke_enabled: bool = False
     # 仅用于5000轮训练已完成但后置evaluator/rollout中止的恢复流程。提供后主
     # 入口必须独立复核该正式manifest并直接使用其原bake，禁止再次训练。
     fixed_support_formal_training_manifest_path: Optional[str] = None
@@ -266,6 +274,12 @@ def validate_fixed_support_config(
             if cfg.fixed_support_formal_training_variant == "action_spectral"
             else cfg.fixed_support_formal_training_variant
         ),
+        "action_margin_kappa": (
+            None if cfg.action_margin_kappa == 0.0 else cfg.action_margin_kappa
+        ),
+        "fixed_support_kappa_smoke_enabled": (
+            True if cfg.fixed_support_kappa_smoke_enabled else None
+        ),
         "code_commit": cfg.code_commit,
     }
     configured = [
@@ -295,7 +309,31 @@ def validate_formal_fixed_support_experiment(
 
     if texture_parameterization != "fixed_support":
         return
-    resolve_formal_training_variant(cfg.fixed_support_formal_training_variant)
+    training_variant = resolve_formal_training_variant(
+        cfg.fixed_support_formal_training_variant
+    )
+    expected_kappa = (
+        FROZEN_ACTION_MARGIN_KAPPA
+        if training_variant == "action_only_kappa"
+        else 0.0
+    )
+    if not math.isfinite(cfg.action_margin_kappa) or not math.isclose(
+        cfg.action_margin_kappa,
+        expected_kappa,
+        rel_tol=0.0,
+        abs_tol=0.0,
+    ):
+        raise ValueError(
+            f"正式训练变体{training_variant!r}要求"
+            f"action_margin_kappa={expected_kappa}"
+        )
+    if training_variant == "action_only_kappa":
+        if not cfg.fixed_support_kappa_smoke_enabled:
+            raise ValueError(
+                "Action-only+κ正式5000轮在2-step工程smoke验收前保持关闭"
+            )
+    elif cfg.fixed_support_kappa_smoke_enabled:
+        raise ValueError("κ工程smoke只允许action_only_kappa变体")
     if not cfg.enable_attack:
         raise ValueError("正式Fixed-Support source训练要求enable_attack=True")
     frozen_values = {
@@ -303,7 +341,10 @@ def validate_formal_fixed_support_experiment(
         "object_name": (cfg.object_name, "akita_black_bowl"),
         "task_suite_name": (cfg.task_suite_name, "libero_spatial"),
         "task_id": (cfg.task_id, 0),
-        "attack_iters": (cfg.attack_iters, 5000),
+        "attack_iters": (
+            cfg.attack_iters,
+            2 if cfg.fixed_support_kappa_smoke_enabled else 5000,
+        ),
         "num_train_init_states": (cfg.num_train_init_states, 10),
         "num_trials_per_task": (cfg.num_trials_per_task, 10),
         "train_init_state_ids": (cfg.train_init_state_ids, "0-9"),

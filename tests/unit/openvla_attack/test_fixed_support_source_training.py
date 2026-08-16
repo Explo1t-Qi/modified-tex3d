@@ -21,6 +21,9 @@ from openvla.experiments.robot.libero.openvla_attack.fixed_support_source_traini
     load_completed_formal_source_training,
     run_formal_source_training,
 )
+from openvla.experiments.robot.libero.openvla_attack.action_margin_kappa_smoke import (
+    evaluate_action_margin_kappa_smoke_bundle,
+)
 from openvla.experiments.robot.libero.openvla_attack.formal_source_training_evidence import (
     evaluate_formal_source_training_bundle,
 )
@@ -75,25 +78,52 @@ class _Renderer:
 
 
 class _Provider:
-    def __init__(self, renderer: _Renderer, fingerprints: tuple[str, ...]) -> None:
+    def __init__(
+        self,
+        renderer: _Renderer,
+        fingerprints: tuple[str, ...],
+        *,
+        action_margin_kappa: float = 0.0,
+    ) -> None:
         self.renderer = renderer
         self.fingerprints = fingerprints
+        self.action_margin_kappa = action_margin_kappa
         self.iteration = 0
         self.rows: tuple[dict[str, object], ...] = ()
 
     def __call__(self) -> MeanActionGradient:
         iteration = self.iteration
         self.iteration += 1
+        margins = [1.0, -1.0]
+        hinge_values = [
+            max(0.0, margin + self.action_margin_kappa)
+            for margin in margins
+        ]
+        action_loss = float(np.mean(np.asarray(hinge_values)))
         self.rows = tuple(
             {
                 "iteration": iteration,
                 "state_id": state_id,
                 "initial_state_sha256": self.fingerprints[state_id],
+                "margins": margins,
+                "hinge_values": hinge_values,
+                "action_margin_kappa": self.action_margin_kappa,
+                "active_token_count": sum(
+                    value > 0.0 for value in hinge_values
+                ),
+                "shallow_crossed_active_count": sum(
+                    margin <= 0.0 and hinge > 0.0
+                    for margin, hinge in zip(margins, hinge_values)
+                ),
+                "nonpositive_margin_count": sum(
+                    margin <= 0.0 for margin in margins
+                ),
+                "action_loss": action_loss,
             }
             for state_id in range(10)
         )
         return MeanActionGradient(
-            loss=1.0 + iteration,
+            loss=action_loss,
             gradient=torch.ones_like(self.renderer.get_texture_param()),
             num_frames=10,
             state_ids=tuple(range(10)),
@@ -253,6 +283,167 @@ def test_action_only_control_never_computes_spectral_guard_and_records_variant(
     assert all(row["total_energy"] is None for row in rows)
     assert all(row["spectral_gradient_l2"] == 0.0 for row in rows)
     assert all(row["weighted_spectral_action_ratio"] == 0.0 for row in rows)
+
+
+def test_action_only_kappa_binds_objective_without_spectral_guard(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    module_name = (
+        "openvla.experiments.robot.libero.openvla_attack."
+        "fixed_support_source_training"
+    )
+    monkeypatch.setattr(
+        f"{module_name}.loaded_legacy_optimizer_modules",
+        lambda: (),
+    )
+    renderer = _Renderer()
+    fingerprints = tuple(f"{state_id:064x}" for state_id in range(10))
+    store = AttackArtifactStore.prepare(
+        local_log_dir=tmp_path,
+        run_id="action-only-kappa-test",
+        create_attack_directory=True,
+    )
+    provider = _Provider(
+        renderer,
+        fingerprints,
+        action_margin_kappa=4.375,
+    )
+
+    result = run_formal_source_training(
+        code_commit="e" * 40,
+        task_id=0,
+        num_iterations=2,
+        renderer=renderer,
+        action_provider=provider,
+        regularizer=None,
+        artifact_store=store,
+        inputs=_inputs(tmp_path),
+        state_fingerprints=fingerprints,
+        surface_step=0.1,
+        training_variant="action_only_kappa",
+        action_margin_kappa=4.375,
+    )
+
+    manifest = json.loads(result.manifest_path.read_text(encoding="utf-8"))
+    rows = [json.loads(line) for line in result.steps_path.read_text().splitlines()]
+    assert result.training_variant == "action_only_kappa"
+    assert manifest["training_variant"] == "action_only_kappa"
+    assert manifest["action_margin_kappa"] == pytest.approx(4.375)
+    assert manifest["spectral_guard_computed"] is False
+    assert manifest["objective_components"] == [
+        "untargeted_clean_action_margin_hinge_kappa"
+    ]
+    assert all(row["action_margin_kappa"] == pytest.approx(4.375) for row in rows)
+
+
+def test_action_only_kappa_engineering_smoke_is_explicitly_non_scientific(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    module_name = (
+        "openvla.experiments.robot.libero.openvla_attack."
+        "fixed_support_source_training"
+    )
+    monkeypatch.setattr(
+        f"{module_name}.loaded_legacy_optimizer_modules",
+        lambda: (),
+    )
+    renderer = _Renderer()
+    fingerprints = tuple(f"{state_id:064x}" for state_id in range(10))
+    store = AttackArtifactStore.prepare(
+        local_log_dir=tmp_path,
+        run_id="action-only-kappa-smoke-test",
+        create_attack_directory=True,
+    )
+
+    result = run_formal_source_training(
+        code_commit="1" * 40,
+        task_id=0,
+        num_iterations=2,
+        renderer=renderer,
+        action_provider=_Provider(
+            renderer,
+            fingerprints,
+            action_margin_kappa=4.375,
+        ),
+        regularizer=None,
+        artifact_store=store,
+        inputs=_inputs(tmp_path),
+        state_fingerprints=fingerprints,
+        surface_step=0.1,
+        training_variant="action_only_kappa",
+        action_margin_kappa=4.375,
+        engineering_smoke=True,
+    )
+
+    manifest = json.loads(result.manifest_path.read_text(encoding="utf-8"))
+    assert result.manifest_path.name == "action_margin_kappa_smoke_manifest.json"
+    assert result.steps_path.name == "action_margin_kappa_smoke_steps.jsonl"
+    assert manifest["engineering_smoke"] is True
+    assert manifest["scientific_gate"] is False
+    assert manifest["formal_training_allowed"] is False
+    assert manifest["paired_source_rollout_required"] is False
+
+    smoke_module = (
+        "openvla.experiments.robot.libero.openvla_attack."
+        "action_margin_kappa_smoke"
+    )
+    monkeypatch.setattr(
+        f"{smoke_module}.evaluate_fixed_support_training_smoke_bundle",
+        lambda path: SimpleNamespace(gate_pass=True, failures=()),
+    )
+    monkeypatch.setattr(
+        f"{smoke_module}.load_production_support_artifact",
+        lambda path: SimpleNamespace(
+            support_vertex_indices=np.asarray([0, 1], dtype=np.int64)
+        ),
+    )
+
+    decision = evaluate_action_margin_kappa_smoke_bundle(
+        result.manifest_path
+    )
+
+    assert decision.gate_pass is True
+    assert decision.failures == ()
+    assert decision.shallow_crossed_active_tokens == 20
+
+
+def test_formal_training_rejects_provider_kappa_mismatch(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    module_name = (
+        "openvla.experiments.robot.libero.openvla_attack."
+        "fixed_support_source_training"
+    )
+    monkeypatch.setattr(
+        f"{module_name}.loaded_legacy_optimizer_modules",
+        lambda: (),
+    )
+    renderer = _Renderer()
+    fingerprints = tuple(f"{state_id:064x}" for state_id in range(10))
+    store = AttackArtifactStore.prepare(
+        local_log_dir=tmp_path,
+        run_id="kappa-mismatch-test",
+        create_attack_directory=True,
+    )
+
+    with pytest.raises(FormalSourceTrainingError, match="provider.*κ"):
+        run_formal_source_training(
+            code_commit="f" * 40,
+            task_id=0,
+            num_iterations=2,
+            renderer=renderer,
+            action_provider=_Provider(renderer, fingerprints),
+            regularizer=None,
+            artifact_store=store,
+            inputs=_inputs(tmp_path),
+            state_fingerprints=fingerprints,
+            surface_step=0.1,
+            training_variant="action_only_kappa",
+            action_margin_kappa=4.375,
+        )
 
 
 def test_completed_training_recovery_only_returns_existing_artifact_paths(

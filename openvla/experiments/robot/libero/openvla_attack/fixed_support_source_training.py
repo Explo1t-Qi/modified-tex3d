@@ -2,9 +2,9 @@
 
 本模块不采集 Feature/wrist，也不导入 legacy ``training``/``optimization``。
 正式主候选每轮形成十个state的平均Action梯度与Spectral Naturalness梯度；
-严格匹配的Action-only control只提交同一Action梯度，不构造或计算谱正则。两条
-路径都通过 :class:`FixedSupportTrainerCore` 执行唯一一次surface-normalized
-update，并共享Surface-L∞ projection。
+严格匹配的Action-only control与预注册Action-only+κ干预只提交Action梯度，
+不构造或计算谱正则。三条路径都通过 :class:`FixedSupportTrainerCore` 执行唯一
+一次surface-normalized update，并共享Surface-L∞ projection。
 
 5000轮证据使用增量 JSONL，避免把逐 state margins 和梯度摘要长期留在内存。
 完整逐轮梯度不重复保存：联合公式、Surface step 和 Support 约束已由两步 smoke
@@ -24,6 +24,7 @@ from typing import Any, Final, Literal, Mapping, Optional, Protocol, Sequence, c
 import torch
 
 from .artifacts import AttackArtifactStore, OptimizationArtifactPaths
+from .configuration import FROZEN_ACTION_MARGIN_KAPPA
 from .fixed_support_training import (
     CombinedGradientUpdate,
     FixedSupportTrainerCore,
@@ -42,9 +43,19 @@ FORMAL_SOURCE_TRAINING_SCHEMA_VERSION: Final[str] = (
 ACTION_ONLY_CONTROL_SCHEMA_VERSION: Final[str] = (
     "openvla-fixed-support-action-only-source-control-v1"
 )
-FormalTrainingVariant = Literal["action_spectral", "action_only_control"]
+ACTION_ONLY_KAPPA_SCHEMA_VERSION: Final[str] = (
+    "openvla-fixed-support-action-only-kappa-source-training-v1"
+)
+ACTION_MARGIN_KAPPA_SMOKE_SCHEMA_VERSION: Final[str] = (
+    "openvla-action-margin-kappa-engineering-smoke-v1"
+)
+FormalTrainingVariant = Literal[
+    "action_spectral",
+    "action_only_control",
+    "action_only_kappa",
+]
 SUPPORTED_FORMAL_TRAINING_VARIANTS: Final[frozenset[str]] = frozenset(
-    {"action_spectral", "action_only_control"}
+    {"action_spectral", "action_only_control", "action_only_kappa"}
 )
 EXPECTED_TRAIN_STATE_IDS: Final[tuple[int, ...]] = tuple(range(10))
 
@@ -55,6 +66,8 @@ class FormalSourceTrainingError(RuntimeError):
 
 class FormalActionGradientProvider(Protocol):
     """正式 trainer 使用的完整 states 0--9 Action provider。"""
+
+    action_margin_kappa: float
 
     def __call__(self) -> MeanActionGradient: ...
 
@@ -351,12 +364,15 @@ def _action_only_step_row(
     action_sample: MeanActionGradient,
     update: CombinedGradientUpdate,
     configured_surface_step: float,
+    training_variant: FormalTrainingVariant,
+    action_margin_kappa: float,
 ) -> dict[str, Any]:
     """保存Action-only单变量对照；谱相关量用null/显式零区分未计算。"""
 
     return {
         "iteration": iteration,
-        "training_variant": "action_only_control",
+        "training_variant": training_variant,
+        "action_margin_kappa": action_margin_kappa,
         "spectral_guard_computed": False,
         "action_loss": action_sample.loss,
         "num_action_frames": action_sample.num_frames,
@@ -402,16 +418,39 @@ def run_formal_source_training(
     state_fingerprints: Sequence[str],
     surface_step: float,
     training_variant: FormalTrainingVariant = "action_spectral",
+    action_margin_kappa: float = 0.0,
+    engineering_smoke: bool = False,
 ) -> FormalSourceTrainingResult:
-    """执行正式主候选或严格匹配的Action-only control。"""
+    """执行正式主候选、Action-only control或κ工程smoke。"""
 
     _validate_commit(code_commit)
     resolved_variant = _resolve_training_variant(training_variant)
+    resolved_kappa = float(action_margin_kappa)
+    expected_kappa = (
+        FROZEN_ACTION_MARGIN_KAPPA
+        if resolved_variant == "action_only_kappa"
+        else 0.0
+    )
+    if not math.isfinite(resolved_kappa) or resolved_kappa != expected_kappa:
+        raise FormalSourceTrainingError(
+            f"{resolved_variant}要求action_margin_kappa={expected_kappa}"
+        )
+    if engineering_smoke and (
+        resolved_variant != "action_only_kappa" or num_iterations != 2
+    ):
+        raise FormalSourceTrainingError(
+            "κ工程smoke必须是action_only_kappa且恰好执行2轮"
+        )
+    provider_kappa = float(action_provider.action_margin_kappa)
+    if provider_kappa != resolved_kappa:
+        raise FormalSourceTrainingError(
+            "Action gradient provider的κ与正式训练配置不一致"
+        )
     if resolved_variant == "action_spectral" and regularizer is None:
         raise FormalSourceTrainingError("Action+Spectral主候选缺少regularizer")
-    if resolved_variant == "action_only_control" and regularizer is not None:
+    if resolved_variant != "action_spectral" and regularizer is not None:
         raise FormalSourceTrainingError(
-            "Action-only control禁止构造或计算Spectral Guard"
+            "Action-only训练禁止构造或计算Spectral Guard"
         )
     if regularizer is not None and not math.isclose(
         float(regularizer.rho_nat),
@@ -429,12 +468,27 @@ def run_formal_source_training(
         raise FormalSourceTrainingError("训练state fingerprint必须完整且唯一")
 
     artifact_store.ensure_attack_directory()
-    steps_path = artifact_store.attack_directory / "formal_training_steps.jsonl"
+    steps_filename = (
+        "action_margin_kappa_smoke_steps.jsonl"
+        if engineering_smoke
+        else "formal_training_steps.jsonl"
+    )
+    frames_filename = (
+        "action_margin_kappa_smoke_action_frames.jsonl"
+        if engineering_smoke
+        else "formal_training_action_frames.jsonl"
+    )
+    manifest_filename = (
+        "action_margin_kappa_smoke_manifest.json"
+        if engineering_smoke
+        else "formal_source_training_manifest.json"
+    )
+    steps_path = artifact_store.attack_directory / steps_filename
     frames_path = (
-        artifact_store.attack_directory / "formal_training_action_frames.jsonl"
+        artifact_store.attack_directory / frames_filename
     )
     manifest_path = (
-        artifact_store.attack_directory / "formal_source_training_manifest.json"
+        artifact_store.attack_directory / manifest_filename
     )
     if any(path.exists() for path in (steps_path, frames_path, manifest_path)):
         raise FileExistsError("拒绝覆盖已有正式Fixed-Support训练证据")
@@ -506,6 +560,8 @@ def run_formal_source_training(
                     action_sample=action_sample,
                     update=update,
                     configured_surface_step=surface_step,
+                    training_variant=resolved_variant,
+                    action_margin_kappa=resolved_kappa,
                 )
                 numeric_values = (
                     row["action_loss"],
@@ -561,9 +617,17 @@ def run_formal_source_training(
 
     manifest = {
         "schema_version": (
-            FORMAL_SOURCE_TRAINING_SCHEMA_VERSION
-            if resolved_variant == "action_spectral"
-            else ACTION_ONLY_CONTROL_SCHEMA_VERSION
+            ACTION_MARGIN_KAPPA_SMOKE_SCHEMA_VERSION
+            if engineering_smoke
+            else (
+                FORMAL_SOURCE_TRAINING_SCHEMA_VERSION
+                if resolved_variant == "action_spectral"
+                else (
+                    ACTION_ONLY_CONTROL_SCHEMA_VERSION
+                    if resolved_variant == "action_only_control"
+                    else ACTION_ONLY_KAPPA_SCHEMA_VERSION
+                )
+            )
         ),
         "training_variant": resolved_variant,
         "code_commit": code_commit,
@@ -574,6 +638,7 @@ def run_formal_source_training(
         "trainer_update_count": trainer.update_count,
         "surface_step": surface_step,
         "surface_epsilon": float(renderer.epsilon),
+        "action_margin_kappa": resolved_kappa,
         # ``lambda_spec``保留旧主候选schema的兼容字段；新字段明确区分已校准
         # 权重和本次实际应用权重，防止把control误读为lambda校准失败。
         "lambda_spec": (
@@ -616,14 +681,21 @@ def run_formal_source_training(
                 "spectral_naturalness_hinge_squared",
             ]
             if resolved_variant == "action_spectral"
-            else ["untargeted_clean_action_margin_hinge"]
+            else (
+                ["untargeted_clean_action_margin_hinge"]
+                if resolved_variant == "action_only_control"
+                else ["untargeted_clean_action_margin_hinge_kappa"]
+            )
         ),
         "spectral_guard_computed": resolved_variant == "action_spectral",
         "feature_loss_computed": False,
         "wrist_used": False,
         "oft_loaded": False,
         "legacy_optimizer_loaded": False,
-        "paired_source_rollout_required": True,
+        "engineering_smoke": engineering_smoke,
+        "scientific_gate": False if engineering_smoke else None,
+        "formal_training_allowed": False if engineering_smoke else None,
+        "paired_source_rollout_required": not engineering_smoke,
         "source_gate_evaluated": False,
     }
     with manifest_path.open("x", encoding="utf-8") as handle:
@@ -747,6 +819,7 @@ def run_formal_source_training_for_task(
         model=model,
         image_preprocessor=image_preprocessor,
         policy_view_transform=policy_view_transform,
+        action_margin_kappa=float(cfg.action_margin_kappa),
     )
     regularizer: Optional[FormalSpectralRegularizer]
     if training_variant == "action_spectral":
@@ -772,7 +845,29 @@ def run_formal_source_training_for_task(
         state_fingerprints=fingerprints,
         surface_step=float(cfg.attack_surface_step),
         training_variant=training_variant,
+        action_margin_kappa=float(cfg.action_margin_kappa),
+        engineering_smoke=bool(cfg.fixed_support_kappa_smoke_enabled),
     )
+    if cfg.fixed_support_kappa_smoke_enabled:
+        from .action_margin_kappa_smoke import (
+            evaluate_action_margin_kappa_smoke_bundle,
+        )
+
+        smoke_decision = evaluate_action_margin_kappa_smoke_bundle(
+            result.manifest_path
+        )
+        if not smoke_decision.gate_pass:
+            raise FormalSourceTrainingError(
+                "Action-only+κ两步工程smoke独立复核失败: "
+                + "; ".join(smoke_decision.failures)
+            )
+        print(
+            "[KAPPA-SMOKE] engineering_valid=true "
+            "scientific_gate=false "
+            "shallow_crossed_active_tokens="
+            f"{smoke_decision.shallow_crossed_active_tokens}",
+            flush=True,
+        )
     if loaded_legacy_optimizer_modules():
         raise FormalSourceTrainingError("正式训练期间加载了legacy optimizer")
     return result

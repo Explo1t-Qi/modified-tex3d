@@ -72,6 +72,63 @@ def test_draccus_decodes_explicit_action_only_control_variant() -> None:
         resolve_formal_training_variant("legacy_action_feature")
 
 
+def test_action_only_kappa_variant_freezes_preregistered_margin() -> None:
+    config = decoding.decode(
+        GenerateConfig,
+        {
+            "fixed_support_formal_training_variant": "action_only_kappa",
+            "action_margin_kappa": 4.375,
+        },
+    )
+
+    assert resolve_formal_training_variant(
+        config.fixed_support_formal_training_variant
+    ) == "action_only_kappa"
+
+    config.action_margin_kappa = 4.0
+    with pytest.raises(ValueError, match="4.375"):
+        validate_formal_fixed_support_experiment(
+            config,
+            texture_parameterization="fixed_support",
+        )
+
+
+def test_action_only_kappa_cli_only_allows_two_step_engineering_smoke() -> None:
+    config = GenerateConfig(
+        texture_parameterization="fixed_support",
+        fixed_support_path="/tmp/support.npz",
+        spectral_naturalness_basis_path="/tmp/naturalness.npz",
+        rho_nat_calibration_path="/tmp/rho.npz",
+        spectral_guard_manifest_path="/tmp/guard.json",
+        fixed_support_training_smoke_manifest_path="/tmp/old-smoke.json",
+        code_commit="a" * 40,
+        task_id=0,
+        attack_iters=2,
+        num_trials_per_task=10,
+        train_init_state_ids="0-9",
+        eval_init_state_ids="10-19",
+        alpha_feature=0.0,
+        live_test_enabled=False,
+        unnorm_key="libero_spatial_no_noops",
+        fixed_support_formal_training_variant="action_only_kappa",
+        action_margin_kappa=4.375,
+        fixed_support_kappa_smoke_enabled=True,
+    )
+
+    validate_formal_fixed_support_experiment(
+        config,
+        texture_parameterization="fixed_support",
+    )
+
+    config.fixed_support_kappa_smoke_enabled = False
+    config.attack_iters = 5000
+    with pytest.raises(ValueError, match="工程smoke验收前"):
+        validate_formal_fixed_support_experiment(
+            config,
+            texture_parameterization="fixed_support",
+        )
+
+
 def test_fixed_support_config_requires_exclusive_artifact_path() -> None:
     with pytest.raises(ValueError, match="必须提供"):
         validate_fixed_support_config(

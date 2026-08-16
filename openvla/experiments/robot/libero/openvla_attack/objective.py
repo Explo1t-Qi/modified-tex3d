@@ -15,6 +15,7 @@
 
 from __future__ import annotations
 
+import math
 from typing import Final, NamedTuple, TypeAlias
 
 import torch
@@ -178,16 +179,21 @@ def legacy_symmetric_target_cross_entropy(
 def untargeted_clean_action_margin_hinge(
     logits: Tensor,
     clean_generated_token_ids: Tensor,
+    *,
+    action_margin_kappa: float = 0.0,
 ) -> UntargetedCleanActionMarginHinge:
-    """计算零置信度 Untargeted Clean-Action Margin hinge。
+    """计算带固定置信度 ``κ`` 的 Untargeted Clean-Action Margin hinge。
 
     对每个有效 action token 位置 ``a`` 计算：
 
     ``m_a = z[a,y_a] - max_{j != y_a} z[a,j]``
 
-    并返回 ``mean(relu(m_a))``。``clean_generated_token_ids`` 必须是同一
-    部署输入生成后固定的完整 clean sequence；调用方必须把它同时作为模型
-    teacher-forced ``input_ids``，不得用 adversarial 自回归 token 改写后续前缀。
+    并返回 ``mean(relu(m_a + κ))``。``κ=0`` 走原有表达式，逐值保留冻结的
+    零置信度目标。正 ``κ`` 只延后 hinge 的停止边界：浅度 crossing
+    ``-κ < m_a <= 0`` 继续提供梯度，``m_a <= -κ`` 停止提供梯度。
+    ``clean_generated_token_ids`` 必须是同一部署输入生成后固定的完整 clean
+    sequence；调用方必须把它同时作为模型 teacher-forced ``input_ids``，不得
+    用 adversarial 自回归 token 改写后续前缀。
 
     与 legacy 路径不同，没有 action token 时直接抛
     :class:`NoActionTokensError`。本函数接受负 margin；只有零 Surface Delta
@@ -198,6 +204,8 @@ def untargeted_clean_action_margin_hinge(
             logits。
         clean_generated_token_ids: 整数
             ``[batch_size,label_sequence_length]`` clean 完整生成序列。
+        action_margin_kappa: 非负有限标量 ``κ``。默认 ``0.0``，严格保持旧目标；
+            当前正式干预值由实验契约在调用边界冻结，公共数学函数不硬编码该值。
 
     Returns:
         标量 loss、逐 token margin、逐 token hinge 和 clean classes。所有结果
@@ -205,8 +213,12 @@ def untargeted_clean_action_margin_hinge(
 
     Raises:
         NoActionTokensError: clean sequence 中没有有效 action token。
-        ValueError: 输入 shape、词表范围或 action logits 数值不合法。
+        ValueError: 输入 shape、词表范围、action logits 或 ``κ`` 不合法。
     """
+
+    resolved_kappa = float(action_margin_kappa)
+    if not math.isfinite(resolved_kappa) or resolved_kappa < 0.0:
+        raise ValueError("action_margin_kappa必须为非负有限标量")
 
     action_tokens: ActionTokenLogits = extract_action_token_logits(
         logits,
@@ -235,7 +247,12 @@ def untargeted_clean_action_margin_hinge(
         float("-inf"),
     ).amax(dim=1)
     margins: Tensor = clean_logits - best_other_logits
-    hinge_values: Tensor = torch.relu(margins)
+    # κ=0保留旧计算图与运算顺序，使旧调用和显式零值在loss、hinge及梯度上
+    # 都能逐值回归，而不是仅数值近似相等。
+    hinge_inputs: Tensor = (
+        margins if resolved_kappa == 0.0 else margins + resolved_kappa
+    )
+    hinge_values: Tensor = torch.relu(hinge_inputs)
     return UntargetedCleanActionMarginHinge(
         loss=hinge_values.mean(),
         margins=margins,

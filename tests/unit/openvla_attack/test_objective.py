@@ -107,6 +107,93 @@ def test_margin_hinge_gradient_pushes_only_active_clean_margin() -> None:
     assert float(logits.grad[0, 1, 31747]) == 0.0
 
 
+def test_zero_confidence_margin_is_exactly_backward_compatible() -> None:
+    """显式 κ=0 必须逐值复现冻结的零置信度目标及其梯度。"""
+
+    base_logits = torch.zeros((1, 4, 32000), dtype=torch.float32)
+    clean_labels = torch.tensor(
+        [[7, 31744, 31745, 31746]],
+        dtype=torch.long,
+    )
+    base_logits[0, 0, 31744] = 3.0
+    base_logits[0, 0, 31750] = 1.0
+    base_logits[0, 1, 31745] = 1.0
+    base_logits[0, 1, 31751] = 3.0
+    base_logits[0, 2, 31746] = 2.0
+    base_logits[0, 2, 31752] = 2.0
+    legacy_logits = base_logits.clone().requires_grad_(True)
+    zero_kappa_logits = base_logits.clone().requires_grad_(True)
+
+    legacy = untargeted_clean_action_margin_hinge(
+        legacy_logits,
+        clean_labels,
+    )
+    zero_kappa = untargeted_clean_action_margin_hinge(
+        zero_kappa_logits,
+        clean_labels,
+        action_margin_kappa=0.0,
+    )
+    legacy.loss.backward()
+    zero_kappa.loss.backward()
+
+    assert torch.equal(zero_kappa.loss, legacy.loss)
+    assert torch.equal(zero_kappa.margins, legacy.margins)
+    assert torch.equal(zero_kappa.hinge_values, legacy.hinge_values)
+    assert torch.equal(
+        zero_kappa.hinge_values > 0.0,
+        legacy.hinge_values > 0.0,
+    )
+    assert torch.equal(zero_kappa.clean_classes, legacy.clean_classes)
+    assert legacy_logits.grad is not None
+    assert zero_kappa_logits.grad is not None
+    assert torch.equal(zero_kappa_logits.grad, legacy_logits.grad)
+
+
+def test_positive_confidence_margin_reactivates_only_shallow_crossings() -> None:
+    """κ hinge 的三段语义及边界梯度必须与冻结公式一致。"""
+
+    kappa = 4.375
+    logits = torch.zeros(
+        (1, 6, 32000),
+        dtype=torch.float32,
+        requires_grad=True,
+    )
+    clean_labels = torch.tensor(
+        [[7, 31744, 31745, 31746, 31747, 31748]],
+        dtype=torch.long,
+    )
+    # 五个margin依次为 2、0、-2、-κ、-(κ+1)。每行使用不同other class，
+    # 避免无关的最大值tie影响被检查位置的梯度。
+    margins = (2.0, 0.0, -2.0, -kappa, -(kappa + 1.0))
+    with torch.no_grad():
+        for position, margin in enumerate(margins):
+            clean_class = position
+            other_class = position + 20
+            logits[0, position, 31744 + clean_class] = margin
+            logits[0, position, 31744 + other_class] = 0.0
+
+    result = untargeted_clean_action_margin_hinge(
+        logits,
+        clean_labels,
+        action_margin_kappa=kappa,
+    )
+    result.loss.backward()
+
+    torch.testing.assert_close(result.margins, torch.tensor(margins))
+    torch.testing.assert_close(
+        result.hinge_values,
+        torch.tensor([6.375, 4.375, 2.375, 0.0, 0.0]),
+    )
+    assert logits.grad is not None
+    # m>0、m=0 与 -κ<m<0 均激活；m=-κ 及更深 crossing 不激活。
+    for position in range(3):
+        assert float(logits.grad[0, position, 31744 + position]) == pytest.approx(
+            0.2
+        )
+    for position in (3, 4):
+        assert float(logits.grad[0, position, 31744 + position]) == 0.0
+
+
 def test_margin_hinge_accepts_exact_tie_without_applying_pressure() -> None:
     """精确 tie 合法，ReLU 在零点不产生训练梯度。"""
     logits = torch.zeros(

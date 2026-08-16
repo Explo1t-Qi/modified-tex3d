@@ -577,6 +577,13 @@ def eval_libero(cfg: GenerateConfig) -> None:
                     f"{trained_tex_path}"
                 )
 
+                if cfg.fixed_support_kappa_smoke_enabled:
+                    print(
+                        "[KAPPA-SMOKE] 两步Action-only+κ工程验收采集完成；"
+                        "跳过paired source-development rollout"
+                    )
+                    continue
+
                 if fixed_training_result is not None:
                     _run_fixed_support_paired_source_gate(
                         task=task,
