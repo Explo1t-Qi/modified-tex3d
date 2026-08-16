@@ -1,6 +1,6 @@
 # OpenVLA 谱纹理当前状态
 
-更新时间：2026-08-13
+更新时间：2026-08-16
 当前 Visibility/Coverage/Compositor 功能代码基线：
 `1884eb7500283eea9f3bcf8793a4410cd1396b87`
 服务器 Gate 2E 复核基线：
@@ -63,6 +63,10 @@ Gate 6i Terminal Endpoint Action GPU runner实现基线：
 `953c21c22b00670e242e19f119b19037e833cf93`
 Gate 6i response teacher序列rank修复基线：
 `5183ee859c6361bcdc2a004a81de70bd6d28c027`
+Gate 6i Terminal Endpoint Action正式证据基线：
+`d6147ddee74567ea828f1ae778cf8ece1b63af0d`
+Gate 6i跨环境derived归约复核修复基线：
+`4fb2b6dbfe52232cbbf23649b7e022db726f47a1`
 
 本文是 OpenVLA 谱纹理研究的**当前状态入口**。新一轮开发应先读本文，再按需
 进入专题文档；不要从长篇实验时间线推测当前优先级。历史实验索引见
@@ -98,7 +102,7 @@ Gate 6i response teacher序列rank修复基线：
 | BPDA 下 OFT 迁移信号 | 未开始 | 新源候选未过门槛前不得进入 OFT |
 | Gate 6g Terminal Deployment Response | 已完成，20/20工程审计有效 | Action+Spectral有7/10训练响应，部署严格保留3/7；Action-only有6/10训练响应，部署严格保留4/6。两者均存在`lost/altered`，未观察到tie或invalid |
 | Gate 6h Scalar-Gain Counterfactual | 已完成，20/20工程审计有效 | 冻结6个主case为4 `gain_sufficient` / 1 `residual_necessary` / 1 `ambiguous`；只有Action+Spectral出现`residual_necessary`，按预注册解释树进入`endpoint_or_trajectory_specific` |
-| Gate 6i Terminal Endpoint Action-Gradient/Response | CPU合同与GPU runner已实现，正式audit待运行 | 只读两个已有终态；20/60/2 inventory、上游绑定与原子成功manifest已由CPU测试保护；不设科学pass/fail |
+| Gate 6i Terminal Endpoint Action-Gradient/Response | 已完成，20/60/2工程审计有效 | 两终态聚合梯度cosine=`0.9068`；terminal逐state retention均值上升但aggregate retention降至`0.3574/0.3423`；Dense advantage一负一正，不支持共同的终态局部Support瓶颈 |
 | 无偏跨模型迁移与鲁棒性提升 | 未开始 | 需方法冻结后的新任务/第三模型与后续防御实验 |
 
 ## 当前已确认的科学结论
@@ -117,6 +121,11 @@ Gate 6i response teacher序列rank修复基线：
 6. 旧 Action/last-hidden 训练路径存在更基础的预处理错误：DINOv2/SigLIP 顺序
    和 resize 语义均与 checkpoint processor 不一致。旧实验可保留为历史工程
    证据，但不能作为修正后方法的科学基线。
+7. Gate 6i显示两个正式终态的聚合source Action梯度仍高度同向，但Fixed Support
+   的终态局部作用是endpoint-specific：Action-only放开Support外坐标的一步更好，
+   Action+Spectral则是Support一步更好。当前证据不支持把共同的终态局部Support
+   瓶颈作为两者均只有2/10 source新增失败的解释，也不排除Support在训练早期
+   轨迹或面积预算上的限制。
 
 ## 当前实现基线
 
@@ -177,10 +186,11 @@ Composition与真实MuJoCo Active Texture响应，不自动启动训练或调参
 4个只用全局scalar gain就能复现部署首次响应，但只有Action+Spectral的
 state 7需要non-scalar residual，Action-only state 7则为ambiguous。按预注册
 解释树，这是`endpoint_or_trajectory_specific`，不支持共同non-scalar
-surrogate fidelity主因。Gate 6i已将唯一下一诊断冻结为两个既有终态的
-Terminal Endpoint Action-Gradient/Response Audit；它只检查局部终点几何与
-Fixed Support的即时单步限制，不观测或归因完整训练轨迹。该审计完成前
-不启动新训练，OFT仍不得提前进入。
+surrogate fidelity主因。Gate 6i Terminal Endpoint Action-Gradient/Response
+Audit现也已完成：两个终态的局部梯度总体相似，但逐state与aggregate retention
+方向相反，Dense advantage一负一正，因此没有共同terminal local Support瓶颈
+证据。它只检查局部终点几何与Fixed Support的即时单步限制，不观测或归因完整
+训练轨迹；当前不自动启动新训练，OFT仍不得提前进入。
 
 真实 Spatial checkpoint 的 CPU 差分记录为 fused pixel values MAE/L∞=`0/0`，
 输入梯度有限且非零；文档记录当时全量 CPU 回归为 `113 passed, 1 skipped`。
@@ -1803,6 +1813,35 @@ response或成功manifest。根因不是teacher token改变，而是
 额外batch、dtype/长度错误和真实token漂移，并增加对应回归测试。修复后Gate 6i及
 OpenVLA response相关19项测试通过。第一次目录没有完整inventory，不得续跑、拼接
 或提取科学结论；正式audit必须在新commit和全新目录从头运行。
+
+第二次正式运行`gate6i-terminal-endpoint-d6147dd-20260815`完成20/20 gradient、
+2/2 step与60/60 response，成功manifest SHA-256为
+`7d0806d5782af139363c05bbd02b62dd141237a0d987c7124f174c390c1f412d`，日志
+SHA-256为`3a43ebbd4d4155a586810a05ec12ef5c854ee2480f1aae263c0bd1de1a8ed32f`。
+rsync后WSL复核首先只在缓存`derived`的33个float64 dot/norm字段失败；两边177个
+叶子键完全相同，最大差仅`5.55e-16`，而`require_derived=False`下全部raw
+evidence已经有效。commit `4fb2b6d`因此只对derived有限浮点叶子使用`1e-12`
+绝对/相对容差；raw arrays、SHA、float32 Action、结构和离散字段仍严格校验，
+`1e-9`派生篡改回归继续失败。修复后原bundle无需GPU重跑，WSL独立复核为
+`audit_valid=true`且无failure；Gate 6i相关19项测试通过。
+
+两个终态的聚合梯度cosine为`0.906771`；逐state cosine除states 4/6的
+`0.385136/0.458199`外，其余为`0.781119--0.919784`，说明终态梯度几何总体仍
+相似而非整体分叉。零点逐state retention mean/median=`0.501823/0.516927`；
+Action+Spectral终态为`0.570354/0.548889`且仅3/10 `Delta_R<0`，Action-only为
+`0.563780/0.505823`且4/10 `Delta_R<0`。因此逐state层面没有观察到Support内能量
+普遍减少；但先平均十状态梯度后的aggregate retention从`0.538463`分别降至
+`0.357413/0.342277`。两种统计方向相反，指向跨state方向抵消结构，不能简化为
+“梯度整体逃出Support”。
+
+Action+Spectral的Dense/Support mean improvement分别为`0.055357/0.091964`，
+主功能量`A=L_support-L_dense=-0.036607`，Support在6/10 states更好；Action-only
+分别为`0.083928/0.024107`，`A=+0.059821`，Dense在7/10 states更好。该一负一正
+结果不支持双终态共同的即时局部Support瓶颈。还需注意两Support arm在全局Linf
+投影后的actual Linf仅`0.002501/0.003050`，小于Dense的`0.007809/0.007802`；其
+descent-alignment cosine为`-0.701719/-0.234839`，说明边界投影显著改变了Support
+实际步。故该结果是“正式相同更新规则下的可执行一步”证据，不能被改写成相同步长
+的无约束坐标消融，更不能外推为完整训练轨迹或rollout因果。
 
 已冻结的第一项设计决定：谱方法在新候选中作为作用于最终 Surface Delta 的软
 自然性正则，只惩罚高频谱能量；它不再把扰动硬限制在前 K 个谱基中，也不是与
