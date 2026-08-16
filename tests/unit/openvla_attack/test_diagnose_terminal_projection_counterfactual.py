@@ -29,12 +29,16 @@ def test_runner_is_response_only_and_publishes_frozen_three_arm_bundle() -> None
     assert "evaluate_terminal_endpoint_bundle" in source
     assert "build_matched_box_endpoint_evidence" in source
     assert "for endpoint in ENDPOINT_NAMES" in source
-    assert "for state_id in EXPECTED_STATE_IDS" in source
+    assert "response_state_ids = (0,) if cfg.smoke_only else EXPECTED_STATE_IDS" in source
+    assert "for state_id in response_state_ids" in source
     assert "for arm in PROJECTION_RESPONSE_ARMS" in source
     assert "write_projection_response_npz" in source
     assert "publish_terminal_projection_bundle" in source
     assert '"gradient_recomputed": False' in source
     assert '"training_or_rollout_run": False' in source
+    assert '"formal_bundle": False' in source
+    assert "terminal_projection_smoke.json" in source
+    assert "expected_state_ids=response_state_ids" in source
 
 
 def test_runner_copies_parent_bundle_before_collecting_child_evidence() -> None:

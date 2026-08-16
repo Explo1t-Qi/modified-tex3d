@@ -47,6 +47,9 @@ PROJECTION_RESPONSE_SCHEMA_VERSION: Final[str] = (
 PROJECTION_BUNDLE_SCHEMA_VERSION: Final[str] = (
     "openvla-terminal-projection-counterfactual-bundle-v1"
 )
+PROJECTION_SMOKE_SCHEMA_VERSION: Final[str] = (
+    "openvla-terminal-projection-counterfactual-smoke-v1"
+)
 PROJECTION_RESPONSE_ARMS: Final[tuple[str, ...]] = (
     "baseline",
     "radial_support",
@@ -753,8 +756,9 @@ def evaluate_projection_response_evidence(
     *,
     parent_responses: Sequence[EndpointResponseEvidence],
     matched_steps_by_endpoint: Mapping[str, MatchedBoxEndpointEvidence],
+    expected_state_ids: Sequence[int] = tuple(range(10)),
 ) -> ProjectionResponseDecision:
-    """严格复核60条新response及40条parent baseline/Support replay。
+    """严格复核指定states的新三臂response及parent baseline/Support replay。
 
     本函数不输出 ``projection_harm`` 等科学布尔值。两个 endpoint 始终分别
     计算 ``D = L_radial - L_matched`` 与
@@ -762,6 +766,18 @@ def evaluate_projection_response_evidence(
     """
 
     failures: list[str] = []
+    state_ids = tuple(expected_state_ids)
+    if (
+        not state_ids
+        or len(set(state_ids)) != len(state_ids)
+        or any(state_id not in range(10) for state_id in state_ids)
+    ):
+        return ProjectionResponseDecision(
+            audit_valid=False,
+            failures=("expected_state_ids必须为states 0--9的非空唯一子集",),
+            response_record_count=len(response_records),
+            endpoint_metrics=(),
+        )
     child: dict[tuple[str, int, str], EndpointResponseEvidence] = {}
     for record in response_records:
         try:
@@ -776,11 +792,17 @@ def evaluate_projection_response_evidence(
     expected_child_keys = {
         (endpoint, state_id, arm)
         for endpoint in ("action_spectral", "action_only_control")
-        for state_id in range(10)
+        for state_id in state_ids
         for arm in PROJECTION_RESPONSE_ARMS
     }
-    if len(response_records) != 60 or set(child) != expected_child_keys:
-        failures.append("必须恰好包含60个唯一三臂response")
+    expected_child_count = 6 * len(state_ids)
+    if (
+        len(response_records) != expected_child_count
+        or set(child) != expected_child_keys
+    ):
+        failures.append(
+            f"必须恰好包含{expected_child_count}个唯一三臂response"
+        )
 
     parent: dict[tuple[str, int, str], EndpointResponseEvidence] = {}
     for record in parent_responses:
@@ -799,11 +821,18 @@ def evaluate_projection_response_evidence(
     expected_parent_keys = {
         (endpoint, state_id, arm)
         for endpoint in ("action_spectral", "action_only_control")
-        for state_id in range(10)
+        for state_id in state_ids
         for arm in ("baseline", "support")
     }
-    if len(parent_responses) != 40 or set(parent) != expected_parent_keys:
-        failures.append("parent必须恰好提供40个唯一baseline/Support response")
+    expected_parent_count = 4 * len(state_ids)
+    if (
+        len(parent_responses) != expected_parent_count
+        or set(parent) != expected_parent_keys
+    ):
+        failures.append(
+            "parent必须恰好提供"
+            f"{expected_parent_count}个唯一baseline/Support response"
+        )
     if set(matched_steps_by_endpoint) != {
         "action_spectral",
         "action_only_control",
@@ -819,7 +848,7 @@ def evaluate_projection_response_evidence(
 
     for endpoint in ("action_spectral", "action_only_control"):
         matched_step = matched_steps_by_endpoint[endpoint]
-        for state_id in range(10):
+        for state_id in state_ids:
             baseline = child[(endpoint, state_id, "baseline")]
             radial = child[(endpoint, state_id, "radial_support")]
             matched = child[(endpoint, state_id, "matched_box_support")]
@@ -878,7 +907,7 @@ def evaluate_projection_response_evidence(
         losses = {
             arm: tuple(
                 float(child[(endpoint, state_id, arm)].action_loss)
-                for state_id in range(10)
+                for state_id in state_ids
             )
             for arm in PROJECTION_RESPONSE_ARMS
         }

@@ -73,19 +73,26 @@ from openvla_attack.renderer import DifferentiableRenderer  # noqa: E402
 from openvla_attack.terminal_endpoint_action_audit import (  # noqa: E402
     ENDPOINT_NAMES,
     EXPECTED_STATE_IDS,
+    EndpointResponseEvidence,
+    load_endpoint_response_npz,
 )
 from openvla_attack.terminal_endpoint_action_evidence import (  # noqa: E402
     FORMAL_SURFACE_EPSILON,
+    EndpointStepEvidence,
     array_sha256,
     evaluate_terminal_endpoint_bundle,
     file_sha256,
     json_sha256,
     load_endpoint_step_npz,
+    write_json_atomically,
 )
 from openvla_attack.terminal_projection_counterfactual import (  # noqa: E402
     PROJECTION_BUNDLE_SCHEMA_VERSION,
     PROJECTION_RESPONSE_ARMS,
+    PROJECTION_SMOKE_SCHEMA_VERSION,
+    MatchedBoxEndpointEvidence,
     build_matched_box_endpoint_evidence,
+    evaluate_projection_response_evidence,
     frozen_projection_configuration,
     publish_terminal_projection_bundle,
     write_matched_box_endpoint_npz,
@@ -102,6 +109,7 @@ class TerminalProjectionConfig:
     parent_bundle_path: str
     output_dir: str
     code_commit: str
+    smoke_only: bool = False
 
 
 def _parse_args(
@@ -111,6 +119,11 @@ def _parse_args(
     parser.add_argument("--parent_bundle_path", required=True)
     parser.add_argument("--output_dir", required=True)
     parser.add_argument("--code_commit", required=True)
+    parser.add_argument(
+        "--smoke_only",
+        action="store_true",
+        help="只采集双endpoint的state 0三臂工程smoke，不发布正式bundle",
+    )
     return TerminalProjectionConfig(**vars(parser.parse_args(argv)))
 
 
@@ -302,8 +315,8 @@ def run_terminal_projection_counterfactual(
         texture_parameterization="geometry_vertex",
     ).to(model.device)
 
-    parent_steps = {}
-    matched_steps = {}
+    parent_steps: dict[str, EndpointStepEvidence] = {}
+    matched_steps: dict[str, MatchedBoxEndpointEvidence] = {}
     matched_records: list[dict[str, Any]] = []
     for record in copied_parent_json["endpoint_steps"]:
         endpoint = str(record["endpoint"])
@@ -351,6 +364,8 @@ def run_terminal_projection_counterfactual(
     description_env.close()
 
     response_records: list[dict[str, Any]] = []
+    captured_responses: list[EndpointResponseEvidence] = []
+    response_state_ids = (0,) if cfg.smoke_only else EXPECTED_STATE_IDS
     for endpoint in ENDPOINT_NAMES:
         parent_step = parent_steps[endpoint]
         matched = matched_steps[endpoint]
@@ -372,7 +387,7 @@ def run_terminal_projection_counterfactual(
         for arm, surface in surfaces.items():
             if array_sha256(surface) != expected_hashes[arm]:
                 raise RuntimeError(f"{endpoint}/{arm} Surface SHA漂移")
-        for state_id in EXPECTED_STATE_IDS:
+        for state_id in response_state_ids:
             for arm in PROJECTION_RESPONSE_ARMS:
                 print(
                     f"[GATE-6J] response endpoint={endpoint} "
@@ -405,6 +420,7 @@ def run_terminal_projection_counterfactual(
                     evidence,
                     output_path=output_dir / relative,
                 )
+                captured_responses.append(evidence)
                 response_records.append(
                     {
                         "endpoint": endpoint,
@@ -417,48 +433,94 @@ def run_terminal_projection_counterfactual(
 
     if _loaded_legacy_optimizer_modules():
         raise RuntimeError("Gate 6j运行中加载了legacy optimization.py")
+    parent_record = {
+        "manifest_relative_path": str(
+            copied_parent_manifest.relative_to(output_dir)
+        ),
+        "manifest_sha256": copied_parent_sha,
+        "source_dense_seed_metrics_relative_path": str(
+            copied_dense_metrics.relative_to(output_dir)
+        ),
+        "source_dense_seed_metrics_sha256": file_sha256(
+            copied_dense_metrics
+        ),
+        "production_support_relative_path": str(
+            copied_support.relative_to(output_dir)
+        ),
+        "production_support_sha256": file_sha256(copied_support),
+    }
+    provenance_record = {
+        "gradient_recomputed": False,
+        "training_or_rollout_run": False,
+        "feature_gradient": False,
+        "wrist_gradient": False,
+        "oft_gradient": False,
+    }
+    runtime_record = {
+        "cli": asdict(cfg),
+        "inherited_parent_runtime": asdict(runtime_cfg),
+        "checkpoint_fingerprints": _checkpoint_fingerprints(checkpoint_path),
+        "processor_specification": asdict(image_preprocessor),
+        "processor_specification_sha256": json_sha256(
+            asdict(image_preprocessor)
+        ),
+    }
+    if cfg.smoke_only:
+        parent_responses: list[EndpointResponseEvidence] = []
+        for record in copied_parent_json["response_records"]:
+            if record["state_id"] != 0 or record["arm"] not in (
+                "baseline",
+                "support",
+            ):
+                continue
+            artifact = (
+                copied_parent_manifest.parent / record["npz_relative_path"]
+            )
+            if file_sha256(artifact) != record["npz_sha256"]:
+                raise RuntimeError("smoke parent response SHA漂移")
+            parent_responses.append(load_endpoint_response_npz(artifact))
+        smoke_decision = evaluate_projection_response_evidence(
+            captured_responses,
+            parent_responses=parent_responses,
+            matched_steps_by_endpoint=matched_steps,
+            expected_state_ids=response_state_ids,
+        )
+        if not smoke_decision.audit_valid:
+            raise RuntimeError(
+                "Gate 6j smoke复核失败: "
+                + "; ".join(smoke_decision.failures)
+            )
+        smoke_path = output_dir / "terminal_projection_smoke.json"
+        write_json_atomically(
+            {
+                "schema_version": PROJECTION_SMOKE_SCHEMA_VERSION,
+                "status": "complete",
+                "code_commit": cfg.code_commit,
+                "formal_bundle": False,
+                "state_ids": list(response_state_ids),
+                "parent": parent_record,
+                "endpoint_steps": matched_records,
+                "response_records": response_records,
+                "provenance": provenance_record,
+                "runtime": runtime_record,
+                "derived": asdict(smoke_decision),
+            },
+            output_path=smoke_path,
+        )
+        print(f"[GATE-6J-SMOKE] manifest={smoke_path}")
+        return smoke_path
+
     configuration = frozen_projection_configuration()
     payload = {
         "schema_version": PROJECTION_BUNDLE_SCHEMA_VERSION,
         "code_commit": cfg.code_commit,
         "configuration": configuration,
         "config_sha256": json_sha256(configuration),
-        "parent": {
-            "manifest_relative_path": str(
-                copied_parent_manifest.relative_to(output_dir)
-            ),
-            "manifest_sha256": copied_parent_sha,
-            "source_dense_seed_metrics_relative_path": str(
-                copied_dense_metrics.relative_to(output_dir)
-            ),
-            "source_dense_seed_metrics_sha256": file_sha256(
-                copied_dense_metrics
-            ),
-            "production_support_relative_path": str(
-                copied_support.relative_to(output_dir)
-            ),
-            "production_support_sha256": file_sha256(copied_support),
-        },
+        "parent": parent_record,
         "endpoint_steps": matched_records,
         "response_records": response_records,
-        "provenance": {
-            "gradient_recomputed": False,
-            "training_or_rollout_run": False,
-            "feature_gradient": False,
-            "wrist_gradient": False,
-            "oft_gradient": False,
-        },
-        "runtime": {
-            "cli": asdict(cfg),
-            "inherited_parent_runtime": asdict(runtime_cfg),
-            "checkpoint_fingerprints": _checkpoint_fingerprints(
-                checkpoint_path
-            ),
-            "processor_specification": asdict(image_preprocessor),
-            "processor_specification_sha256": json_sha256(
-                asdict(image_preprocessor)
-            ),
-        },
+        "provenance": provenance_record,
+        "runtime": runtime_record,
     }
     manifest_path = output_dir / "terminal_projection_manifest.json"
     publish_terminal_projection_bundle(payload, output_path=manifest_path)

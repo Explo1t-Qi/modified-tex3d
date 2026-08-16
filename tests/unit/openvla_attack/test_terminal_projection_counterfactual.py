@@ -320,6 +320,21 @@ def test_response_evaluator_requires_strict_replay_and_keeps_endpoints_separate(
     assert control.baseline_minus_matched == 1.0
     assert not hasattr(decision, "projection_harm")
 
+    smoke = evaluate_projection_response_evidence(
+        [row for row in child_responses if row.state_id == 0],
+        parent_responses=[
+            row for row in parent_responses if row.state_id == 0
+        ],
+        matched_steps_by_endpoint=matched_steps,
+        expected_state_ids=(0,),
+    )
+    assert smoke.audit_valid, smoke.failures
+    assert smoke.response_record_count == 6
+    assert tuple(metric.endpoint for metric in smoke.endpoint_metrics) == (
+        "action_spectral",
+        "action_only_control",
+    )
+
     drifted = list(child_responses)
     radial_index = next(
         index
