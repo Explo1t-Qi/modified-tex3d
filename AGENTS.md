@@ -36,8 +36,10 @@
   source-strength干预，不声称最优，也不解决58个尚未越界token。两步
   GPU工程smoke已完成2/2次更新、20/20行state证据与产物恢复；commit
   `6940700`修正了跨GPU/CPU float32 mean约1 ULP造成的evaluator误拒，
-  原bundle经WSL独立复核有效。当前唯一下一门槛是实现并放行一次
-  Action-only+κ 5000轮正式训练；不得调Support/K/lambda/Feature/wrist或提前进入OFT。
+  原bundle经WSL独立复核有效。commit `178fdce`已放行正式5000轮路径，并要求
+  显式绑定通过验收的κ-smoke manifest；当前唯一下一门槛是服务器完成正式训练、
+  独立bundle复核与paired source-development rollout。不得调Support/K/lambda/
+  Feature/wrist或提前进入OFT。
 - states 10–19 已反复参与方法决策，必须称为 source development/validation
   states，不能再作为无偏 held-out test。方法冻结后的正式无偏结论仍需新任务或
   第三个 VLA 模型；states 20–49 在审计历史使用前也不得自动宣称为 untouched。
