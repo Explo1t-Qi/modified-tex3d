@@ -57,8 +57,18 @@ from openvla_attack.terminal_endpoint_action_audit import (  # noqa: E402
     EndpointGradientEvidence,
     EndpointResponseEvidence,
     compute_action_hinge,
+    load_endpoint_response_npz,
     write_endpoint_gradient_npz,
     write_endpoint_response_npz,
+)
+from openvla_attack.terminal_projection_counterfactual import (  # noqa: E402
+    PROJECTION_BUNDLE_SCHEMA_VERSION,
+    build_matched_box_endpoint_evidence,
+    evaluate_terminal_projection_bundle,
+    frozen_projection_configuration,
+    publish_terminal_projection_bundle,
+    write_matched_box_endpoint_npz,
+    write_projection_response_npz,
 )
 
 
@@ -538,3 +548,221 @@ def test_invalid_bundle_is_not_published_as_success(tmp_path: Path) -> None:
     assert not manifest_path.exists()
     assert not (tmp_path / "invalid_manifest_raw_candidate.json").exists()
     assert not (tmp_path / "invalid_manifest_candidate.json").exists()
+
+
+def test_projection_child_bundle_replays_parent_and_reports_each_endpoint(
+    tmp_path: Path,
+) -> None:
+    """Gate 6j child必须自包含parent，并原子发布60条严格三臂证据。"""
+
+    child_root = tmp_path / "projection-child"
+    parent_root = child_root / "parent_gate6i"
+    parent_payload = _bundle_payload(parent_root)
+    parent_manifest = parent_root / "terminal_endpoint_manifest.json"
+    publish_terminal_endpoint_bundle(
+        parent_payload,
+        output_path=parent_manifest,
+    )
+    parent_json = json.loads(parent_manifest.read_text(encoding="utf-8"))
+
+    matched_records = []
+    matched_by_endpoint = {}
+    for record in parent_json["endpoint_steps"]:
+        parent_step_path = parent_root / record["npz_relative_path"]
+        parent_step = load_endpoint_step_npz(parent_step_path)
+        matched = build_matched_box_endpoint_evidence(
+            parent_bundle_sha256=file_sha256(parent_manifest),
+            parent_step_npz_sha256=record["npz_sha256"],
+            parent_step=parent_step,
+        )
+        matched_by_endpoint[matched.endpoint] = matched
+        relative = Path("steps") / f"{matched.endpoint}_matched_box.npz"
+        digest = write_matched_box_endpoint_npz(
+            matched,
+            output_path=child_root / relative,
+        )
+        matched_records.append(
+            {
+                "endpoint": matched.endpoint,
+                "npz_relative_path": str(relative),
+                "npz_sha256": digest,
+                "parent_step_npz_sha256": record["npz_sha256"],
+            }
+        )
+
+    response_records = []
+    for record in parent_json["response_records"]:
+        if record["arm"] not in ("baseline", "support"):
+            continue
+        parent_response = load_endpoint_response_npz(
+            parent_root / record["npz_relative_path"]
+        )
+        arm = (
+            "baseline"
+            if parent_response.arm == "baseline"
+            else "radial_support"
+        )
+        response = replace(parent_response, arm=arm)
+        relative = Path("responses") / (
+            f"{response.endpoint}_state_{response.state_id:02d}_{arm}.npz"
+        )
+        digest = write_projection_response_npz(
+            response,
+            output_path=child_root / relative,
+        )
+        response_records.append(
+            {
+                "endpoint": response.endpoint,
+                "state_id": response.state_id,
+                "arm": arm,
+                "npz_relative_path": str(relative),
+                "npz_sha256": digest,
+            }
+        )
+        if arm == "radial_support":
+            matched = matched_by_endpoint[response.endpoint]
+            matched_response = _response(
+                endpoint=response.endpoint,
+                state_id=response.state_id,
+                arm="matched_box_support",
+                loss=2.0,
+                surface_sha256=matched.matched_surface_delta_sha256,
+            )
+            matched_relative = Path("responses") / (
+                f"{response.endpoint}_state_{response.state_id:02d}_"
+                "matched_box_support.npz"
+            )
+            matched_digest = write_projection_response_npz(
+                matched_response,
+                output_path=child_root / matched_relative,
+            )
+            response_records.append(
+                {
+                    "endpoint": matched_response.endpoint,
+                    "state_id": matched_response.state_id,
+                    "arm": matched_response.arm,
+                    "npz_relative_path": str(matched_relative),
+                    "npz_sha256": matched_digest,
+                }
+            )
+
+    configuration = frozen_projection_configuration()
+    payload = {
+        "schema_version": PROJECTION_BUNDLE_SCHEMA_VERSION,
+        "code_commit": "e" * 40,
+        "configuration": configuration,
+        "config_sha256": json_sha256(configuration),
+        "parent": {
+            "manifest_relative_path": str(parent_manifest.relative_to(child_root)),
+            "manifest_sha256": file_sha256(parent_manifest),
+            "source_dense_seed_metrics_relative_path": str(
+                Path(parent_json["provenance"]["source_dense_seed_metrics_path"])
+                .resolve()
+                .relative_to(child_root.resolve())
+            ),
+            "source_dense_seed_metrics_sha256": parent_json["provenance"][
+                "source_dense_seed_metrics_sha256"
+            ],
+            "production_support_relative_path": str(
+                Path(parent_json["provenance"]["production_support_path"])
+                .resolve()
+                .relative_to(child_root.resolve())
+            ),
+            "production_support_sha256": parent_json["provenance"][
+                "production_support_sha256"
+            ],
+        },
+        "endpoint_steps": matched_records,
+        "response_records": response_records,
+        "provenance": {
+            "gradient_recomputed": False,
+            "training_or_rollout_run": False,
+            "feature_gradient": False,
+            "wrist_gradient": False,
+            "oft_gradient": False,
+        },
+    }
+    output = child_root / "terminal_projection_manifest.json"
+
+    digest = publish_terminal_projection_bundle(payload, output_path=output)
+    decision = evaluate_terminal_projection_bundle(output)
+    manifest = json.loads(output.read_text(encoding="utf-8"))
+
+    assert len(digest) == 64
+    assert decision.audit_valid, decision.failures
+    assert decision.response_record_count == 60
+    assert decision.endpoint_step_count == 2
+    assert tuple(
+        metric.endpoint for metric in decision.response_decision.endpoint_metrics
+    ) == ("action_spectral", "action_only_control")
+    assert "projection_harm" not in json.dumps(manifest["derived"])
+    assert manifest["status"] == "complete"
+
+    incomplete = json.loads(json.dumps(manifest))
+    del incomplete["derived"]
+    incomplete_path = child_root / "incomplete_projection.json"
+    incomplete_path.write_text(
+        json.dumps(incomplete, sort_keys=True),
+        encoding="utf-8",
+    )
+    incomplete_decision = evaluate_terminal_projection_bundle(incomplete_path)
+    assert not incomplete_decision.audit_valid
+    assert any("derived" in failure for failure in incomplete_decision.failures)
+
+    invalid_commit = json.loads(json.dumps(manifest))
+    invalid_commit["code_commit"] = "not-a-commit"
+    invalid_commit_path = child_root / "invalid_commit_projection.json"
+    invalid_commit_path.write_text(
+        json.dumps(invalid_commit, sort_keys=True),
+        encoding="utf-8",
+    )
+    invalid_commit_decision = evaluate_terminal_projection_bundle(
+        invalid_commit_path
+    )
+    assert not invalid_commit_decision.audit_valid
+    assert any(
+        "code_commit" in failure
+        for failure in invalid_commit_decision.failures
+    )
+
+    invalid_status = json.loads(json.dumps(manifest))
+    invalid_status["status"] = "running"
+    invalid_status_path = child_root / "invalid_status_projection.json"
+    invalid_status_path.write_text(
+        json.dumps(invalid_status, sort_keys=True),
+        encoding="utf-8",
+    )
+    invalid_status_decision = evaluate_terminal_projection_bundle(
+        invalid_status_path
+    )
+    assert not invalid_status_decision.audit_valid
+    assert any("status" in failure for failure in invalid_status_decision.failures)
+
+    cross_platform = json.loads(json.dumps(manifest))
+    original_l2 = cross_platform["derived"]["step_metrics"][0]["matched_l2"]
+    cross_platform["derived"]["step_metrics"][0]["matched_l2"] = float(
+        np.nextafter(original_l2, np.inf)
+    )
+    cross_platform_path = child_root / "cross_platform_projection.json"
+    cross_platform_path.write_text(
+        json.dumps(cross_platform, sort_keys=True),
+        encoding="utf-8",
+    )
+    cross_platform_decision = evaluate_terminal_projection_bundle(
+        cross_platform_path
+    )
+    assert cross_platform_decision.audit_valid, (
+        cross_platform_decision.failures
+    )
+
+    cross_platform["derived"]["step_metrics"][0]["matched_l2"] = (
+        original_l2 + 1e-9
+    )
+    tampered_path = child_root / "tampered_projection.json"
+    tampered_path.write_text(
+        json.dumps(cross_platform, sort_keys=True),
+        encoding="utf-8",
+    )
+    tampered = evaluate_terminal_projection_bundle(tampered_path)
+    assert not tampered.audit_valid
+    assert any("derived" in failure for failure in tampered.failures)

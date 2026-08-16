@@ -867,9 +867,19 @@ def load_endpoint_gradient_npz(path: str | Path) -> EndpointGradientEvidence:
     return evidence
 
 
-def _validate_response_evidence(evidence: EndpointResponseEvidence) -> None:
+def validate_endpoint_response_evidence(
+    evidence: EndpointResponseEvidence,
+    *,
+    allowed_arms: Sequence[str],
+) -> None:
+    """按调用方冻结的arm集合验证通用OpenVLA静态response raw evidence。"""
+
     _validate_endpoint_state(evidence.endpoint, evidence.state_id)
-    if evidence.arm not in RESPONSE_ARMS:
+    if (
+        not allowed_arms
+        or len(set(allowed_arms)) != len(allowed_arms)
+        or evidence.arm not in allowed_arms
+    ):
         raise TerminalEndpointActionAuditError("response arm无效")
     if not _is_sha256(evidence.state_fingerprint) or not _is_sha256(
         evidence.surface_delta_sha256
@@ -963,6 +973,15 @@ def _validate_response_evidence(evidence: EndpointResponseEvidence) -> None:
         raise TerminalEndpointActionAuditError(
             "effective RGB/processor BF16 bits shape或dtype无效"
         )
+
+
+def _validate_response_evidence(evidence: EndpointResponseEvidence) -> None:
+    """保留Gate 6i冻结三臂语义的内部wrapper。"""
+
+    validate_endpoint_response_evidence(
+        evidence,
+        allowed_arms=RESPONSE_ARMS,
+    )
 
 
 def write_endpoint_response_npz(
