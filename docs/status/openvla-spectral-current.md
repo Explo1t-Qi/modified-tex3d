@@ -67,6 +67,8 @@ Gate 6i Terminal Endpoint Action正式证据基线：
 `d6147ddee74567ea828f1ae778cf8ece1b63af0d`
 Gate 6i跨环境derived归约复核修复基线：
 `4fb2b6dbfe52232cbbf23649b7e022db726f47a1`
+Gate 6j Radial-vs-Matched-Box实现与smoke基线：
+`8cfa791a0b3d2e1f8ec9e270e78045e5ce729617`
 
 本文是 OpenVLA 谱纹理研究的**当前状态入口**。新一轮开发应先读本文，再按需
 进入专题文档；不要从长篇实验时间线推测当前优先级。历史实验索引见
@@ -103,6 +105,7 @@ Gate 6i跨环境derived归约复核修复基线：
 | Gate 6g Terminal Deployment Response | 已完成，20/20工程审计有效 | Action+Spectral有7/10训练响应，部署严格保留3/7；Action-only有6/10训练响应，部署严格保留4/6。两者均存在`lost/altered`，未观察到tie或invalid |
 | Gate 6h Scalar-Gain Counterfactual | 已完成，20/20工程审计有效 | 冻结6个主case为4 `gain_sufficient` / 1 `residual_necessary` / 1 `ambiguous`；只有Action+Spectral出现`residual_necessary`，按预注册解释树进入`endpoint_or_trajectory_specific` |
 | Gate 6i Terminal Endpoint Action-Gradient/Response | 已完成，20/60/2工程审计有效 | 两终态聚合梯度cosine=`0.9068`；terminal逐state retention均值上升但aggregate retention降至`0.3574/0.3423`；Dense advantage一负一正，不支持共同的终态局部Support瓶颈 |
+| Gate 6j Radial-vs-Matched-Box Counterfactual | artifact/evaluator/formal runner已实现，GPU待执行 | 只读Gate 6i双终态与聚合梯度；在相同actual Surface-L∞下比较既有global radial scaling与coordinatewise box projection，不重算梯度、不训练、不rollout |
 | 无偏跨模型迁移与鲁棒性提升 | 未开始 | 需方法冻结后的新任务/第三模型与后续防御实验 |
 
 ## 当前已确认的科学结论
@@ -190,7 +193,11 @@ surrogate fidelity主因。Gate 6i Terminal Endpoint Action-Gradient/Response
 Audit现也已完成：两个终态的局部梯度总体相似，但逐state与aggregate retention
 方向相反，Dense advantage一负一正，因此没有共同terminal local Support瓶颈
 证据。它只检查局部终点几何与Fixed Support的即时单步限制，不观测或归因完整
-训练轨迹；当前不自动启动新训练，OFT仍不得提前进入。
+训练轨迹。Gate 6i同时暴露出两个Support radial step在边界全局投影后actual
+L∞明显缩小且descent cosine为负；因此唯一下一门槛已冻结为Gate 6j
+Radial-vs-Matched-Box静态反事实。其artifact/evaluator、state 0 GPU smoke和正式
+states 0--9三臂runner已经实现，尚无GPU结果；当前不自动启动新训练，OFT仍不得
+提前进入。
 
 真实 Spatial checkpoint 的 CPU 差分记录为 fused pixel values MAE/L∞=`0/0`，
 输入梯度有限且非零；文档记录当时全量 CPU 回归为 `113 passed, 1 skipped`。
@@ -1843,6 +1850,53 @@ descent-alignment cosine为`-0.701719/-0.234839`，说明边界投影显著改�
 实际步。故该结果是“正式相同更新规则下的可执行一步”证据，不能被改写成相同步长
 的无约束坐标消融，更不能外推为完整训练轨迹或rollout因果。
 
+### Gate 6j：Radial-vs-Matched-Box Counterfactual（已实现，GPU待执行）
+
+Gate 6j只读Gate 6i已通过的两个正式终态、聚合Action gradient、Support radial
+step和states 0--9 clean target；不得重新backward、重训、rollout或读取
+Feature/wrist/OFT。对每个endpoint，先从Gate 6i保存的normalized step构造
+coordinatewise box point：
+
+```text
+box_surface = clip(realized_endpoint + normalized_step, -epsilon, epsilon)
+box_step = box_surface - realized_endpoint
+s = ||radial_step||_inf / ||box_step||_inf
+matched_step = s * box_step
+```
+
+硬合同要求box step有限非零、`0 < s <= 1`、matched endpoint仍在Surface-L∞预算
+内，且matched与parent radial的actual Surface-L∞相同。raw box/matched arrays、
+SHA、L∞/L2、gradient-step inner product与descent cosine逐endpoint保存。两步即使
+actual L∞相同，L2、坐标分布与方向仍可能不同，因此本Gate不是纯方向消融。
+
+正式inventory固定为两个endpoint × states 0--9 ×
+`{baseline, radial_support, matched_box_support}`，共60条response。新采集的40条
+baseline/radial raw arrays、dtype、shape、SHA、BF16 bits、teacher/generation
+logits及离散字段必须严格重放parent Gate 6i；只有从raw float32数组得到的
+float64 derived归约允许`1e-12`绝对容差。replay失败只使本次audit invalid，不自动
+把原因归为代码错误或backend nondeterminism。
+
+两个endpoint分别报告，不先跨endpoint平均：
+
+```text
+D[e,s] = L_radial[e,s] - L_matched[e,s]
+I_M[e,s] = L_baseline[e,s] - L_matched[e,s]
+```
+
+每项保存mean、median、逐state值与positive/zero/negative counts；evaluator不输出
+`projection_harm`科学布尔值，也不暗设`>5/10`门槛。即使两个endpoint都出现
+`D>0`且`I_M>0`，也只支持terminal-local box projection优于当前radial算子，不能
+证明原2/10 rollout或完整训练轨迹的根因；是否替换正式trainer投影并完整重训必须
+另行决策。
+
+commit `057a897`实现无pickle matched-step/三臂response artifact、严格parent replay、
+自包含child bundle、CPU evaluator与正式60-response GPU runner；commit `8cfa791`
+增加`--smoke_only`，固定只采双endpoint的state 0共6条response并标记
+`formal_bundle=false`，不得当作正式结果。Gate 6i/6j相关定向测试为`24 passed`；
+默认全量本地命令仍在10个既有文件的collection阶段因缺少`nvdiffrast`或完整
+`libero.libero`停止。下一步必须先在绑定commit的服务器新目录运行state 0 smoke，
+通过严格parent replay后才在另一个全新目录运行正式states 0--9 audit。
+
 已冻结的第一项设计决定：谱方法在新候选中作为作用于最终 Surface Delta 的软
 自然性正则，只惩罚高频谱能量；它不再把扰动硬限制在前 K 个谱基中，也不是与
 顶点扰动相加的第二个可学习分量。
@@ -2534,11 +2588,11 @@ Gate 判断，但永远不能替代权威 30 行记录、NPZ 或逐 case 图。
 
 ## 当前禁止的捷径
 
-- Gate 6i的Terminal Endpoint Action-Gradient/Response数学范围已冻结；
-  正式artifact/evaluator/GPU audit完成前不启动新训练、不修改Support/
-  Action objective/Spectral Guard，也不进入OFT；
-- Gate 6i不得增加mass/visible-only/Feature/Spectral/wrist/OFT梯度、Hessian、多步长
-  或多步优化，也不得将terminal local结果包装为完整trajectory或rollout因果；
+- Gate 6j是当前唯一下一门槛；必须先完成state 0 GPU smoke与严格parent replay，
+  再在全新目录运行正式states 0--9三臂audit。两次运行不得拼接；
+- Gate 6j不得重新计算梯度、训练、rollout，或修改Support/K/lambda/Action
+  objective/Feature/wrist/OFT；不得把matched-box静态结果包装为完整trajectory、
+  2/10 rollout根因或纯方向消融；
 - 不根据Gate 6h结果事后扩展gamma、逐通道或局部photometric模型，也不得
   把单一Action+Spectral case的`residual_necessary`包装为双variant共同主因；
 - 不把 OFT 梯度用于 source-only loss、选基或超参数选择；
