@@ -91,6 +91,8 @@ Action-only+κ正式训练与paired rollout证据基线：
 `529eb00df32335faf9a5c1c5f23dceae56312d30`
 跨run嵌套κ证据独立解析修复基线：
 `80aab56b87c4b236031889b92103cfcb9bdc8387`
+Action Gradient Signal只读审计实现基线：
+`445528fdd1541587433fe38f5d80d9151d4a80f2`
 
 本文是 OpenVLA 谱纹理研究的**当前状态入口**。新一轮开发应先读本文，再按需
 进入专题文档；不要从长篇实验时间线推测当前优先级。历史实验索引见
@@ -130,6 +132,7 @@ Action-only+κ正式训练与paired rollout证据基线：
 | Gate 6j Radial-vs-Matched-Box Counterfactual | 已完成，2 step/60 response工程审计有效 | Action+Spectral `D=-0.00625`且4/2/4正零负；Action-only `D=+0.04732`且5/2/3；不支持共同radial projection harm，未触发换投影重训条件 |
 | Gate 6g--6j终止诊断P/I只读分析 | 已完成，40/40行有效；机制诊断已冻结 | matched两endpoint合计15个`P>0`中12个`I>0`；现有证据不支持BPDA/Action gradient普遍失效，radial不一致也不构成共同功能瓶颈 |
 | Action-only κ source-strength intervention | 已完成，工程有效但科学门槛未通过 | 5000/5000轮与50000/50000行证据独立复核有效；静态teacher-forced margin指标改善，但paired states 10--19仅1/10新增失败，低于预注册3/10和历史Action-only的2/10 |
+| Fixed-Support Action Gradient Signal | 已完成，纯CPU只读报告有效 | Support占16.53%坐标却逐state保留约56%能量，Support内RMS高于外部，20/20 Dense/Support raw Linf均为`2/255`；不支持“少参数使每参数梯度过弱”，但不排除自由度限制 |
 | 无偏跨模型迁移与鲁棒性提升 | 未开始 | 需方法冻结后的新任务/第三模型与后续防御实验 |
 
 ## 当前已确认的科学结论
@@ -170,6 +173,12 @@ Action-only+κ正式训练与paired rollout证据基线：
     冻结的buffer确实改变并加强了静态训练代理。然而paired rollout只产生state 13
     一个新增失败（1/10），低于历史Action-only和Action+Spectral的2/10。静态
     teacher-forced margin增强没有单调转化为轨迹级source攻击增强。
+12. Gate 6i两个历史终态的Fixed-Support梯度信号审计显示：10542个Support RGB
+    坐标只占63789个dense坐标的16.53%，但逐state gradient-energy retention均值
+    为`0.5704/0.5638`；Support内每坐标RMS平均是Support外的`2.80/2.75`倍，
+    20/20个state的Dense和Support归一化raw update Linf都达到`2/255`。因此当前
+    证据反驳“参数少使每参数梯度过弱或无法产生既定raw步长”的窄解释；它不排除
+    参数少导致可达方向、空间覆盖或完整训练容量不足，也不直接归因κ候选的1/10。
 
 ## 当前实现基线
 
@@ -2152,6 +2161,48 @@ loss为`8.39196`（历史`9.20893`），`m<=0`为17/70（历史11/70），
 但1/10 rollout低于预注册3/10，也低于两个历史候选的2/10。结论是本轮
 source-strength intervention未通过；不得进入OFT、回调κ或调整Support/K/lambda。
 当前没有自动放行的新实验，下一行动需先讨论并冻结。
+
+### Fixed-Support Action Gradient Signal只读审计（已完成）
+
+commit `445528fdd1541587433fe38f5d80d9151d4a80f2`实现纯CPU analyzer与CLI，
+只消费已通过的Gate 6i manifest、20个raw dense Surface gradient、Production
+Support及两个endpoint step。它不重新反传、训练或rollout，也不创建机制Gate。
+逐state分别报告Dense、Support内和Support外的坐标数、L2/L∞、mean-absolute、
+RMS、普通Euclidean energy retention，并从同一realized endpoint按正式
+`mask -> surface-normalize -> project -> cap`规则复算Dense/Support raw proposed
+及executed update L2/L∞。Support mean/RMS的分母只含10542个真实可训练RGB
+坐标，不把53247个Support外补零坐标混入；每个endpoint还分别报告十state标量
+的mean/median/min/max及float32十state算术平均梯度，禁止跨endpoint先平均。
+
+正式输入Gate 6i manifest SHA-256为
+`7d0806d5782af139363c05bbd02b62dd141237a0d987c7124f174c390c1f412d`，
+Production Support SHA-256为
+`686a2becc3688b0cb6bdafef840d0920fb51e584dc860a0c95733b935d22fb6d`；
+输出位于忽略目录
+`gate6i-terminal-endpoint-d6147dd-20260815/analysis/action_gradient_signal_report.json`，
+报告SHA-256为
+`aab841492a477a90d7373b6588820a16ef901ea11aab3f0b3c403e92c9865082`。
+报告`audit_valid=true`、20/20行完整且无failure；相邻相关测试为`31 passed`。
+
+| Endpoint | Support坐标比例 | 逐state retention mean/median | Support/Outside RMS ratio mean/median | Aggregate retention | Aggregate raw→executed Support Linf |
+|---|---:|---:|---:|---:|---:|
+| Action+Spectral | 16.526% | 0.570354 / 0.548889 | 2.7961 / 2.4798 | 0.357413 | 0.00784314 → 0.00250059 |
+| Action-only | 16.526% | 0.563780 / 0.505823 | 2.7511 / 2.2739 | 0.342277 | 0.00784314 → 0.00305000 |
+
+两个endpoint的20个逐state Dense/Support raw proposed Linf全部精确为
+`0.0078431377`（约`2/255`）；逐state Support executed/raw Linf比例的均值为
+`0.9038/0.9071`。所以较小的总L2不能单独解释为信号更弱；它同时受坐标数影响，
+而本次未观察到Support内per-coordinate梯度衰减或surface normalization无法生成
+颜色步长。另一方面，
+aggregate retention低于逐state均值，aggregate Support executed Linf也被端点
+投影明显压小；这与跨state抵消和边界几何相容，但Gate 6j已不支持radial
+projection是双endpoint共同功能瓶颈，故不能据此重开机制Gate。
+
+该审计使用两个历史2/10终态，而非新κ终态，且只检查终点局部一步。它能反驳
+“少参数必然让梯度数值过弱”这一窄假设，不能证明参数数量与source ASR无关：
+较少自由度仍可能限制可达方向、覆盖和完整训练轨迹。若要作参数量的因果判断，
+需要另行预注册相同数据、objective、初始化、surface step与预算下的nested
+Support-size训练对照；当前未自动放行该实验。
 
 已冻结的第一项设计决定：谱方法在新候选中作为作用于最终 Surface Delta 的软
 自然性正则，只惩罚高频谱能量；它不再把扰动硬限制在前 K 个谱基中，也不是与

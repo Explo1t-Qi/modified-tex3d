@@ -40,8 +40,12 @@
   50000/50000行state证据和独立bundle复核；paired source-development rollout
   仅造成1/10新增失败，低于预注册3/10门槛，也低于历史Action-only的2/10。
   κ改善了训练终态的静态teacher-forced margin指标，但没有转化为更强rollout。
-  本轮未通过，不得调Support/K/lambda/κ/Feature/wrist或进入OFT；当前没有自动
-  放行的后续实验，下一项行动必须先基于该负结果另行讨论并冻结。
+  后续纯CPU Action Gradient Signal只读审计复用Gate 6i raw gradient：Support
+  只占16.53%坐标却逐state保留约56%梯度能量，Support内RMS高于外部，且20/20
+  Dense/Support raw update均达到`2/255`。这反驳“少参数使每参数梯度过弱”，
+  但不排除自由度/可达方向限制，也不证明κ低ASR的完整原因。本轮未通过，不得
+  调Support/K/lambda/κ/Feature/wrist或进入OFT；当前没有自动放行的后续实验，
+  下一项行动必须先基于该负结果另行讨论并冻结。
 - states 10–19 已反复参与方法决策，必须称为 source development/validation
   states，不能再作为无偏 held-out test。方法冻结后的正式无偏结论仍需新任务或
   第三个 VLA 模型；states 20–49 在审计历史使用前也不得自动宣称为 untouched。
