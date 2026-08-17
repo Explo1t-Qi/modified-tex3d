@@ -832,6 +832,21 @@ def test_cpu_evaluator_rejects_no_evidence_and_accepts_complete_sequence(
         name: f"/server/tex3d/artifacts/{Path(path).name}"
         for name, path in manifest["input_paths"].items()
     }
+    if training_variant == "action_only_kappa":
+        # rsync后的真实κ-smoke位于另一个run的
+        # run_root/attack_artifacts/timestamped_run/manifest，相对共同
+        # experiments_inbox祖先比既有上游artifact多嵌套一层。
+        original_kappa_smoke = tmp_path / "kappa-smoke-manifest.json"
+        nested_kappa_root = (
+            tmp_path
+            / "synced-kappa-run"
+            / "attack_artifacts"
+            / "timestamped-run"
+        )
+        nested_kappa_root.mkdir(parents=True)
+        original_kappa_smoke.rename(
+            nested_kappa_root / original_kappa_smoke.name
+        )
     result.manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
 
     moved_bundle = evaluate_formal_source_training_bundle(result.manifest_path)

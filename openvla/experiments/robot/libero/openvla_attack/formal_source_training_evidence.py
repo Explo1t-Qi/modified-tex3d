@@ -93,6 +93,11 @@ def _resolve_by_hash(
             candidates.append(root / original.name)
             candidates.extend(root.glob(f"*/{original.name}"))
             candidates.extend(root.glob(f"*/*/{original.name}"))
+            # κ工程smoke自身位于另一个run的
+            # run_root/attack_artifacts/timestamped_run/manifest；从共同
+            # experiments_inbox祖先解析时恰好多一层。保持固定三层上限，
+            # 不用无界rglob遍历整个仓库。
+            candidates.extend(root.glob(f"*/*/*/{original.name}"))
     checked: set[Path] = set()
     for candidate in candidates:
         resolved = candidate.resolve()
